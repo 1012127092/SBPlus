@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true">
+
+        <!-- Launcher entry / settings screen -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Xposed/LSPosed 模块声明 -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+
+        <!-- Log store: the hook (browser process) reports logs to this app via provider. -->
+        <provider
+            android:name=".LogProvider"
+            android:authorities="com.sbplus.browser.log"
+            android:exported="true" />
+
+        <!-- Log manager UI -->
+        <activity
+            android:name=".LogManagerActivity"
+            android:exported="false"
+            android:label="日志管理" />
+
+        <meta-data
+            android:name="xposeddescription"
+            android:value="SBPlus - Samsung Browser enhancements (download bridge, and more)" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="93" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposedscope" />
+
+    </application>
+
+</manifest>

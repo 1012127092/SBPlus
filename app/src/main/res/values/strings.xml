@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">SBPlus</string>
+    <string name="version_label" translatable="false">版本 1.0</string>
+    <string name="module_desc" translatable="false">Samsung Browser Plus - download bridge and more</string>
+
+    <!-- target downloader default config -->
+    <string name="pref_down_pkg" translatable="false">com.dv.adm</string>
+    <string name="pref_down_cls" translatable="false"></string>
+</resources>

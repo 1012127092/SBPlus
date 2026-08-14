@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android
+*.apk
+*.aab
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 调试产物（历史临时脚本/截图/dump）
+_debug_archive/
+
+# 系统
+.DS_Store
+Thumbs.db

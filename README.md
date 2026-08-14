@@ -1,0 +1,115 @@
+# SBPlus
+
+Samsung Browser 增强模块（**LSPosed** 模块）。
+
+以 LSPosed 为运行框架，为三星浏览器（Samsung Internet，包名 `com.sec.android.app.sbrowser`）
+补充官方未提供的功能。
+
+## 框架说明
+
+- **目标框架：LSPosed**（接口兼容标准 Xposed API）
+- 模块入口：`assets/xposed_init` → `com.sbplus.browser.MainHook`
+- 兼容：LSPosed 可加载，老 Xposed / EdXposed 理论上也可加载
+
+## 使用前提
+
+1. 手机已 root，并安装 **LSPosed**（Magisk 模块方式）
+2. 安装本模块 APK 后，打开 LSPosed Manager：
+   - 启用本模块
+   - **作用域（Scope）勾选「三星浏览器」**（`com.sec.android.app.sbrowser`）
+3. 重启三星浏览器（或重启系统）
+
+> 作用域需要时可在 LSPosed 界面手动勾选。
+
+## 已实现功能
+
+### 1. 下载桥接（第三方下载器接管）
+把三星浏览器的下载请求转交给第三方下载器（ADM / IDM+ / 1DM，包名可自定义）。
+- hook `TinDownloadController` 下载链路（`onDownloadStarted` 等）
+- 传递 Cookie / User-Agent / Referer 等登录态信息
+- 可选阻断原生下载（真正"接管"而非并行）
+
+### 2. 设置集成 + 日志
+在三星浏览器设置页注入 SBPlus 子菜单，并提供内置日志查看。
+
+### 3. Via 风格网格菜单
+把三星「更多」菜单从单列纵向列表改造成多列网格（Via 风格），支持拖拽排序、
+添加/删除图标。
+
+### 4. 改区（Country ISO Code）
+通过 hook `CountryUtil.getCountryIsoCode()` 等入口，将浏览器地区切换到 17 国之一，
+影响所有区域相关行为。
+
+### 5. 浏览器标识（UA 伪装）
+hook `SBrowserCommandLine.initialize()`，通过 `TerraceCommandLine.appendSwitchWithValue`
+注入 `user-agent` switch，完整替换 UA（桌面 Chrome / 手机 / iPhone / 自定义）。需重启浏览器生效。
+
+### 6. 精简设置页
+主开关 + 23 项多选屏蔽，两列网格展示，隐藏不需要的设置项。
+
+### 7. 屏蔽更新和小红点
+独立总开关，彻底屏蔽浏览器更新：
+- 清除更新通知 / 弹窗 / 红点（关于页、更多按钮、设置徽标）
+- 阻断更新检查链路（`UpdateManager.checkUpdate*`）
+- 阻断商店网络（`StubUtil.checkUpdateOnGalaxyStore` 等）
+- 禁止跳转商店 / 升档
+- 通过官方预留 `disable-update-dialog` switch 优雅屏蔽弹窗
+
+### 8. 主页视频背景
+让浏览器主页（新标签页/快速访问页）背景播放动态视频。
+- 通过 MediaStore 将选中视频存入公共 `Movies/SBPlus/` 目录
+- 用 `TextureView + MediaPlayer` 循环静音播放（TextureView 规避 SurfaceView 被不透明背景色盖住的问题）
+- 子页提供「选择视频 / 清除视频 / 删除视频」三个操作
+
+## 构建
+
+```bat
+call D:\Android\env.bat
+cd C:\Users\16579\Desktop\SBPlus
+gradle assembleDebug --no-daemon
+```
+
+产物：`app\build\outputs\apk\debug\app-debug.apk`
+
+## 开发环境
+
+- Windows AMD64
+- Java 17（Temurin）
+- Gradle 8.7（`D:\Android\gradle\gradle-8.7`）
+- Android SDK 34+（`D:\Android\sdk`）
+- 依赖仓库：阿里云镜像（解决国内拉取 AGP 依赖超时问题）
+- 测试设备：三星 Galaxy，Android 16 (SDK 36)，屏宽 1440、密度 3.5
+
+## 项目结构
+
+```
+SBPlus/
+├── app/
+│   ├── build.gradle              (namespace/applicationId = com.sbplus.browser)
+│   └── src/main/
+│       ├── AndroidManifest.xml   (xposedmodule 声明)
+│       ├── assets/xposed_init    (模块入口)
+│       ├── res/values/           (app_name=SBPlus, xposedscope)
+│       └── java/com/sbplus/browser/
+│           ├── MainHook.java               (核心 hook，功能 1-8)
+│           ├── MainActivity.java
+│           ├── SBPlusSettingsFragment.java
+│           ├── MenuReorderHelper.java      (网格菜单拖拽排序)
+│           ├── MenuAddButtonHelper.java    (添加图标)
+│           ├── MenuEditHelper.java         (编辑图标)
+│           ├── LogWriter.java / LogProvider.java / LogManagerActivity.java (日志系统)
+│           └── ...
+├── build.gradle
+├── settings.gradle               (rootProject.name=SBPlus)
+└── gradle.properties
+```
+
+## 关键逆向结论
+
+- 改区 hook 正确入口是 `CountryUtil.getCountryIsoCode()`
+- UA 是启动时一次性注入，改后需重启浏览器；真正 UA 组装在 Chromium native 层
+- 三星设置页 `H2.A` = androidx `PreferenceFragmentCompat` 混淆名
+- `QuickAccessCustomBackground extends ImageView`，无参 `onFinishInflate` 不存在，三星自定义了
+  `onFinishInflate(View$OnLayoutChangeListener, Runnable)` 作为背景置 VISIBLE 时机
+- 主页视频背景：`SurfaceView` 会被 `QuickAccessMainLayout` 不透明背景色盖住，必须用 `TextureView`
+- 三星 RecyclerView 在高刷屏触控滚动失效，长列表需「塞满一屏」方案

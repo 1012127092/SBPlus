@@ -1,0 +1,37 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.sbplus.browser'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.sbplus.browser"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+dependencies {
+    // Xposed API（compileOnly，运行时由 LSPosed/framework 提供）
+    compileOnly 'de.robv.android.xposed:api:82'
+
+    // androidx.fragment（compileOnly：运行时由目标应用三星浏览器提供，
+    // 编译期仅需能解析 android x.fragment.app.Fragment 基类）
+    compileOnly 'androidx.fragment:fragment:1.6.2'
+}
