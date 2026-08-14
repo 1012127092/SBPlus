@@ -14,9 +14,19 @@ android {
         versionName "1.0"
     }
 
+    signingConfigs {
+        release {
+            storeFile file("../release.keystore")
+            storePassword "sbplus123"
+            keyAlias "sbplus"
+            keyPassword "sbplus123"
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
         }
     }

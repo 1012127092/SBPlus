@@ -19,6 +19,6 @@ captures/
 # 调试产物（历史临时脚本/截图/dump）
 _debug_archive/
 
-# 系统
-.DS_Store
-Thumbs.db
+# 签名密钥（勿上传）
+*.keystore
+*.jks
