@@ -1,0 +1,44 @@
+<div class="sp-page">
+  <div class="sp-page-header">
+    <h2>网页设置页（@resource 渲染）</h2>
+    <p class="sp-sub">该页面由 @resource 引入的 HTML 片段 + GM_getResourceText 读取后渲染</p>
+  </div>
+
+  <div class="sp-tabs">
+    <button class="sp-tab active" data-tab="general">常规</button>
+    <button class="sp-tab" data-tab="advanced">高级</button>
+    <button class="sp-tab" data-tab="about">关于</button>
+  </div>
+
+  <div class="sp-tab-panel" id="tab-general">
+    <div class="sp-row"><label>站点名称</label><input type="text" id="pg-name" placeholder="输入站点名称"></div>
+    <div class="sp-row"><label>刷新间隔（秒）</label><input type="number" id="pg-interval" min="1" max="3600"></div>
+    <div class="sp-row"><label>主题</label>
+      <select id="pg-theme"><option value="light">浅色</option><option value="dark">深色</option><option value="auto">跟随系统</option></select>
+    </div>
+    <div class="sp-row"><label class="sp-inline"><input type="checkbox" id="pg-notify"> 启用桌面通知</label></div>
+    <div class="sp-row"><label class="sp-inline"><input type="checkbox" id="pg-autostart"> 开机自启动脚本</label></div>
+  </div>
+
+  <div class="sp-tab-panel" id="tab-advanced" style="display:none">
+    <div class="sp-row"><label>自定义 CSS</label><textarea id="pg-css" rows="4" placeholder="/* 自定义样式 */"></textarea></div>
+    <div class="sp-row"><label>排除域名（每行一个）</label><textarea id="pg-exclude" rows="3"></textarea></div>
+    <div class="sp-row"><label>透明度 <span id="pg-opacity-val">100</span>%</label><input type="range" id="pg-opacity" min="10" max="100" value="100"></div>
+    <div class="sp-row"><label>强调色</label><input type="color" id="pg-accent" value="#1e88e5"></div>
+  </div>
+
+  <div class="sp-tab-panel" id="tab-about" style="display:none">
+    <table class="sp-table">
+      <tr><td>脚本名称</td><td id="pg-info-name">-</td></tr>
+      <tr><td>脚本版本</td><td id="pg-info-ver">-</td></tr>
+      <tr><td>运行环境</td><td id="pg-info-handler">-</td></tr>
+    </table>
+    <p class="sp-sub" id="pg-info-note">正在读取脚本信息...</p>
+  </div>
+
+  <div class="sp-page-footer">
+    <button class="sp-btn primary" id="pg-save">保存网页设置</button>
+    <button class="sp-btn" id="pg-close">关闭</button>
+    <span class="sp-note" id="pg-note"></span>
+  </div>
+</div>
