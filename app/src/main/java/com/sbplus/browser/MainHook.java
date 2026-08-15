@@ -3141,6 +3141,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] video bg view hook failed: " + t);
         }
+
+        // (3) 主页 UI 改造：移动"添加快捷方式"按钮 + 搜索框透明化。
+        try {
+            applyQuickAccessUiTweaks(cl);
+            XposedBridge.log("[SBPlus] quickaccess ui tweaks applied");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] quickaccess ui tweaks failed: " + t);
+        }
     }
 
     /** 把选中的视频 content URI 通过 MediaStore 插到公共 Video 集合，返回可访问的 content URI（失败返回 null）。 */
@@ -3209,6 +3217,261 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         } finally {
             try { if (in != null) in.close(); } catch (Throwable ignored) {}
             try { if (out != null) out.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 主页 UI 改造：需求1——把"添加快捷方式"按钮移到"主页设置"左边并统一大小；需求2——"搜索或输入网址"横线透明化。 */
+    private void applyQuickAccessUiTweaks(ClassLoader cl) {
+        // ---- 需求2：搜索框（假地址栏）透明化 ----
+        try {
+            Class<?> dummyBar = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.quickaccess.ui.page.QuickAccessDummyUrlBar", cl);
+            XposedHelpers.findAndHookMethod(dummyBar, "onAttachedToWindow",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                final android.view.View bar = (android.view.View) param.thisObject;
+                                // 延后执行两步，防止 viewmodel/observer 重置样式
+                                android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                                h.post(new Runnable() { @Override public void run() {
+                                    applyDummyBarTransparent(bar);
+                                }});
+                                h.postDelayed(new Runnable() { @Override public void run() {
+                                    applyDummyBarTransparent(bar);
+                                }}, 700);
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] dummy url bar tweak err: " + t);
+                            }
+                        }
+                    });
+            XposedBridge.log("[SBPlus] QuickAccessDummyUrlBar.onAttachedToWindow hooked");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] dummy url bar hook failed: " + t);
+        }
+
+        // ---- 需求1：在"主页设置"按钮左边插入等大的"添加快捷方式"按钮，并隐藏网格里的原添加格子 ----
+        try {
+            Class<?> mainLayout = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.quickaccess.ui.page.QuickAccessMainLayout", cl);
+            XposedHelpers.findAndHookMethod(mainLayout, "onFinishInflate",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            final android.view.View root = (android.view.View) param.thisObject;
+                            root.postDelayed(new Runnable() {
+                                @Override public void run() {
+                                    try {
+                                        rearrangeQuickAccessButtons(root);
+                                    } catch (Throwable t) {
+                                        XposedBridge.log("[SBPlus] rearrange err: " + t);
+                                    }
+                                }
+                            }, 400);
+                        }
+                    });
+            XposedBridge.log("[SBPlus] QuickAccessMainLayout.onFinishInflate hooked");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] main layout hook failed: " + t);
+        }
+    }
+
+    /** 在主页根 View 上：把"添加快捷方式"按钮插到"主页设置"按钮左边，隐藏原网格添加格子。 */
+    private void rearrangeQuickAccessButtons(android.view.View root) {
+        int mgmtId = resId("general_management", "id");
+        int addContainerId = resId("add_view_container", "id");
+        // 原“添加”格子的图标（layer-list：圆底 + “+”号，自带 tint）：按深/浅色主题选择
+        int addIconRes = resId("quickaccess_tap_to_add_drawable", "drawable");
+        int addIconResDark = resId("quickaccess_tap_to_add_drawable_dark_mode", "drawable");
+        boolean dark = isDarkTheme();
+        int iconRes = dark ? addIconResDark : addIconRes;
+        if (iconRes == 0) iconRes = dark ? addIconRes : addIconResDark;
+        if (iconRes == 0) iconRes = resId("internet_ic_add", "drawable");
+        if (iconRes == 0) iconRes = resId("internet_ic_qa_add", "drawable");
+
+        android.view.View mgmt = root.findViewById(mgmtId);
+        android.view.View addContainer = root.findViewById(addContainerId);
+
+        // 隐藏网格里的原"添加"格子
+        if (addContainer != null && addContainer.getVisibility() != android.view.View.GONE) {
+            addContainer.setVisibility(android.view.View.GONE);
+            XposedBridge.log("[SBPlus] add_view_container hidden");
+        }
+
+        if (mgmt == null) {
+            XposedBridge.log("[SBPlus] general_management not found (mgmtId=" + mgmtId + ")");
+            return;
+        }
+        android.view.ViewParent parent = mgmt.getParent();
+        if (!(parent instanceof android.view.ViewGroup)) {
+            XposedBridge.log("[SBPlus] mgmt parent not ViewGroup");
+            return;
+        }
+        android.view.ViewGroup mgmtParent = (android.view.ViewGroup) parent;
+        // mgmt 的父容器（通常 wrap_content 的 RelativeLayout）在 header 的 LinearLayout 里；
+        // 若 mgmt 父是 RelativeLayout，则新按钮要插到它的父（LinearLayout）中、mgmt 父之前，
+        // 否则 LEFT_OF 规则会把按钮压成 0 宽。
+        android.view.ViewGroup insertTarget;
+        int insertIndex;
+        if (mgmtParent instanceof android.widget.RelativeLayout
+                && mgmtParent.getParent() instanceof android.widget.LinearLayout) {
+            insertTarget = (android.view.ViewGroup) mgmtParent.getParent();
+            insertIndex = insertTarget.indexOfChild(mgmtParent);
+        } else {
+            insertTarget = mgmtParent;
+            insertIndex = mgmtParent.indexOfChild(mgmt);
+        }
+
+        // 幂等
+        if (mgmt.getTag() != null && "sbplus_add_btn_inserted".equals(mgmt.getTag())) return;
+        mgmt.setTag("sbplus_add_btn_inserted");
+
+        int size = mgmt.getLayoutParams() != null ? mgmt.getLayoutParams().width : -1;
+        if (size <= 0) size = mgmt.getWidth();
+        if (size <= 0) size = (int) (24 * sAppContext.getResources().getDisplayMetrics().density);
+
+        // 新按钮：放在与 mgmt 同级的容器里（mgmt 通常在 RelativeLayout 内，插到它左边）。
+        // 用 mgmt 的 context 创建（保留 Activity 主题，避免图标/ripple 无 tint），并复制其图标与尺寸。
+        android.content.Context mgmtCtx = mgmt.getContext();
+        android.widget.ImageButton addBtn = new android.widget.ImageButton(mgmtCtx);
+        addBtn.setContentDescription("添加快捷方式");
+        addBtn.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        addBtn.setBackground(mgmt.getBackground());
+        // 尺寸与主页设置按钮一致
+        addBtn.setPadding(mgmt.getPaddingLeft(), mgmt.getPaddingTop(), mgmt.getPaddingRight(), mgmt.getPaddingBottom());
+        if (iconRes != 0) {
+            addBtn.setImageResource(iconRes);
+        }
+        addBtn.setFocusable(true);
+        addBtn.setClickable(true);
+        addBtn.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) {
+                try { triggerAddShortcut(root); }
+                catch (Throwable t) { XposedBridge.log("[SBPlus] add btn click err: " + t); }
+            }
+        });
+
+        // 若插到 LinearLayout：给按钮设置与 mgmt 相同的尺寸，并垂直居中，右边距与“主页设置↔头像”间距一致
+        if (insertTarget instanceof android.widget.LinearLayout) {
+            android.widget.LinearLayout ll = (android.widget.LinearLayout) insertTarget;
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(size, size);
+            lp.gravity = android.view.Gravity.CENTER_VERTICAL;
+            // 主页设置与头像之间是 account 的 marginStart(10dip)，新按钮与主页设置也用同样的右边距
+            lp.setMarginEnd((int) (10 * sAppContext.getResources().getDisplayMetrics().density));
+            addBtn.setLayoutParams(lp);
+            ll.addView(addBtn, insertIndex);
+        } else if (insertTarget instanceof android.widget.RelativeLayout) {
+            android.widget.RelativeLayout rl = (android.widget.RelativeLayout) insertTarget;
+            android.widget.RelativeLayout.LayoutParams lp = new android.widget.RelativeLayout.LayoutParams(size, size);
+            if (insertIndex == rl.indexOfChild(mgmt)) {
+                // 直接在 mgmt 之前（左侧）
+                lp.addRule(android.widget.RelativeLayout.LEFT_OF, mgmt.getId());
+                lp.addRule(android.widget.RelativeLayout.ALIGN_TOP, mgmt.getId());
+                lp.addRule(android.widget.RelativeLayout.ALIGN_BOTTOM, mgmt.getId());
+            }
+            rl.addView(addBtn, lp);
+        } else {
+            addBtn.setLayoutParams(new android.view.ViewGroup.LayoutParams(size, size));
+            insertTarget.addView(addBtn, insertIndex);
+        }
+        XposedBridge.log("[SBPlus] add shortcut button inserted before general_management");
+    }
+
+    private int resId(String name, String type) {
+        try {
+            return sAppContext.getResources().getIdentifier(name, type, sAppContext.getPackageName());
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** 将假地址栏完全透明化（去掉背景横线/框、文字、放大镜），只保留点击热区（点击跳地址栏）。 */
+    private void applyDummyBarTransparent(android.view.View bar) {
+        if (bar == null) return;
+        try {
+            // 去掉背景（那条横线/框）与 elevation 阴影
+            bar.setBackground(null);
+            try { bar.setElevation(0f); } catch (Throwable ignored) {}
+            // 清空提示文字、隐藏放大镜
+            if (bar instanceof android.view.ViewGroup) {
+                android.view.ViewGroup g = (android.view.ViewGroup) bar;
+                for (int i = 0; i < g.getChildCount(); i++) {
+                    clearDummyChild(g.getChildAt(i));
+                }
+            }
+            XposedBridge.log("[SBPlus] dummy bar fully transparent (click zone kept)");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] applyDummyBarTransparent err: " + t);
+        }
+    }
+
+    private void clearDummyChild(android.view.View v) {
+        if (v == null) return;
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) clearDummyChild(g.getChildAt(i));
+            return;
+        }
+        if (v instanceof android.widget.TextView) {
+            ((android.widget.TextView) v).setText("");
+        } else if (v instanceof android.widget.ImageView) {
+            v.setVisibility(android.view.View.INVISIBLE);
+        }
+    }
+
+    /** 触发"添加快捷方式"：反射调用 QuickAccessIconRecyclerAdapter.showAddShortcutDialog()（真正入口）。 */
+    private void triggerAddShortcut(android.view.View root) {
+        try {
+            Object adapter = findIconRecyclerAdapter(root);
+            if (adapter != null) {
+                java.lang.reflect.Method m = adapter.getClass().getDeclaredMethod("showAddShortcutDialog");
+                m.setAccessible(true);
+                m.invoke(adapter);
+                XposedBridge.log("[SBPlus] showAddShortcutDialog invoked via reflection");
+                return;
+            }
+            XposedBridge.log("[SBPlus] icon recycler adapter not found");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] triggerAddShortcut err: " + t);
+        }
+    }
+
+    /** 在 root 视图树中查找 QuickAccessIconRecyclerAdapter（主页图标网格的适配器）。 */
+    private Object findIconRecyclerAdapter(android.view.View root) {
+        try {
+            if (root instanceof android.view.ViewGroup) {
+                android.view.ViewGroup g = (android.view.ViewGroup) root;
+                for (int i = 0; i < g.getChildCount(); i++) {
+                    android.view.View c = g.getChildAt(i);
+                    if (c instanceof android.view.ViewGroup) {
+                        String cn = c.getClass().getName();
+                        if (cn.contains("RecyclerView")) {
+                            Object a = null;
+                            try {
+                                java.lang.reflect.Method gm = c.getClass().getMethod("getAdapter");
+                                a = gm.invoke(c);
+                            } catch (Throwable ignored) {}
+                            if (a != null && a.getClass().getName().contains("QuickAccessIconRecyclerAdapter")) {
+                                return a;
+                            }
+                        }
+                        Object r = findIconRecyclerAdapter(c);
+                        if (r != null) return r;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /** 判断当前是否深色主题。 */
+    private boolean isDarkTheme() {
+        try {
+            int mode = sAppContext.getResources().getConfiguration().uiMode
+                    & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+            return mode == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        } catch (Throwable t) {
+            return false;
         }
     }
 
