@@ -61,12 +61,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_REGION_CODE = "region_code";
     private static final String KEY_ENABLE_UA = "enable_ua_override";
     private static final String KEY_UA = "ua_string";
+    private static final String KEY_ENABLE_RANDOM_UA = "enable_random_ua";
     private static final String ARG_PAGE = "sbplus_page";
     private static final String PAGE_DOWNLOADER_PICKER = "downloader_picker";
     private static final String PAGE_REGION_PICKER = "region_picker";
     private static final String PAGE_UA_PICKER = "ua_picker";
     private static final String PAGE_CLEAN_SETTINGS_PICKER = "clean_settings_picker";
     private static final String PAGE_VIDEO_BG_PICKER = "video_bg_picker";
+    private static final String PAGE_HOME_BEAUTIFY = "home_beautify";
     private static final String PAGE_USERSCRIPT_PICKER = "userscript_picker";
     private static final String PAGE_USERSCRIPT_DETAIL = "userscript_detail";
     private static final String PAGE_USERSCRIPT_LIST = "userscript_list";
@@ -76,6 +78,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_ENABLE_BLOCK_UPDATE = "enable_block_update";
     private static final String KEY_ENABLE_VIDEO_BG = "enable_video_bg";
     private static final String KEY_VIDEO_BG_PATH = "video_bg_path";
+    private static final String KEY_ENABLE_HOME_CLEAR_TEXT = "enable_home_clear_text";
+    private static final String KEY_ENABLE_HOME_MOVE_BTN = "enable_home_move_btn";
     private static final String KEY_ENABLE_USERSCRIPT = "enable_userscript";
     private static final String KEY_DISABLED_USERSCRIPTS = "disabled_userscripts";
     private static final int REQUEST_USERSCRIPT_PICK = 61002;
@@ -98,6 +102,72 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             {"桌面 Chrome（Windows）", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
             {"Android Chrome（手机）", "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"},
             {"iPhone Safari", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"},
+    };
+
+    // 随机浏览器标识：每次启动随机刷新的 UA 池（覆盖手机/电脑 × 多系统 × 多浏览器）。
+    // Android 9~17、iOS 15.0~18.2、Windows/macOS/Linux；浏览器含 Chrome/Firefox/Edge/Safari/Opera/Vivaldi/Brave/UC 等。
+    private static final String[] RANDOM_UAS = new String[]{
+            // —— Android 手机 ——
+            "Mozilla/5.0 (Linux; Android 9; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 9; SM-A505F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 10; Pixel 3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 11; Pixel 4a) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 11; SM-A525F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 12; SM-A525F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 15; SM-S931B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 16; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 17; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+            // Android 手机 其它浏览器
+            "Mozilla/5.0 (Android 13; Mobile; rv:122.0) Gecko/122.0 Firefox/122.0",
+            "Mozilla/5.0 (Android 11; Mobile; rv:120.0) Gecko/120.0 Firefox/120.0",
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36 EdgA/122.0.2365.80",
+            "Mozilla/5.0 (Linux; Android 12; SM-A525F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Mobile Safari/537.36 OPR/50.0.2254.149155",
+            "Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36 Vivaldi/6.6.3271.48",
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36 Brave/1.63.169",
+            "Mozilla/5.0 (Linux; U; Android 12; zh-CN; SM-A525F) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/100.0.4896.58 UCBrowser/15.0.0.1234 Mobile Safari/537.36",
+            // —— iPhone / iPad ——
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0.6099.119 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/130.0 Mobile/15E148 Safari/605.1.15",
+            "Mozilla/5.0 (iPad; CPU OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+            // —— 桌面 Windows ——
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.2277.98",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.2365.80",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/85.0.4341.75",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Vivaldi/6.6.3271.48",
+            "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            // —— 桌面 macOS ——
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+            // —— 桌面 Linux ——
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 OPR/86.0.4363.32",
     };
 
     // 主设置页（settings_fragment.xml）的所有可屏蔽项目：preference key -> 中文标题。
@@ -169,6 +239,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     // Map of picker row key -> injected RadioButton (for manual mutual exclusion).
     private static final java.util.Map<String, android.widget.RadioButton> sRadioButtons =
             new java.util.concurrent.ConcurrentHashMap<>();
+
+    // 油猴脚本注入去重：realTab -> 已注入的 URL（避免 onLoadFinished 重复触发重复注入）。
+    private static final java.util.WeakHashMap<Object, String> sInjectedUrls =
+            new java.util.WeakHashMap<>();
 
     // The injected custom-package EditText (tracked so the custom row click can read it).
     private static volatile android.widget.EditText sCustomEditText;
@@ -323,7 +397,20 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 if (!sInPickerPage) return;
                                 Object act = param.thisObject;
                                 String cls = "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom";
-                                if (PAGE_USERSCRIPT_DETAIL.equals(sCurrentPickerPage)) {
+                                if (PAGE_VIDEO_BG_PICKER.equals(sCurrentPickerPage)) {
+                                    android.os.Bundle la = new android.os.Bundle();
+                                    la.putString(ARG_PAGE, PAGE_HOME_BEAUTIFY);
+                                    sCurrentPickerPage = PAGE_HOME_BEAUTIFY;
+                                    navigateToFragment(act, cls, la);
+                                    param.setResult(null);
+                                    XposedBridge.log("[SBPlus] back: video bg picker -> home beautify");
+                                } else if (PAGE_HOME_BEAUTIFY.equals(sCurrentPickerPage)) {
+                                    sCurrentPickerPage = null;
+                                    sInPickerPage = false;
+                                    navigateToFragment(act, cls, null);
+                                    param.setResult(null);
+                                    XposedBridge.log("[SBPlus] back: home beautify -> main menu");
+                                } else if (PAGE_USERSCRIPT_DETAIL.equals(sCurrentPickerPage)) {
                                     android.os.Bundle la = new android.os.Bundle();
                                     la.putString(ARG_PAGE, PAGE_USERSCRIPT_LIST);
                                     sCurrentPickerPage = PAGE_USERSCRIPT_LIST;
@@ -378,7 +465,20 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 Object act = XposedHelpers.callMethod(frag, "getActivity");
                                 if (act == null) return;
                                 String cls = "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom";
-                                if (PAGE_USERSCRIPT_DETAIL.equals(sCurrentPickerPage)) {
+                                if (PAGE_VIDEO_BG_PICKER.equals(sCurrentPickerPage)) {
+                                    android.os.Bundle la = new android.os.Bundle();
+                                    la.putString(ARG_PAGE, PAGE_HOME_BEAUTIFY);
+                                    sCurrentPickerPage = PAGE_HOME_BEAUTIFY;
+                                    navigateToFragment(act, cls, la);
+                                    param.setResult(Boolean.TRUE);
+                                    XposedBridge.log("[SBPlus] up: video bg picker -> home beautify");
+                                } else if (PAGE_HOME_BEAUTIFY.equals(sCurrentPickerPage)) {
+                                    sCurrentPickerPage = null;
+                                    sInPickerPage = false;
+                                    navigateToFragment(act, cls, null);
+                                    param.setResult(Boolean.TRUE);
+                                    XposedBridge.log("[SBPlus] up: home beautify -> main menu");
+                                } else if (PAGE_USERSCRIPT_DETAIL.equals(sCurrentPickerPage)) {
                                     android.os.Bundle la = new android.os.Bundle();
                                     la.putString(ARG_PAGE, PAGE_USERSCRIPT_LIST);
                                     sCurrentPickerPage = PAGE_USERSCRIPT_LIST;
@@ -616,14 +716,16 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             if (key.startsWith("sbplus_region_")) {
                 checked = regionCode().equals(key.substring("sbplus_region_".length()));
             } else if (key.startsWith("sbplus_ua_")) {
-                if ("sbplus_ua_custom".equals(key)) {
+                if ("sbplus_ua_random".equals(key)) {
+                    checked = isRandomUaEnabled();
+                } else if ("sbplus_ua_custom".equals(key)) {
                     String cur = userAgent();
-                    checked = true;
+                    checked = !isRandomUaEnabled() && true;
                     for (String[] e : PRESET_UAS) {
                         if (e[1].equals(cur)) { checked = false; break; }
                     }
                 } else {
-                    checked = userAgent().equals(key.substring("sbplus_ua_".length()));
+                    checked = !isRandomUaEnabled() && userAgent().equals(key.substring("sbplus_ua_".length()));
                 }
             } else if ("sbplus_dl_custom".equals(key)) {
                 // Custom row is checked when the current package is NOT one of the presets.
@@ -1110,6 +1212,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             injectCleanSettingsPicker(ctx, cl, screen, frag);
         } else if (PAGE_VIDEO_BG_PICKER.equals(page)) {
             injectVideoBgPicker(ctx, cl, screen);
+        } else if (PAGE_HOME_BEAUTIFY.equals(page)) {
+            injectHomeBeautify(ctx, cl, screen);
         } else if (PAGE_USERSCRIPT_PICKER.equals(page)) {
             injectUserscriptPicker(ctx, cl, screen);
         } else if (PAGE_USERSCRIPT_DETAIL.equals(page)) {
@@ -1135,9 +1239,45 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             boolean addedGrid = (Boolean) XposedHelpers.callMethod(screen, "addPreference", gridPref);
             XposedBridge.log("[SBPlus] grid menu item injected: " + addedGrid);
 
-            Object videoBgPref = buildVideoBgSwitch(ctx, cl);
-            boolean addedVideoBg = (Boolean) XposedHelpers.callMethod(screen, "addPreference", videoBgPref);
-            XposedBridge.log("[SBPlus] video bg item injected: " + addedVideoBg);
+            // —— 主页美化入口 ——
+            try {
+                Class<?> homePrefCls = XposedHelpers.findClass(
+                        "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+                Object homePref = XposedHelpers.newInstance(homePrefCls, new Class[]{Context.class}, ctx);
+                XposedHelpers.callMethod(homePref, "setTitle", "主页美化");
+                XposedHelpers.callMethod(homePref, "setKey", "sbplus_home_beautify");
+                XposedHelpers.callMethod(homePref, "setSummary", "视频背景 / 搜索框文字 / 添加快捷方式按钮");
+                try {
+                    Class<?> listenerType = listenerParamType(homePref.getClass(), "setOnPreferenceClickListener");
+                    Object onPreferenceClick = java.lang.reflect.Proxy.newProxyInstance(cl,
+                            new Class[]{listenerType},
+                            new java.lang.reflect.InvocationHandler() {
+                                @Override
+                                public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                                    try {
+                                        if (m.getName().equals("onPreferenceClick")) {
+                                            Object clicked = args[0];
+                                            Object actObj = XposedHelpers.callMethod(clicked, "getContext");
+                                            if (actObj instanceof android.app.Activity) {
+                                                navigateToHomeBeautify((android.app.Activity) actObj);
+                                            }
+                                            return Boolean.TRUE;
+                                        }
+                                    } catch (Throwable t) {
+                                        XposedBridge.log("[SBPlus] home beautify navigate error: " + t);
+                                    }
+                                    return Boolean.FALSE;
+                                }
+                            });
+                    XposedHelpers.callMethod(homePref, "setOnPreferenceClickListener", onPreferenceClick);
+                } catch (Throwable t) {
+                    XposedBridge.log("[SBPlus] home beautify click bind failed: " + t);
+                }
+                XposedHelpers.callMethod(screen, "addPreference", homePref);
+                XposedBridge.log("[SBPlus] home beautify entry injected");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] home beautify entry error: " + t);
+            }
 
             Object uaPref = buildUaSwitch(ctx, cl);
             boolean addedUa = (Boolean) XposedHelpers.callMethod(screen, "addPreference", uaPref);
@@ -1749,6 +1889,36 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    /** 随机浏览器标识：每次启动随机刷新 UA。 */
+    private boolean isRandomUaEnabled() {
+        try {
+            if (sAppContext != null) {
+                return processPrefs(sAppContext).getBoolean(KEY_ENABLE_RANDOM_UA, false);
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private void saveRandomUaEnabled(boolean enabled) {
+        try {
+            if (sAppContext != null) {
+                processPrefs(sAppContext).edit().putBoolean(KEY_ENABLE_RANDOM_UA, enabled).commit();
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] save random UA enabled error: " + t);
+        }
+    }
+
+    /** 随机挑选一个 UA（每次启动调用一次，模拟“每次启动随机刷新”）。 */
+    private String randomUa() {
+        try {
+            int idx = new java.util.Random().nextInt(RANDOM_UAS.length);
+            return RANDOM_UAS[idx];
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private boolean isPresetUa(String ua) {
         for (String[] e : PRESET_UAS) {
             if (e[1].equals(ua)) return true;
@@ -2017,6 +2187,61 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    /** 主页美化：去除主页搜索框内文字。 */
+    private boolean isHomeClearTextEnabled() {
+        try {
+            if (sAppContext != null) {
+                return processPrefs(sAppContext).getBoolean(KEY_ENABLE_HOME_CLEAR_TEXT, false);
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private void saveHomeClearTextEnabled(boolean enabled) {
+        try {
+            if (sAppContext != null) {
+                processPrefs(sAppContext).edit().putBoolean(KEY_ENABLE_HOME_CLEAR_TEXT, enabled).commit();
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] save home clear text error: " + t);
+        }
+    }
+
+    /** 主页美化：移动“添加快捷方式”按钮到主页设置旁。 */
+    private boolean isHomeMoveBtnEnabled() {
+        try {
+            if (sAppContext != null) {
+                return processPrefs(sAppContext).getBoolean(KEY_ENABLE_HOME_MOVE_BTN, false);
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private void saveHomeMoveBtnEnabled(boolean enabled) {
+        try {
+            if (sAppContext != null) {
+                processPrefs(sAppContext).edit().putBoolean(KEY_ENABLE_HOME_MOVE_BTN, enabled).commit();
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] save home move btn error: " + t);
+        }
+    }
+
+    private void navigateToHomeBeautify(android.app.Activity act) {
+        try {
+            android.os.Bundle args = new android.os.Bundle();
+            args.putString(ARG_PAGE, PAGE_HOME_BEAUTIFY);
+            navigateToFragment(act,
+                    "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom",
+                    args);
+            sInPickerPage = true;
+            sCurrentPickerPage = PAGE_HOME_BEAUTIFY;
+            XposedBridge.log("[SBPlus] navigated to home beautify");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] navigateToHomeBeautify error: " + t);
+        }
+    }
+
     private void navigateToVideoBgPicker(android.app.Activity act) {
         try {
             android.os.Bundle args = new android.os.Bundle();
@@ -2025,7 +2250,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom",
                     args);
             sInPickerPage = true;
-            XposedBridge.log("[SBPlus] navigated to video bg picker");
+            sCurrentPickerPage = PAGE_VIDEO_BG_PICKER;
+            XposedBridge.log("[SBPlus] navigated to video bg picker (back -> home beautify)");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] navigateToVideoBgPicker error: " + t);
         }
@@ -2101,6 +2327,88 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             XposedBridge.log("[SBPlus] video bg listener bind failed: " + t);
         }
 
+        return pref;
+    }
+
+    /** 主页美化子页：视频背景 / 去搜索框文字 / 移动添加快捷方式按钮。 */
+    private void injectHomeBeautify(Context ctx, ClassLoader cl, Object screen) {
+        Object videoBgPref = buildVideoBgSwitch(ctx, cl);
+        XposedHelpers.callMethod(screen, "addPreference", videoBgPref);
+
+        Object clearTextPref = buildHomeClearTextSwitch(ctx, cl);
+        XposedHelpers.callMethod(screen, "addPreference", clearTextPref);
+
+        Object moveBtnPref = buildHomeMoveBtnSwitch(ctx, cl);
+        XposedHelpers.callMethod(screen, "addPreference", moveBtnPref);
+
+        XposedBridge.log("[SBPlus] home beautify page injected");
+    }
+
+    /** 开关：去除主页搜索框内文字（“搜索或输入网址”）。 */
+    private Object buildHomeClearTextSwitch(Context ctx, ClassLoader cl) {
+        Class<?> switchPrefCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+        Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(pref, "setTitle", "去除搜索框内文字");
+        XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_home_clear_text");
+        XposedHelpers.callMethod(pref, "setSummary", "隐藏主页搜索框里的“搜索或输入网址”提示文字");
+        XposedHelpers.callMethod(pref, "setChecked", isHomeClearTextEnabled());
+        XposedHelpers.callMethod(pref, "setSelectable", true);
+
+        Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+        Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                new Class[]{listenerType},
+                new java.lang.reflect.InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                        try {
+                            if (m.getName().equals("onPreferenceChange")) {
+                                boolean enabled = args[1] instanceof Boolean && (Boolean) args[1];
+                                saveHomeClearTextEnabled(enabled);
+                                XposedBridge.log("[SBPlus] home clear text toggled: " + enabled);
+                                return Boolean.TRUE;
+                            }
+                        } catch (Throwable t) {
+                            XposedBridge.log("[SBPlus] home clear text listener error: " + t);
+                        }
+                        return Boolean.FALSE;
+                    }
+                });
+        XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", changeListener);
+        return pref;
+    }
+
+    /** 开关：移动“添加快捷方式”按钮到主页设置旁。 */
+    private Object buildHomeMoveBtnSwitch(Context ctx, ClassLoader cl) {
+        Class<?> switchPrefCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+        Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(pref, "setTitle", "移动添加快捷方式按钮");
+        XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_home_move_btn");
+        XposedHelpers.callMethod(pref, "setSummary", "把“添加快捷方式”按钮移到主页设置左边并统一大小");
+        XposedHelpers.callMethod(pref, "setChecked", isHomeMoveBtnEnabled());
+        XposedHelpers.callMethod(pref, "setSelectable", true);
+
+        Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+        Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                new Class[]{listenerType},
+                new java.lang.reflect.InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                        try {
+                            if (m.getName().equals("onPreferenceChange")) {
+                                boolean enabled = args[1] instanceof Boolean && (Boolean) args[1];
+                                saveHomeMoveBtnEnabled(enabled);
+                                XposedBridge.log("[SBPlus] home move btn toggled: " + enabled);
+                                return Boolean.TRUE;
+                            }
+                        } catch (Throwable t) {
+                            XposedBridge.log("[SBPlus] home move btn listener error: " + t);
+                        }
+                        return Boolean.FALSE;
+                    }
+                });
+        XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", changeListener);
         return pref;
     }
 
@@ -2474,11 +2782,19 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         return pref;
     }
 
-    /** Fill the UA picker sub-page: 3 presets + 1 custom, mirroring injectDownloaderPicker. */
+    /** Fill the UA picker sub-page: 随机开关 + 3 presets + 1 custom, mirroring injectDownloaderPicker. */
     private void injectUaPicker(Context ctx, ClassLoader cl, Object screen) {
         final String current = userAgent();
         Class<?> prefCustomCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+
+        // 随机浏览器标识（单选行，与下方 preset 互斥）
+        Object randomRow = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(randomRow, "setTitle", "随机浏览器标识");
+        XposedHelpers.callMethod(randomRow, "setKey", "sbplus_ua_random");
+        XposedHelpers.callMethod(randomRow, "setSummary", "每次启动随机刷新 UA（覆盖多平台/多系统/多浏览器）");
+        bindUaRandomClick(randomRow, cl, screen);
+        XposedHelpers.callMethod(screen, "addPreference", randomRow);
 
         for (final String[] entry : PRESET_UAS) {
             final String label = entry[0];
@@ -2514,6 +2830,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             try {
                                 if (m.getName().equals("onPreferenceClick")) {
                                     Object clicked = args[0];
+                                    saveRandomUaEnabled(false);
                                     saveUserAgent(ua);
                                     Object ctxObj = XposedHelpers.callMethod(clicked, "getContext");
                                     if (ctxObj instanceof Context) {
@@ -2536,6 +2853,40 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    /** Bind click on the "随机浏览器标识" row: enable random mode + refresh dots. */
+    private void bindUaRandomClick(Object pref, ClassLoader cl, final Object screen) {
+        try {
+            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
+            Object onPreferenceClick = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{listenerType},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceClick")) {
+                                    Object clicked = args[0];
+                                    saveRandomUaEnabled(true);
+                                    Object ctxObj = XposedHelpers.callMethod(clicked, "getContext");
+                                    if (ctxObj instanceof Context) {
+                                        android.widget.Toast.makeText((Context) ctxObj,
+                                                "已启用随机浏览器标识（重启后随机刷新）", android.widget.Toast.LENGTH_SHORT).show();
+                                    }
+                                    refreshRadioDots("sbplus_ua_random");
+                                    XposedBridge.log("[SBPlus] random UA selected");
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] random UA click error: " + t);
+                            }
+                            return Boolean.FALSE;
+                        }
+                    });
+            XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", onPreferenceClick);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] random UA click bind failed: " + t);
+        }
+    }
+
     /** Bind click on the custom UA row: select its dot + focus the inline EditText. */
     private void bindUaCustomClick(Object pref, ClassLoader cl, final Object screen) {
         try {
@@ -2548,6 +2899,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             try {
                                 if (m.getName().equals("onPreferenceClick")) {
                                     Object clicked = args[0];
+                                    saveRandomUaEnabled(false);
                                     sPrevUa = userAgent();
                                     refreshRadioDots("sbplus_ua_custom");
                                     android.widget.EditText edit = sUaCustomEditText;
@@ -2822,7 +3174,12 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     XposedBridge.log("[SBPlus] disable-update-dialog switch injected");
                                 }
                                 if (isUaEnabled()) {
-                                    String ua = userAgent();
+                                    String ua = null;
+                                    if (isRandomUaEnabled()) {
+                                        ua = randomUa();
+                                    } else {
+                                        ua = userAgent();
+                                    }
                                     if (ua != null && !ua.isEmpty()) {
                                         XposedHelpers.callStaticMethod(tc, "appendSwitchWithValue",
                                                 "user-agent", ua);
@@ -3232,6 +3589,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 final android.view.View bar = (android.view.View) param.thisObject;
+                                if (!isHomeClearTextEnabled()) return;
                                 // 延后执行两步，防止 viewmodel/observer 重置样式
                                 android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
                                 h.post(new Runnable() { @Override public void run() {
@@ -3262,6 +3620,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             root.postDelayed(new Runnable() {
                                 @Override public void run() {
                                     try {
+                                        if (!isHomeMoveBtnEnabled()) return;
                                         rearrangeQuickAccessButtons(root);
                                     } catch (Throwable t) {
                                         XposedBridge.log("[SBPlus] rearrange err: " + t);
@@ -5304,8 +5663,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         "  window.onerror=function(m,src,l,c){try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('ERR '+m+' @'+src+':'+l+':'+c);}catch(e){}};" +
         "  window.addEventListener('unhandledrejection',function(e){try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('PROMISE '+(e.reason&&e.reason.message||e.reason));}catch(x){}});" +
         "  var _vcl={};var _vcSeq=0;" +
-        "  GM.setValue=function(k,v){try{var old=GM.getValue(k,null);var sv=String(v);if(store&&store.gmSetValue)store.gmSetValue(k,sv);else localStorage.setItem('gm_'+k,sv);var ls=_vcl[k];if(ls)for(var i=0;i<ls.length;i++){try{ls[i].cb(k,old,sv,false);}catch(e){}}}catch(e){}};" +
-        "  GM.getValue=function(k,d){try{if(store&&store.gmGetValue){var v=store.gmGetValue(k);return (v===null||v==='')?d:v;}var v=localStorage.getItem('gm_'+k);return (v===null)?d:v;}catch(e){return d;}};" +
+        "  GM.setValue=function(k,v){try{var old=GM.getValue(k,null);var sv;try{sv=(typeof v==='object'&&v!==null)?JSON.stringify(v):String(v);}catch(e2){sv=String(v);}if(store&&store.gmSetValue)store.gmSetValue(k,sv);else localStorage.setItem('gm_'+k,sv);var ls=_vcl[k];if(ls)for(var i=0;i<ls.length;i++){try{ls[i].cb(k,old,sv,false);}catch(e){}}}catch(e){}};" +
+        "  GM.getValue=function(k,d){try{var v=(store&&store.gmGetValue)?store.gmGetValue(k):localStorage.getItem('gm_'+k);if(v===null||v==='')return d;if(v==='[object Object]'||v==='undefined'||v==='[object Array]')return d;try{return JSON.parse(v);}catch(e2){return v;}}catch(e){return d;}};" +
         "  GM.deleteValue=function(k){try{if(store&&store.gmDeleteValue)store.gmDeleteValue(k);else localStorage.removeItem('gm_'+k);}catch(e){}};" +
         "  GM.listValues=function(){try{if(store&&store.gmListValues)return store.gmListValues();var a=[];for(var i=0;i<localStorage.length;i++){var kk=localStorage.key(i);if(kk&&kk.indexOf('gm_')===0)a.push(kk.substring(3));}return a;}catch(e){return[];}};" +
         "  GM.addStyle=function(css){try{var st=document.createElement('style');st.type='text/css';st.textContent=css;document.head.appendChild(st);}catch(e){}};" +
@@ -5655,11 +6014,6 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 tvName.setTextColor(FG);
                 tvName.setSingleLine(true);
                 tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                android.widget.LinearLayout.LayoutParams nameLp = new android.widget.LinearLayout.LayoutParams(
-                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
-                nameLp.rightMargin = dp(ctx, 12);
-                tvName.setLayoutParams(nameLp);
 
                 final android.widget.Switch sw = new android.widget.Switch(ctx);
                 sw.setChecked(isUserscriptFileEnabled(meta.fileName));
@@ -5682,8 +6036,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     }
                 });
 
-                row.addView(tvName);
+                // 开关在前，名字在后；开关与名字之间留 12dp 空隙。
                 row.addView(sw);
+                android.widget.LinearLayout.LayoutParams nameLp = new android.widget.LinearLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+                nameLp.leftMargin = dp(ctx, 12);
+                tvName.setLayoutParams(nameLp);
+                row.addView(tvName);
                 root.addView(row, new android.widget.LinearLayout.LayoutParams(
                         android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
                         android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -6013,6 +6373,12 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 anyMatch = true;
                 all.append(loadRequires(m));
                 all.append("\nwindow.__sbplus_current_tag__=").append(jsonQuote(m.name)).append(";\n");
+                // 为每个脚本重绑定带捕获 tag 的 registerMenuCommand（闭包），避免脚本异步
+                // 注册菜单时读到被后续脚本覆盖的全局 current_tag，导致菜单错记到别的脚本名下。
+                all.append("(function(){var __scoped_tag__=").append(jsonQuote(m.name)).append(";");
+                all.append("var __scoped_orig__=window.GM_registerMenuCommand;");
+                all.append("var __scoped_reg__=function(name,fn,acc){try{window.__sbplus_menus__=window.__sbplus_menus__||{};if(!window.__sbplus_menus__[__scoped_tag__])window.__sbplus_menus__[__scoped_tag__]=[];var id=window.__sbplus_menus__[__scoped_tag__].length;window.__sbplus_menus__[__scoped_tag__].push({n:name,f:fn});window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REG:'+name+'@'+__scoped_tag__);return id;}catch(e){return 0;}};");
+                all.append("window.GM_registerMenuCommand=__scoped_reg__;window.GM.registerMenuCommand=__scoped_reg__;window.GM_unregisterMenuCommand=function(){return 0;};window.GM.unregisterMenuCommand=function(){return 0;};").append("})();\n");
                 all.append("\ntry{\n(function(){\n").append(m.code).append("\n})();\n}catch(e){window.__sbplus_last_error__=('script:'+window.__sbplus_current_tag__+':'+e.message+' stack:'+(e.stack||''));}\n");
                 XposedBridge.log("[SBPlus] inject script '" + m.name + "' codeLen=" + (m.code == null ? 0 : m.code.length()));
             }
