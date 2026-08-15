@@ -24,6 +24,8 @@ _*.py
 _*.js
 _*.txt
 _*.html
+_*.java
+_*.log
 
 # 历史脚本样本/临时目录
 _scripts/

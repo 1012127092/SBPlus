@@ -239,6 +239,15 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         hookUserscriptToolbar(lpparam.classLoader);
     }
 
+    private static void copyFile(java.io.File src, java.io.File dst) throws Exception {
+        java.io.InputStream in = new java.io.FileInputStream(src);
+        java.io.OutputStream out = new java.io.FileOutputStream(dst);
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        in.close(); out.close();
+    }
+
     /**
      * (1) Prevent NullPointerException in RadioPreferenceGroup.onAttached when the group was
      * constructed with a null AttributeSet (mEntries/mEntryValues are null, but onAttached
@@ -1145,6 +1154,22 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             Object blockUpdatePref = buildBlockUpdateSwitch(ctx, cl);
             boolean addedBlockUpdate = (Boolean) XposedHelpers.callMethod(screen, "addPreference", blockUpdatePref);
             XposedBridge.log("[SBPlus] block update item injected: " + addedBlockUpdate);
+
+            // —— 书签管理入口 ——
+            final Context bmFinalCtx = ctx;
+            try {
+                Class<?> bmPrefCls = XposedHelpers.findClass(
+                        "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+                Object bmPref = XposedHelpers.newInstance(bmPrefCls, new Class[]{Context.class}, ctx);
+                XposedHelpers.callMethod(bmPref, "setTitle", "书签管理");
+                XposedHelpers.callMethod(bmPref, "setKey", "sbplus_bookmark_manager");
+                XposedHelpers.callMethod(bmPref, "setSummary", "导入 / 导出书签（Chrome/Edge/Firefox 通用）");
+                bindPreferenceClick(bmPref, cl, new Runnable() { public void run() { showBookmarkManagerDialog(bmFinalCtx); } });
+                XposedHelpers.callMethod(screen, "addPreference", bmPref);
+                XposedBridge.log("[SBPlus] bookmark manager item injected");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] bookmark manager inject error: " + t);
+            }
         }
     }
 
@@ -3040,6 +3065,30 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     }
                                     return;
                                 }
+                                if (req == REQUEST_BOOKMARK_PICK) {
+                                    int res = (Integer) param.args[1];
+                                    android.content.Intent data = (android.content.Intent) param.args[2];
+                                    if (res != android.app.Activity.RESULT_OK || data == null
+                                            || data.getData() == null) return;
+                                    android.net.Uri uri = data.getData();
+                                    String content = readUriText((android.content.Context) param.thisObject, uri);
+                                    if (content != null && !content.isEmpty()) {
+                                        final BookmarkNode tree = parseBookmarkHtml(content);
+                                        final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
+                                                : (param.thisObject instanceof android.app.Activity
+                                                        ? (android.app.Activity) param.thisObject : null);
+                                        if (act != null) {
+                                            showBookmarkTreeDialog(act, "选择要导入的书签", tree, false);
+                                        } else {
+                                            android.widget.Toast.makeText((android.content.Context) param.thisObject,
+                                                    "无法获取界面环境", android.widget.Toast.LENGTH_SHORT).show();
+                                        }
+                                    } else {
+                                        android.widget.Toast.makeText((android.content.Context) param.thisObject,
+                                                "读取文件失败", android.widget.Toast.LENGTH_SHORT).show();
+                                    }
+                                    return;
+                                }
                                 if (req != 61001) return;
                                 int res = (Integer) param.args[1];
                                 android.content.Intent data = (android.content.Intent) param.args[2];
@@ -4294,6 +4343,499 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             if (is != null) try { is.close(); } catch (Throwable ignored) {}
         }
     }
+
+    // ==================== 书签管理（导出/导入 HTML 书签） ====================
+
+    private static final int REQUEST_BOOKMARK_PICK = 61003;
+
+    private static String bookmarkDbPath() {
+        return "/data/data/com.sec.android.app.sbrowser/databases/SBrowser.db";
+    }
+
+    private static java.io.File bookmarkExportFile() {
+        java.io.File dl = android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS);
+        java.io.File dir = new java.io.File(dl, "SBPlus");
+        if (!dir.exists()) dir.mkdirs();
+        return new java.io.File(dir, "bookmarks.html");
+    }
+
+    private void launchBookmarkFilePicker() {
+        try {
+            android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
+                    : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+            i.setType("text/html");
+            i.putExtra(android.content.Intent.EXTRA_MIME_TYPES,
+                    new String[]{ "text/html", "text/plain", "application/xhtml+xml" });
+            act.startActivityForResult(i, REQUEST_BOOKMARK_PICK);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] launchBookmarkFilePicker error: " + t);
+        }
+    }
+
+    /** 书签管理对话框：导入 / 导出。 */
+    private void showBookmarkManagerDialog(final Context ctx) {
+        try {
+            final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
+                    : (ctx instanceof android.app.Activity ? (android.app.Activity) ctx : null);
+            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            final String[] items = new String[]{ "导入书签", "导出书签" };
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
+            b.setTitle("书签管理");
+            b.setItems(items, new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface dlg, int which) {
+                    if (which == 0) {
+                        launchBookmarkFilePicker();
+                    } else {
+                        final BookmarkNode tree = buildBookmarkTree(readBookmarkNodes());
+                        showBookmarkTreeDialog(act, "选择要导出的书签", tree, true);
+                    }
+                }
+            });
+            b.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showBookmarkManagerDialog error: " + t);
+        }
+    }
+
+    // ==================== 书签树形勾选对话框 ====================
+
+    /** 弹书签树勾选对话框：勾选要导出/导入的节点。 */
+    private void showBookmarkTreeDialog(final android.app.Activity act, final String title,
+            final BookmarkNode root, final boolean isExport) {
+        try {
+            final android.widget.LinearLayout body = new android.widget.LinearLayout(act);
+            body.setOrientation(android.widget.LinearLayout.VERTICAL);
+            body.setPadding(24, 16, 24, 16);
+
+            // 顶部操作按钮行
+            final android.widget.LinearLayout btnRow = new android.widget.LinearLayout(act);
+            btnRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            btnRow.setPadding(0, 0, 0, 8);
+
+            android.widget.Button allBtn = new android.widget.Button(act);
+            allBtn.setText("全选");
+            android.widget.Button noneBtn = new android.widget.Button(act);
+            noneBtn.setText("全不选");
+            btnRow.addView(allBtn, new android.widget.LinearLayout.LayoutParams(0,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            btnRow.addView(noneBtn, new android.widget.LinearLayout.LayoutParams(0,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            body.addView(btnRow);
+
+            // 树容器（放在 ScrollView 里），高度按屏幕动态计算
+            final android.widget.LinearLayout tree = new android.widget.LinearLayout(act);
+            tree.setOrientation(android.widget.LinearLayout.VERTICAL);
+            android.widget.ScrollView sv = new android.widget.ScrollView(act);
+            sv.addView(tree);
+            int screenH = act.getResources().getDisplayMetrics().heightPixels;
+            int treeH = Math.max(420, (int) (screenH * 0.65f));
+            android.widget.LinearLayout.LayoutParams svlp = new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT, treeH);
+            body.addView(sv, svlp);
+
+            // 递归重绘树
+            final Runnable[] rerender = new Runnable[1];
+            rerender[0] = new Runnable() {
+                @Override public void run() {
+                    tree.removeAllViews();
+                    renderTreeRows(tree, root, 0, act, rerender[0]);
+                }
+            };
+            rerender[0].run();
+
+            // 复选框容器回填：记录每个节点对应的 CheckBox，供全选/全不选使用
+            final java.util.List<BookmarkNode> allNodes = new java.util.ArrayList<BookmarkNode>();
+            root.expanded = true; // 默认展开顶层
+            collectNodes(root, allNodes);
+
+            allBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    setTreeChecked(root, true);
+                    rerender[0].run();
+                }
+            });
+            noneBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    setTreeChecked(root, false);
+                    rerender[0].run();
+                }
+            });
+
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
+            b.setTitle(title);
+            b.setView(body);
+            b.setNegativeButton("取消", null);
+            b.setPositiveButton(isExport ? "导出所选" : "导入所选",
+                    new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface dlg, int which) {
+                    if (isExport) {
+                        doExportSelected(root);
+                    } else {
+                        doImportSelected(root);
+                    }
+                }
+            });
+            b.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showBookmarkTreeDialog error: " + t);
+        }
+    }
+
+    /** 收集所有节点（含根本身不入列）。 */
+    private void collectNodes(BookmarkNode node, java.util.List<BookmarkNode> out) {
+        for (BookmarkNode c : node.children) {
+            out.add(c);
+            collectNodes(c, out);
+        }
+    }
+
+    /** 递归设置整棵树的勾选状态。 */
+    private void setTreeChecked(BookmarkNode node, boolean checked) {
+        for (BookmarkNode c : node.children) {
+            c.checked = checked;
+            setTreeChecked(c, checked);
+        }
+    }
+
+    /** 递归渲染树行。 */
+    private void renderTreeRows(final android.widget.LinearLayout tree, final BookmarkNode node,
+            final int depth, final android.app.Activity act, final Runnable rerender) {
+        for (final BookmarkNode child : node.children) {
+            // 缩进
+            android.widget.LinearLayout row = new android.widget.LinearLayout(act);
+            row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            int indent = depth * 22;
+            row.setPadding(indent, 2, 0, 2);
+
+            if (child.folder == 1) {
+                // 展开/折叠箭头
+                android.widget.TextView arrow = new android.widget.TextView(act);
+                arrow.setText(child.expanded ? "\u25BE " : "\u25B8 ");
+                arrow.setTextSize(16);
+                arrow.setPadding(0, 0, 4, 0);
+                arrow.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override public void onClick(android.view.View v) {
+                        child.expanded = !child.expanded;
+                        rerender.run();
+                    }
+                });
+                row.addView(arrow);
+
+                // 复选框
+                android.widget.CheckBox cb = new android.widget.CheckBox(act);
+                cb.setChecked(child.checked);
+                cb.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean isChecked) {
+                        child.checked = isChecked;
+                        setTreeChecked(child, isChecked);
+                        rerender.run();
+                    }
+                });
+                row.addView(cb);
+
+                // 文件夹名（点名字也展开）
+                android.widget.TextView label = new android.widget.TextView(act);
+                label.setText(child.title == null ? "(文件夹)" : child.title);
+                label.setTextSize(16);
+                label.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override public void onClick(android.view.View v) {
+                        child.expanded = !child.expanded;
+                        rerender.run();
+                    }
+                });
+                row.addView(label);
+                tree.addView(row);
+
+                if (child.expanded) {
+                    renderTreeRows(tree, child, depth + 1, act, rerender);
+                }
+            } else {
+                // 书签：空白占位 + 复选框 + 标题
+                android.widget.TextView spacer = new android.widget.TextView(act);
+                spacer.setText("   ");
+                row.addView(spacer);
+
+                android.widget.CheckBox cb = new android.widget.CheckBox(act);
+                cb.setChecked(child.checked);
+                cb.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean isChecked) {
+                        child.checked = isChecked;
+                    }
+                });
+                row.addView(cb);
+
+                android.widget.TextView label = new android.widget.TextView(act);
+                label.setText(child.title == null ? "(无标题)" : child.title);
+                label.setTextSize(15);
+                row.addView(label);
+                tree.addView(row);
+            }
+        }
+    }
+
+    /** 导出：只把勾选的节点序列化成 HTML。 */
+    private void doExportSelected(BookmarkNode root) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n");
+            sb.append("<!-- This is an automatically generated file. -->\n");
+            sb.append("<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n");
+            sb.append("<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n");
+            sb.append("<DL><p>\n");
+            int cnt = appendCheckedHtml(sb, root, 0);
+            sb.append("</DL><p>\n");
+            java.io.File out = bookmarkExportFile();
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
+            fos.write(sb.toString().getBytes("UTF-8"));
+            fos.close();
+            toastOnMain("已导出 " + cnt + " 个书签：" + out.getAbsolutePath());
+            XposedBridge.log("[SBPlus] export selected: " + cnt + " -> " + out.getAbsolutePath());
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] doExportSelected error: " + t);
+            toastOnMain("导出失败");
+        }
+    }
+
+    /** 递归生成仅勾选节点的 HTML，返回计数。 */
+    private int appendCheckedHtml(StringBuilder sb, BookmarkNode node, int depth) {
+        int count = 0;
+        for (BookmarkNode child : node.children) {
+            if (!child.checked) continue;
+            String pad = new String(new char[depth * 4]).replace('\0', ' ');
+            if (child.folder == 1) {
+                sb.append(pad).append("<DT><H3 ADD_DATE=\"0\" LAST_MODIFIED=\"0\">")
+                        .append(htmlEscape(child.title)).append("</H3>\n");
+                sb.append(pad).append("<DL><p>\n");
+                int sub = appendCheckedHtml(sb, child, depth + 1);
+                sb.append(pad).append("</DL><p>\n");
+                count += sub;
+            } else {
+                String u = child.url == null ? "" : child.url;
+                sb.append(pad).append("<DT><A HREF=\"").append(htmlEscape(u))
+                        .append("\" ADD_DATE=\"0\">").append(htmlEscape(child.title)).append("</A>\n");
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** 导入：只把勾选的节点写入 BOOKMARKS 表。 */
+    private void doImportSelected(BookmarkNode root) {
+        android.database.sqlite.SQLiteDatabase db = null;
+        try {
+            db = android.database.sqlite.SQLiteDatabase.openDatabase(bookmarkDbPath(), null,
+                    android.database.sqlite.SQLiteDatabase.OPEN_READWRITE);
+            db.beginTransaction();
+            int cnt = insertCheckedTree(db, root, 0);
+            db.setTransactionSuccessful();
+            toastOnMain("已导入 " + cnt + " 个书签，请重启浏览器生效");
+            XposedBridge.log("[SBPlus] import selected: " + cnt);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] doImportSelected error: " + t);
+            toastOnMain("导入失败");
+        } finally {
+            if (db != null) {
+                try { if (db.inTransaction()) db.endTransaction(); } catch (Throwable ignored) {}
+                try { db.close(); } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    /** 递归插入仅勾选的节点，返回计数。 */
+    private int insertCheckedTree(android.database.sqlite.SQLiteDatabase db, BookmarkNode node, long parentId) {
+        int count = 0;
+        for (BookmarkNode child : node.children) {
+            if (!child.checked) continue;
+            android.content.ContentValues cv = new android.content.ContentValues();
+            cv.put("FOLDER", child.folder);
+            cv.put("PARENT", parentId);
+            cv.put("TITLE", child.title == null ? "" : child.title);
+            if (child.folder == 0) {
+                cv.put("URL", child.url == null ? "" : child.url);
+                cv.put("SURL", child.url == null ? "" : child.url);
+            }
+            cv.put("DELETED", 0);
+            cv.put("DIRTY", 1);
+            cv.put("CREATED", System.currentTimeMillis() / 1000);
+            cv.put("MODIFIED", System.currentTimeMillis() / 1000);
+            cv.put("EDITABLE", 1);
+            cv.put("bookmark", 1);
+            cv.put("type", 1);
+            long newId = db.insert("BOOKMARKS", null, cv);
+            count++;
+            if (child.folder == 1) {
+                count += insertCheckedTree(db, child, newId);
+            }
+        }
+        return count;
+    }
+
+
+    static class BookmarkNode {
+        long id;
+        long folder;   // 0=书签, 1=文件夹
+        long parent;
+        String title;
+        String url;
+        boolean checked = true;    // 勾选状态
+        boolean expanded = false;  // 文件夹展开状态
+        java.util.List<BookmarkNode> children = new java.util.ArrayList<BookmarkNode>();
+    }
+
+    private java.util.List<BookmarkNode> readBookmarkNodes() {
+        java.util.List<BookmarkNode> list = new java.util.ArrayList<BookmarkNode>();
+        java.io.File tmp = new java.io.File(sAppContext.getCacheDir(), "sb_bm_dump.db");
+        android.database.sqlite.SQLiteDatabase db = null;
+        android.database.Cursor c = null;
+        try {
+            copyFile(new java.io.File(bookmarkDbPath()), tmp);
+            db = android.database.sqlite.SQLiteDatabase.openDatabase(tmp.getAbsolutePath(), null,
+                    android.database.sqlite.SQLiteDatabase.OPEN_READONLY);
+            c = db.rawQuery("SELECT _ID, FOLDER, PARENT, TITLE, URL, DELETED FROM BOOKMARKS", null);
+            while (c != null && c.moveToNext()) {
+                long deleted = c.isNull(5) ? 0 : c.getLong(5);
+                if (deleted != 0) continue;
+                BookmarkNode n = new BookmarkNode();
+                n.id = c.getLong(0);
+                n.folder = c.getLong(1);
+                n.parent = c.getLong(2);
+                n.title = c.getString(3);
+                n.url = c.getString(4);
+                list.add(n);
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] readBookmarkNodes error: " + t);
+        } finally {
+            if (c != null) try { c.close(); } catch (Throwable ignored) {}
+            if (db != null) try { db.close(); } catch (Throwable ignored) {}
+        }
+        return list;
+    }
+
+    private BookmarkNode buildBookmarkTree(java.util.List<BookmarkNode> nodes) {
+        BookmarkNode root = new BookmarkNode();
+        root.id = Long.MIN_VALUE;
+        root.folder = 1;
+        root.title = "Bookmarks";
+        java.util.Map<Long, BookmarkNode> byId = new java.util.HashMap<Long, BookmarkNode>();
+        for (BookmarkNode n : nodes) {
+            byId.put(n.id, n);
+            n.children = new java.util.ArrayList<BookmarkNode>();
+        }
+        for (BookmarkNode n : nodes) {
+            BookmarkNode p = byId.get(n.parent);
+            if (p != null && p != n) {
+                p.children.add(n);
+            } else {
+                root.children.add(n);
+            }
+        }
+        return root;
+    }
+
+    private static String htmlEscape(String s) {
+        if (s == null) return "";
+        String q = String.valueOf((char) 34);
+        String apos = String.valueOf((char) 39);
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace(q, "&quot;").replace(apos, "&#39;");
+    }
+
+    private static String htmlUnescape(String s) {
+        if (s == null) return "";
+        return s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+                .replace("&quot;", String.valueOf((char) 34)).replace("&#39;", "'").replace("&#x27;", "'");
+    }
+
+
+
+    private String extractTagText(String html, int tagStart) {
+        int gt = html.indexOf(">", tagStart);
+        if (gt < 0) return "";
+        int end = html.indexOf("</", gt);
+        if (end < 0) end = html.length();
+        return htmlUnescape(html.substring(gt + 1, end));
+    }
+
+    private String extractHref(String html, int aStart) {
+        int gt = html.indexOf(">", aStart);
+        if (gt < 0) return "";
+        String tag = html.substring(aStart, gt);
+        char q = (char) 34;
+        int hrefIdx = tag.indexOf("HREF=");
+        if (hrefIdx < 0) hrefIdx = tag.indexOf("href=");
+        if (hrefIdx < 0) return "";
+        int quote = tag.indexOf(q, hrefIdx);
+        if (quote < 0) return "";
+        int quote2 = tag.indexOf(q, quote + 1);
+        if (quote2 < 0) return "";
+        return htmlUnescape(tag.substring(quote + 1, quote2));
+    }
+
+    private BookmarkNode parseBookmarkHtml(String html) {
+        BookmarkNode root = new BookmarkNode();
+        root.folder = 1;
+        root.title = "Bookmarks";
+        java.util.Deque<BookmarkNode> stack = new java.util.ArrayDeque<BookmarkNode>();
+        stack.push(root);
+        // 逐段扫描 <DT> 条目，识别 <H3>（文件夹）和 <A>（书签）
+        int pos = 0;
+        int len = html.length();
+        while (pos < len) {
+            int dt = html.indexOf("<DT>", pos);
+            if (dt < 0) break;
+            int afterDt = dt + 4;
+            int nextDt = html.indexOf("<DT>", afterDt);
+            if (nextDt < 0) nextDt = len;
+            int endDl = html.indexOf("</DL>", afterDt);
+            int close = nextDt;
+            if (endDl >= 0 && endDl < close) close = endDl;
+            String seg = html.substring(afterDt, close);
+
+            int h3 = seg.indexOf("<H3");
+            int a = seg.indexOf("<A");
+            if (h3 >= 0 && (a < 0 || h3 < a)) {
+                BookmarkNode folder = new BookmarkNode();
+                folder.folder = 1;
+                folder.title = extractTagText(html, afterDt + h3);
+                if (!stack.isEmpty()) stack.peek().children.add(folder);
+                int dlOpen = seg.indexOf("<DL");
+                int dlClose = seg.indexOf("</DL>");
+                if (dlOpen >= 0 && (dlClose < 0 || dlOpen < dlClose)) {
+                    stack.push(folder);
+                }
+            } else if (a >= 0) {
+                BookmarkNode bm = new BookmarkNode();
+                bm.folder = 0;
+                bm.title = extractTagText(html, afterDt + a);
+                bm.url = extractHref(html, afterDt + a);
+                if (!stack.isEmpty()) stack.peek().children.add(bm);
+            }
+
+            // 处理 </DL> 归约：弹栈
+            // 简单做法：每遇到一个 </DL> 且栈深>1 就弹一次（对应一个文件夹闭合）
+            int dlEnds = 0;
+            int sidx = 0;
+            while (true) {
+                int e = seg.indexOf("</DL>", sidx);
+                if (e < 0) break;
+                dlEnds++;
+                sidx = e + 5;
+            }
+            for (int k = 0; k < dlEnds && stack.size() > 1; k++) stack.pop();
+
+            pos = nextDt;
+        }
+        return root;
+    }
+
+
+
 
     /** 主线程 Toast。 */
     private void toastOnMain(final String msg) {
