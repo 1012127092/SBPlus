@@ -4502,10 +4502,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         "  var store=(function(){try{return window.__sbplus__;}catch(e){return null;}})();" +
         "  window.onerror=function(m,src,l,c){try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('ERR '+m+' @'+src+':'+l+':'+c);}catch(e){}};" +
         "  window.addEventListener('unhandledrejection',function(e){try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('PROMISE '+(e.reason&&e.reason.message||e.reason));}catch(x){}});" +
-        "  GM.setValue=function(k,v){try{if(store&&store.gmSetValue)store.gmSetValue(k,String(v));else localStorage.setItem('gm_'+k,String(v));}catch(e){}};" +
+        "  var _vcl={};var _vcSeq=0;" +
+        "  GM.setValue=function(k,v){try{var old=GM.getValue(k,null);var sv=String(v);if(store&&store.gmSetValue)store.gmSetValue(k,sv);else localStorage.setItem('gm_'+k,sv);var ls=_vcl[k];if(ls)for(var i=0;i<ls.length;i++){try{ls[i].cb(k,old,sv,false);}catch(e){}}}catch(e){}};" +
         "  GM.getValue=function(k,d){try{if(store&&store.gmGetValue){var v=store.gmGetValue(k);return (v===null||v==='')?d:v;}var v=localStorage.getItem('gm_'+k);return (v===null)?d:v;}catch(e){return d;}};" +
         "  GM.deleteValue=function(k){try{if(store&&store.gmDeleteValue)store.gmDeleteValue(k);else localStorage.removeItem('gm_'+k);}catch(e){}};" +
-        "  GM.listValues=function(){try{if(store&&store.gmListValues)return store.gmListValues();return [];}catch(e){return[];}};" +
+        "  GM.listValues=function(){try{if(store&&store.gmListValues)return store.gmListValues();var a=[];for(var i=0;i<localStorage.length;i++){var kk=localStorage.key(i);if(kk&&kk.indexOf('gm_')===0)a.push(kk.substring(3));}return a;}catch(e){return[];}};" +
         "  GM.addStyle=function(css){try{var st=document.createElement('style');st.type='text/css';st.textContent=css;document.head.appendChild(st);}catch(e){}};" +
         "  GM.log=function(){try{pushLog(Array.prototype.join.call(arguments,' '));}catch(e){}};" +
         "  GM.info={scriptHandler:'SBPlus',version:'1.0',script:{name:'',version:''}};" +
@@ -4515,10 +4516,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         "  GM.setValues=function(obj){try{if(obj)for(var k in obj)GM.setValue(k,obj[k]);}catch(e){}};" +
         "  GM.registerMenuCommand=function(name,fn,acc){try{window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REG:'+name+'@'+(window.__sbplus_current_tag__||'NULL'));window.__sbplus_menus__=window.__sbplus_menus__||{};var tag=window.__sbplus_current_tag__||'__default__';if(!window.__sbplus_menus__[tag])window.__sbplus_menus__[tag]=[];var id=window.__sbplus_menus__[tag].length;window.__sbplus_menus__[tag].push({n:name,f:fn});return id;}catch(e){window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REGERR:'+e);return 0;}};" +
         "  GM.unregisterMenuCommand=function(id){return 0;};" +
-        "  GM.addValueChangeListener=function(k,cb){return 0;};" +
-        "  GM.removeValueChangeListener=function(id){};" +
-        "  GM.getResourceText=function(name){try{var r=window.__sbplus_resources__;return (r&&r[name])?r[name]:'';}catch(e){return '';}};" +
-        "  var g={'GM':GM,'GM_setValue':GM.setValue,'GM_getValue':GM.getValue,'GM_deleteValue':GM.deleteValue,'GM_listValues':GM.listValues,'GM_addStyle':GM.addStyle,'GM_log':GM.log,'GM_info':GM.info,'GM_xmlhttpRequest':GM.xmlHttpRequest,'GM_openInTab':GM.openInTab,'GM_setClipboard':GM.setClipboard,'GM_setValues':GM.setValues,'GM_registerMenuCommand':GM.registerMenuCommand,'GM_unregisterMenuCommand':GM.unregisterMenuCommand,'GM_addValueChangeListener':GM.addValueChangeListener,'GM_removeValueChangeListener':GM.removeValueChangeListener,'GM_getResourceText':GM.getResourceText,'unsafeWindow':window};" +
+        "  GM.addValueChangeListener=function(k,cb){try{_vcl[k]=_vcl[k]||[];var id=++_vcSeq;_vcl[k].push({id:id,cb:cb});return id;}catch(e){return 0;}};" +
+        "  GM.removeValueChangeListener=function(id){try{for(var k in _vcl){var ls=_vcl[k];for(var i=ls.length-1;i>=0;i--){if(ls[i].id===id)ls.splice(i,1);}}}catch(e){}};" +
+                "  GM.notification=function(title,text,image,onclick){try{if(typeof Notification!=='undefined'&&Notification.permission==='granted'){var n=new Notification(String(title||''),{body:String(text||''),icon:image||null});if(onclick)n.onclick=onclick;}else if(typeof Notification!=='undefined'&&Notification.permission!=='denied'){try{Notification.requestPermission().then(function(p){if(p==='granted'){var n2=new Notification(String(title||''),{body:String(text||''),icon:image||null});if(onclick)n2.onclick=onclick;}}).catch(function(){});}catch(e2){}}else{alert((title||'')+' || '+(text||''));}}catch(e){try{alert((title||'')+' || '+(text||''));}catch(e2){}}};" +
+"  GM.getResourceText=function(name){try{var r=window.__sbplus_resources__;return (r&&r[name])?r[name]:'';}catch(e){return '';}};" +
+        "  var g={'GM':GM,'GM_setValue':GM.setValue,'GM_getValue':GM.getValue,'GM_deleteValue':GM.deleteValue,'GM_listValues':GM.listValues,'GM_addStyle':GM.addStyle,'GM_log':GM.log,'GM_info':GM.info,'GM_xmlhttpRequest':GM.xmlHttpRequest,'GM_openInTab':GM.openInTab,'GM_setClipboard':GM.setClipboard,'GM_setValues':GM.setValues,'GM_registerMenuCommand':GM.registerMenuCommand,'GM_unregisterMenuCommand':GM.unregisterMenuCommand,'GM_addValueChangeListener':GM.addValueChangeListener,'GM_removeValueChangeListener':GM.removeValueChangeListener,'GM_notification':GM.notification,'GM_getResourceText':GM.getResourceText,'unsafeWindow':window};" +
         "  for(var k in g){try{if(typeof window[k]==='undefined')window[k]=g[k];}catch(e){}};" +
         "  window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('GM_TYPEOF_'+typeof window.GM_registerMenuCommand);window.__sbplus_dbg__.push('GM_TYPEOF_UNDERSCORE_'+typeof window.GM_registerMenuCommand);" +
         "  try{window.GM=window.GM||GM;}catch(e){};" +
@@ -5172,8 +5174,6 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             String k = e.getKey();
             String v = e.getValue();
             if (v == null) v = "";
-            // 转义反斜杠、双引号、换行、回车、制表符
-            v = v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
             sb.append("window.__sbplus_resources__[").append(jsonQuote(k)).append("]=").append(jsonQuote(v)).append(";");
         }
         return sb.toString();
