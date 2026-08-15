@@ -3385,37 +3385,33 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
-    /** 将假地址栏完全透明化（去掉背景横线/框、文字、放大镜），只保留点击热区（点击跳地址栏）。 */
+    /** 保留搜索框背景与放大镜，只清空提示文字、去掉 elevation 阴影（保留框/图标/点击热区）。 */
     private void applyDummyBarTransparent(android.view.View bar) {
         if (bar == null) return;
         try {
-            // 去掉背景（那条横线/框）与 elevation 阴影
-            bar.setBackground(null);
-            try { bar.setElevation(0f); } catch (Throwable ignored) {}
-            // 清空提示文字、隐藏放大镜
+            // 只清空提示文字（“搜索或输入网址”），完全保留搜索框的默认外观：
+            // 背景框（mCardBlurView.foreground）、放大镜、外层柔和阴影（ShadowDrawHelper 8dp elevation）
             if (bar instanceof android.view.ViewGroup) {
                 android.view.ViewGroup g = (android.view.ViewGroup) bar;
                 for (int i = 0; i < g.getChildCount(); i++) {
-                    clearDummyChild(g.getChildAt(i));
+                    clearDummyTextOnly(g.getChildAt(i));
                 }
             }
-            XposedBridge.log("[SBPlus] dummy bar fully transparent (click zone kept)");
+            XposedBridge.log("[SBPlus] dummy bar: only text cleared, everything else default");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] applyDummyBarTransparent err: " + t);
         }
     }
 
-    private void clearDummyChild(android.view.View v) {
+    private void clearDummyTextOnly(android.view.View v) {
         if (v == null) return;
         if (v instanceof android.view.ViewGroup) {
             android.view.ViewGroup g = (android.view.ViewGroup) v;
-            for (int i = 0; i < g.getChildCount(); i++) clearDummyChild(g.getChildAt(i));
+            for (int i = 0; i < g.getChildCount(); i++) clearDummyTextOnly(g.getChildAt(i));
             return;
         }
         if (v instanceof android.widget.TextView) {
             ((android.widget.TextView) v).setText("");
-        } else if (v instanceof android.widget.ImageView) {
-            v.setVisibility(android.view.View.INVISIBLE);
         }
     }
 
