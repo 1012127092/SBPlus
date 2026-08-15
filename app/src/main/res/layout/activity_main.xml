@@ -27,12 +27,26 @@
             android:textColor="#666666" />
 
         <TextView
+            android:id="@+id/tv_version"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:padding="6dp"
+            android:text="版本 1.0"
+            android:textSize="13sp"
+            android:textColor="#1565C0"
+            android:background="?android:attr/selectableItemBackground" />
+
+        <TextView
+            android:id="@+id/tv_project"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="@string/version_label"
-            android:textSize="12sp"
-            android:textColor="#999999" />
+            android:padding="6dp"
+            android:text="项目地址（GitHub）"
+            android:textSize="13sp"
+            android:textColor="#1565C0"
+            android:background="?android:attr/selectableItemBackground" />
 
         <Button
             android:id="@+id/btn_open_settings"

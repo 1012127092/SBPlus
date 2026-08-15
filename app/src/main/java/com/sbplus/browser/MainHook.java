@@ -1310,6 +1310,172 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             } catch (Throwable t) {
                 XposedBridge.log("[SBPlus] bookmark manager inject error: " + t);
             }
+
+            // —— 版本号（点击检测更新）——
+            final Context verFinalCtx = ctx;
+            try {
+                Class<?> verPrefCls = XposedHelpers.findClass(
+                        "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+                Object verPref = XposedHelpers.newInstance(verPrefCls, new Class[]{Context.class}, ctx);
+                XposedHelpers.callMethod(verPref, "setTitle", "版本号");
+                XposedHelpers.callMethod(verPref, "setKey", "sbplus_version");
+                XposedHelpers.callMethod(verPref, "setSummary", "当前 " + readModuleVersion() + "（点击检测更新）");
+                bindPreferenceClick(verPref, cl, new Runnable() { public void run() { checkUpdateInteractive(verFinalCtx); } });
+                XposedHelpers.callMethod(screen, "addPreference", verPref);
+                XposedBridge.log("[SBPlus] version item injected");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] version item inject error: " + t);
+            }
+
+            // —— 项目地址 ——
+            final Context projFinalCtx = ctx;
+            try {
+                Class<?> projPrefCls = XposedHelpers.findClass(
+                        "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+                Object projPref = XposedHelpers.newInstance(projPrefCls, new Class[]{Context.class}, ctx);
+                XposedHelpers.callMethod(projPref, "setTitle", "项目地址");
+                XposedHelpers.callMethod(projPref, "setKey", "sbplus_project_url");
+                XposedHelpers.callMethod(projPref, "setSummary", "github.com/1012127092/SBPlus");
+                bindPreferenceClick(projPref, cl, new Runnable() { public void run() { openProjectPage(projFinalCtx); } });
+                XposedHelpers.callMethod(screen, "addPreference", projPref);
+                XposedBridge.log("[SBPlus] project url item injected");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] project url item inject error: " + t);
+            }
+        }
+    }
+
+    /** 从模块 prefs 读版本号（MainActivity 写入），读不到则 fallback。 */
+    private String readModuleVersion() {
+        try {
+            XSharedPreferences xp = new XSharedPreferences(MODULE_PACKAGE, PREFS_NAME);
+            xp.makeWorldReadable();
+            String v = xp.getString("version_name", null);
+            if (v != null && !v.isEmpty()) return v;
+        } catch (Throwable ignored) {}
+        return "1.0";
+    }
+
+    /** 用浏览器打开项目主页。 */
+    private void openProjectPage(Context ctx) {
+        try {
+            android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse("https://github.com/1012127092/SBPlus"));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] openProjectPage error: " + t);
+        }
+    }
+
+    /** 手动检测更新：后台查 GitHub 最新 release，有更新弹确认框。 */
+    private void checkUpdateInteractive(final Context ctx) {
+        final String local = readModuleVersion();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String tag = null, body = null, apkUrl = null, error = null;
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection)
+                            new java.net.URL("https://api.github.com/repos/1012127092/SBPlus/releases/latest").openConnection();
+                    c.setRequestMethod("GET");
+                    c.setConnectTimeout(10000);
+                    c.setReadTimeout(10000);
+                    c.setRequestProperty("Accept", "application/vnd.github+json");
+                    c.setRequestProperty("User-Agent", "SBPlus");
+                    int code = c.getResponseCode();
+                    if (code == 200) {
+                        java.io.BufferedReader r = new java.io.BufferedReader(
+                                new java.io.InputStreamReader(c.getInputStream(), "UTF-8"));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = r.readLine()) != null) sb.append(line).append('\n');
+                        r.close();
+                        org.json.JSONObject o = new org.json.JSONObject(sb.toString());
+                        tag = o.optString("tag_name", "");
+                        body = o.optString("body", "");
+                        org.json.JSONArray assets = o.optJSONArray("assets");
+                        if (assets != null) {
+                            for (int i = 0; i < assets.length(); i++) {
+                                String u = assets.getJSONObject(i).optString("browser_download_url", null);
+                                if (u != null && u.endsWith(".apk")) { apkUrl = u; break; }
+                            }
+                        }
+                    } else {
+                        error = "HTTP " + code;
+                    }
+                    c.disconnect();
+                } catch (Throwable e) {
+                    error = e.getMessage();
+                }
+                final String fTag = tag, fBody = body, fApk = apkUrl, fErr = error;
+                final String fLocal = local;
+                android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                main.post(new Runnable() { @Override public void run() {
+                    if (fErr != null) {
+                        android.widget.Toast.makeText(ctx, "检测失败：" + fErr, android.widget.Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    boolean newer = versionNewer(fTag, fLocal);
+                    if (newer) {
+                        showUpdateDialog(ctx, fTag, fBody, fApk);
+                    } else {
+                        android.widget.Toast.makeText(ctx, "已是最新版本（" + fTag + "）", android.widget.Toast.LENGTH_SHORT).show();
+                    }
+                }});
+            }
+        }).start();
+    }
+
+    /** 弹更新确认框，确认后浏览器打开下载地址。 */
+    private void showUpdateDialog(final Context ctx, String tag, String body, final String apkUrl) {
+        try {
+            String note = body;
+            if (note == null || note.trim().isEmpty()) note = "（无更新说明）";
+            if (note.length() > 500) note = note.substring(0, 500) + "…";
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
+            b.setTitle("发现新版本：" + tag);
+            b.setMessage("当前版本：" + readModuleVersion() + "\n\n" + note);
+            b.setPositiveButton("下载更新", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface d, int w) {
+                    String url = (apkUrl != null && !apkUrl.isEmpty())
+                            ? apkUrl : "https://github.com/1012127092/SBPlus";
+                    try {
+                        android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(url));
+                        i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        ctx.startActivity(i);
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] open update download error: " + t);
+                    }
+                }
+            });
+            b.setNegativeButton("取消", null);
+            b.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showUpdateDialog error: " + t);
+        }
+    }
+
+    /** 比较版本号 remote > local。 */
+    private boolean versionNewer(String remote, String local) {
+        String r = (remote == null ? "" : remote).trim();
+        String l = (local == null ? "" : local).trim();
+        if (r.isEmpty()) return false;
+        if (l.isEmpty()) return true;
+        if (r.toLowerCase().startsWith("v")) r = r.substring(1);
+        if (l.toLowerCase().startsWith("v")) l = l.substring(1);
+        try {
+            String[] rp = r.split("\\.");
+            String[] lp = l.split("\\.");
+            int n = Math.max(rp.length, lp.length);
+            for (int i = 0; i < n; i++) {
+                int rv = i < rp.length ? Integer.parseInt(rp[i].trim()) : 0;
+                int lv = i < lp.length ? Integer.parseInt(lp[i].trim()) : 0;
+                if (rv != lv) return rv > lv;
+            }
+            return false;
+        } catch (NumberFormatException e) {
+            return !r.equals(l);
         }
     }
 
