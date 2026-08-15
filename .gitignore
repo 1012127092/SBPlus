@@ -19,6 +19,20 @@ captures/
 # 调试产物（历史临时脚本/截图/dump）
 _debug_archive/
 
+# 临时工具脚本（_ 前缀的 python/js 调试/补丁脚本）
+_*.py
+_*.js
+_*.txt
+_*.html
+
+# 历史脚本样本/临时目录
+_scripts/
+_userscripts_dir/
+
+# 发布/调试临时信息
+release_id.txt
+injected_all.js
+
 # 签名密钥（勿上传）
 *.keystore
 *.jks

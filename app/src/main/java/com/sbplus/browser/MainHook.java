@@ -44,6 +44,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     // Global application Context (captured from SBrowserApplication.onCreate).
     private static volatile Context sAppContext;
+    private static volatile android.app.Activity sCurrentActivity;
 
     private static final String SBROWSER_PACKAGE = "com.sec.android.app.sbrowser";
     private static final String SBROWSER_BETA_PACKAGE = "com.sec.android.app.sbrowser.beta";
@@ -66,12 +67,19 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String PAGE_UA_PICKER = "ua_picker";
     private static final String PAGE_CLEAN_SETTINGS_PICKER = "clean_settings_picker";
     private static final String PAGE_VIDEO_BG_PICKER = "video_bg_picker";
+    private static final String PAGE_USERSCRIPT_PICKER = "userscript_picker";
+    private static final String PAGE_USERSCRIPT_DETAIL = "userscript_detail";
+    private static final String PAGE_USERSCRIPT_LIST = "userscript_list";
+    private static final String ARG_USCRIPT_FILE = "sbplus_userscript_file";
     private static final String KEY_ENABLE_CLEAN_SETTINGS = "enable_clean_settings";
     private static final String KEY_HIDDEN_SETTINGS = "hidden_settings";
     private static final String KEY_ENABLE_BLOCK_UPDATE = "enable_block_update";
     private static final String KEY_ENABLE_VIDEO_BG = "enable_video_bg";
     private static final String KEY_VIDEO_BG_PATH = "video_bg_path";
     private static final String KEY_ENABLE_USERSCRIPT = "enable_userscript";
+    private static final String KEY_DISABLED_USERSCRIPTS = "disabled_userscripts";
+    private static final int REQUEST_USERSCRIPT_PICK = 61002;
+    private static final String KEY_USERSCRIPT_SOURCES = "userscript_sources";
 
     // Default target downloaders (overridable).
     private static final String DEFAULT_ADM_PACKAGE = "com.dv.adm";
@@ -111,7 +119,6 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             {"sites_and_contents", "网站和下载"},
             {"pref_notifications", "通知"},
             {"useful_features", "实用功能"},
-            {"pref_category_privacy", "隐私（小标题）"},
             {"pref_privacy_notice", "隐私声明"},
             {"notice_board", "隐私声明历史记录"},
             {"pref_permissions", "权限"},
@@ -181,6 +188,13 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     // Whether the downloader picker sub-page is currently the shown page (tracked by us, since
     // Samsung's getTopFragment() keys off back-stack count which is wrong for backstack-less pages).
     private static volatile boolean sInPickerPage;
+    private static volatile String sCurrentPickerPage; // 精确记录当前子页，用于返回逻辑（详情/列表往返）
+    // 油猴脚本菜单：追踪当前页面注入的脚本（url -> 已注入的脚本名列表）和当前 tab 对象。
+    private static final java.util.Map<String, java.util.List<String>> sActiveScriptsByUrl = new java.util.HashMap<String, java.util.List<String>>();
+    private static volatile Object sCurrentRealTab;
+    private static volatile String sCurrentUrl;
+    private static final java.util.Map<String, String> requireCache = new java.util.HashMap<String, String>(); // @require 库缓存：url -> js 内容
+    private static final java.util.Map<String, String> resourceCache = new java.util.HashMap<String, String>(); // @resource 资源缓存：name -> 内容
     private static volatile boolean sRegionPageActive;
     @Override
     public void initZygote(StartupParam startupParam) {
@@ -222,6 +236,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         hookBlockUpdate(lpparam.classLoader);
         hookVideoBackground(lpparam.classLoader);
         hookUserscript(lpparam.classLoader);
+        hookUserscriptToolbar(lpparam.classLoader);
     }
 
     /**
@@ -298,13 +313,34 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             try {
                                 if (!sInPickerPage) return;
                                 Object act = param.thisObject;
-                                // Navigate back to the plain SBPlus switch page.
-                                sInPickerPage = false;
-                                navigateToFragment(act,
-                                        "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom",
-                                        null);
-                                param.setResult(null);
-                                XposedBridge.log("[SBPlus] back from downloader picker");
+                                String cls = "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom";
+                                if (PAGE_USERSCRIPT_DETAIL.equals(sCurrentPickerPage)) {
+                                    android.os.Bundle la = new android.os.Bundle();
+                                    la.putString(ARG_PAGE, PAGE_USERSCRIPT_LIST);
+                                    sCurrentPickerPage = PAGE_USERSCRIPT_LIST;
+                                    navigateToFragment(act, cls, la);
+                                    param.setResult(null);
+                                    XposedBridge.log("[SBPlus] back: detail -> list");
+                                } else if (PAGE_USERSCRIPT_LIST.equals(sCurrentPickerPage)) {
+                                    android.os.Bundle la = new android.os.Bundle();
+                                    la.putString(ARG_PAGE, PAGE_USERSCRIPT_PICKER);
+                                    sCurrentPickerPage = PAGE_USERSCRIPT_PICKER;
+                                    navigateToFragment(act, cls, la);
+                                    param.setResult(null);
+                                    XposedBridge.log("[SBPlus] back: list -> picker");
+                                } else if (PAGE_USERSCRIPT_PICKER.equals(sCurrentPickerPage)) {
+                                    sCurrentPickerPage = null;
+                                    sInPickerPage = false;
+                                    navigateToFragment(act, cls, null);
+                                    param.setResult(null);
+                                    XposedBridge.log("[SBPlus] back: picker -> home");
+                                } else {
+                                    sCurrentPickerPage = null;
+                                    sInPickerPage = false;
+                                    navigateToFragment(act, cls, null);
+                                    param.setResult(null);
+                                    XposedBridge.log("[SBPlus] back from picker");
+                                }
                             } catch (Throwable t) {
                                 XposedBridge.log("[SBPlus] back press hook error: " + t);
                             }
@@ -332,12 +368,34 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 Object frag = param.thisObject;
                                 Object act = XposedHelpers.callMethod(frag, "getActivity");
                                 if (act == null) return;
-                                sInPickerPage = false;
-                                navigateToFragment(act,
-                                        "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom",
-                                        null);
-                                param.setResult(Boolean.TRUE);
-                                XposedBridge.log("[SBPlus] up-navigate from downloader picker");
+                                String cls = "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom";
+                                if (PAGE_USERSCRIPT_DETAIL.equals(sCurrentPickerPage)) {
+                                    android.os.Bundle la = new android.os.Bundle();
+                                    la.putString(ARG_PAGE, PAGE_USERSCRIPT_LIST);
+                                    sCurrentPickerPage = PAGE_USERSCRIPT_LIST;
+                                    navigateToFragment(act, cls, la);
+                                    param.setResult(Boolean.TRUE);
+                                    XposedBridge.log("[SBPlus] up: detail -> list");
+                                } else if (PAGE_USERSCRIPT_LIST.equals(sCurrentPickerPage)) {
+                                    android.os.Bundle la = new android.os.Bundle();
+                                    la.putString(ARG_PAGE, PAGE_USERSCRIPT_PICKER);
+                                    sCurrentPickerPage = PAGE_USERSCRIPT_PICKER;
+                                    navigateToFragment(act, cls, la);
+                                    param.setResult(Boolean.TRUE);
+                                    XposedBridge.log("[SBPlus] up: list -> picker");
+                                } else if (PAGE_USERSCRIPT_PICKER.equals(sCurrentPickerPage)) {
+                                    sCurrentPickerPage = null;
+                                    sInPickerPage = false;
+                                    navigateToFragment(act, cls, null);
+                                    param.setResult(Boolean.TRUE);
+                                    XposedBridge.log("[SBPlus] up: picker -> home");
+                                } else {
+                                    sCurrentPickerPage = null;
+                                    sInPickerPage = false;
+                                    navigateToFragment(act, cls, null);
+                                    param.setResult(Boolean.TRUE);
+                                    XposedBridge.log("[SBPlus] up-navigate from picker");
+                                }
                             } catch (Throwable t) {
                                 XposedBridge.log("[SBPlus] navigate-up hook error: " + t);
                             }
@@ -1043,7 +1101,23 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             injectCleanSettingsPicker(ctx, cl, screen, frag);
         } else if (PAGE_VIDEO_BG_PICKER.equals(page)) {
             injectVideoBgPicker(ctx, cl, screen);
+        } else if (PAGE_USERSCRIPT_PICKER.equals(page)) {
+            injectUserscriptPicker(ctx, cl, screen);
+        } else if (PAGE_USERSCRIPT_DETAIL.equals(page)) {
+            String usFile = null;
+            try {
+                android.os.Bundle usArgs = (android.os.Bundle) XposedHelpers.callMethod(frag, "getArguments");
+                if (usArgs != null) usFile = usArgs.getString(ARG_USCRIPT_FILE);
+            } catch (Throwable ignored) {}
+            injectUserscriptDetailPicker(ctx, cl, screen, usFile);
+        } else if (PAGE_USERSCRIPT_LIST.equals(page)) {
+            injectUserscriptListPicker(ctx, cl, screen);
         } else {
+            // 顺序按使用频率与功能相近聚类排列。
+            Object userscriptPref = buildUserscriptSwitch(ctx, cl);
+            boolean addedUserscript = (Boolean) XposedHelpers.callMethod(screen, "addPreference", userscriptPref);
+            XposedBridge.log("[SBPlus] userscript item injected: " + addedUserscript);
+
             Object pref = buildExternalDownloaderSwitch(ctx, cl);
             boolean added = (Boolean) XposedHelpers.callMethod(screen, "addPreference", pref);
             XposedBridge.log("[SBPlus] submenu item injected: " + added);
@@ -1052,13 +1126,17 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             boolean addedGrid = (Boolean) XposedHelpers.callMethod(screen, "addPreference", gridPref);
             XposedBridge.log("[SBPlus] grid menu item injected: " + addedGrid);
 
-            Object regionPref = buildRegionLockSwitch(ctx, cl);
-            boolean addedRegion = (Boolean) XposedHelpers.callMethod(screen, "addPreference", regionPref);
-            XposedBridge.log("[SBPlus] region lock item injected: " + addedRegion);
+            Object videoBgPref = buildVideoBgSwitch(ctx, cl);
+            boolean addedVideoBg = (Boolean) XposedHelpers.callMethod(screen, "addPreference", videoBgPref);
+            XposedBridge.log("[SBPlus] video bg item injected: " + addedVideoBg);
 
             Object uaPref = buildUaSwitch(ctx, cl);
             boolean addedUa = (Boolean) XposedHelpers.callMethod(screen, "addPreference", uaPref);
             XposedBridge.log("[SBPlus] ua override item injected: " + addedUa);
+
+            Object regionPref = buildRegionLockSwitch(ctx, cl);
+            boolean addedRegion = (Boolean) XposedHelpers.callMethod(screen, "addPreference", regionPref);
+            XposedBridge.log("[SBPlus] region lock item injected: " + addedRegion);
 
             Object cleanPref = buildCleanSettingsSwitch(ctx, cl);
             boolean addedClean = (Boolean) XposedHelpers.callMethod(screen, "addPreference", cleanPref);
@@ -1067,14 +1145,6 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             Object blockUpdatePref = buildBlockUpdateSwitch(ctx, cl);
             boolean addedBlockUpdate = (Boolean) XposedHelpers.callMethod(screen, "addPreference", blockUpdatePref);
             XposedBridge.log("[SBPlus] block update item injected: " + addedBlockUpdate);
-
-            Object videoBgPref = buildVideoBgSwitch(ctx, cl);
-            boolean addedVideoBg = (Boolean) XposedHelpers.callMethod(screen, "addPreference", videoBgPref);
-            XposedBridge.log("[SBPlus] video bg item injected: " + addedVideoBg);
-
-            Object userscriptPref = buildUserscriptSwitch(ctx, cl);
-            boolean addedUserscript = (Boolean) XposedHelpers.callMethod(screen, "addPreference", userscriptPref);
-            XposedBridge.log("[SBPlus] userscript item injected: " + addedUserscript);
         }
     }
 
@@ -2519,6 +2589,39 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    /** 手动导航到脚本详情子页（传脚本文件名）。 */
+    private void navigateToUserscriptDetail(android.app.Activity act, String fileName) {
+        try {
+            android.os.Bundle args = new android.os.Bundle();
+            args.putString(ARG_PAGE, PAGE_USERSCRIPT_DETAIL);
+            args.putString(ARG_USCRIPT_FILE, fileName);
+            navigateToFragment(act,
+                    "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom",
+                    args);
+            sInPickerPage = true;
+            sCurrentPickerPage = PAGE_USERSCRIPT_DETAIL;
+            XposedBridge.log("[SBPlus] navigated to userscript detail: " + fileName);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] navigateToUserscriptDetail error: " + t);
+        }
+    }
+
+    /** 手动导航到脚本列表子页。 */
+    private void navigateToUserscriptList(android.app.Activity act) {
+        try {
+            android.os.Bundle args = new android.os.Bundle();
+            args.putString(ARG_PAGE, PAGE_USERSCRIPT_LIST);
+            navigateToFragment(act,
+                    "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom",
+                    args);
+            sInPickerPage = true;
+            sCurrentPickerPage = PAGE_USERSCRIPT_LIST;
+            XposedBridge.log("[SBPlus] navigated to userscript list");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] navigateToUserscriptList error: " + t);
+        }
+    }
+
     private boolean isBridgeEnabled() {
         try {
             if (sAppContext != null) {
@@ -2917,6 +3020,26 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 int req = (Integer) param.args[0];
+                                if (req == REQUEST_USERSCRIPT_PICK) {
+                                    int res = (Integer) param.args[1];
+                                    android.content.Intent data = (android.content.Intent) param.args[2];
+                                    if (res != android.app.Activity.RESULT_OK || data == null
+                                            || data.getData() == null) return;
+                                    android.net.Uri uri = data.getData();
+                                    String content = readUriText((android.content.Context) param.thisObject, uri);
+                                    if (content != null && !content.isEmpty()) {
+                                        String fn = saveUserscriptContent(content);
+                                        if (fn != null) saveSource(fn, "本地导入");
+                                        android.widget.Toast.makeText((android.content.Context) param.thisObject,
+                                                fn == null ? "导入失败" : ("已导入脚本: " + fn),
+                                                android.widget.Toast.LENGTH_SHORT).show();
+                                        XposedBridge.log("[SBPlus] userscript imported: " + fn);
+                                    } else {
+                                        android.widget.Toast.makeText((android.content.Context) param.thisObject,
+                                                "读取文件失败", android.widget.Toast.LENGTH_SHORT).show();
+                                    }
+                                    return;
+                                }
                                 if (req != 61001) return;
                                 int res = (Integer) param.args[1];
                                 android.content.Intent data = (android.content.Intent) param.args[2];
@@ -3130,6 +3253,43 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    /** 被禁用的脚本文件名集合（按 fileName 区分，不影响脚本文件本身）。 */
+    private java.util.Set<String> disabledUserscripts() {
+        java.util.Set<String> set = new java.util.HashSet<String>();
+        try {
+            if (sAppContext != null) {
+                String raw = processPrefs(sAppContext).getString(KEY_DISABLED_USERSCRIPTS, "");
+                if (raw != null && !raw.isEmpty()) {
+                    for (String k : raw.split(",")) if (k != null && !k.isEmpty()) set.add(k);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return set;
+    }
+
+    private void saveDisabledUserscripts(java.util.Set<String> set) {
+        try {
+            if (sAppContext != null) {
+                StringBuilder sb = new StringBuilder();
+                for (String k : set) { if (sb.length() > 0) sb.append(","); sb.append(k); }
+                processPrefs(sAppContext).edit().putString(KEY_DISABLED_USERSCRIPTS, sb.toString()).commit();
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] save disabled userscripts error: " + t);
+        }
+    }
+
+    /** 某个脚本文件是否启用（未在禁用列表即启用）。 */
+    private boolean isUserscriptFileEnabled(String fileName) {
+        return !disabledUserscripts().contains(fileName);
+    }
+
+    private void setUserscriptFileEnabled(String fileName, boolean enabled) {
+        java.util.Set<String> set = disabledUserscripts();
+        if (enabled) set.remove(fileName); else set.add(fileName);
+        saveDisabledUserscripts(set);
+    }
+
     /** 脚本目录：浏览器外部文件目录下的 userscripts/ */
     private java.io.File userscriptDir() {
         try {
@@ -3156,6 +3316,39 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         XposedHelpers.callMethod(pref, "setChecked", isUserscriptEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+
+        // 点击跳转到脚本管理子页。
+        try {
+            Class<?> clickListenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
+            Object clickListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{clickListenerType},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceClick")) {
+                                    Object clicked = args[0];
+                                    Object actObj = XposedHelpers.callMethod(clicked, "getContext");
+                                    if (actObj instanceof android.app.Activity) {
+                                        android.os.Bundle a = new android.os.Bundle();
+                                        a.putString(ARG_PAGE, PAGE_USERSCRIPT_PICKER);
+                                        navigateToFragment((android.app.Activity) actObj,
+                                                "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom", a);
+                                        sInPickerPage = true;
+                                        sCurrentPickerPage = PAGE_USERSCRIPT_PICKER;
+                                    }
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] userscript navigate error: " + t);
+                            }
+                            return Boolean.FALSE;
+                        }
+                    });
+            XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", clickListener);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] userscript click bind failed: " + t);
+        }
 
         try {
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
@@ -3184,6 +3377,984 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         return pref;
     }
 
+    /** 油猴脚本子页：脚本列表（启用/删除）+ 添加/更新/下载操作。 */
+    private void injectUserscriptPicker(Context ctx, ClassLoader cl, Object screen) {
+        Class<?> prefCustomCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+        Class<?> switchPrefCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+
+        java.io.File dir = userscriptDir();
+        java.util.List<UserscriptMeta> metas = loadUserscripts();
+
+        // —— 操作区 ——
+        Object addPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(addPref, "setTitle", "添加脚本");
+        XposedHelpers.callMethod(addPref, "setKey", "sbplus_userscript_add");
+        XposedHelpers.callMethod(addPref, "setSummary", "粘贴脚本内容");
+        bindPreferenceClick(addPref, cl, new Runnable() { public void run() { launchAddUserscript(); } });
+        XposedHelpers.callMethod(screen, "addPreference", addPref);
+
+        Object importPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(importPref, "setTitle", "导入脚本");
+        XposedHelpers.callMethod(importPref, "setKey", "sbplus_userscript_import");
+        XposedHelpers.callMethod(importPref, "setSummary", "从本地选择 .user.js 文件导入");
+        bindPreferenceClick(importPref, cl, new Runnable() { public void run() { launchUserscriptFilePicker(); } });
+        XposedHelpers.callMethod(screen, "addPreference", importPref);
+
+        Object updatePref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(updatePref, "setTitle", "更新所有脚本");
+        XposedHelpers.callMethod(updatePref, "setKey", "sbplus_userscript_update");
+        XposedHelpers.callMethod(updatePref, "setSummary", "检测所有脚本的更新（需脚本声明 @updateURL/@downloadURL）");
+        bindPreferenceClick(updatePref, cl, new Runnable() { public void run() { updateAllUserscripts(); } });
+        XposedHelpers.callMethod(screen, "addPreference", updatePref);
+
+        Object dlPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(dlPref, "setTitle", "下载脚本");
+        XposedHelpers.callMethod(dlPref, "setKey", "sbplus_userscript_dl");
+        XposedHelpers.callMethod(dlPref, "setSummary", "打开脚本源列表，选择网站后安装的 .user.js 会自动保存");
+        bindPreferenceClick(dlPref, cl, new Runnable() { public void run() { openGreasyFork(); } });
+        XposedHelpers.callMethod(screen, "addPreference", dlPref);
+
+        // 目录路径展示行。
+        Object dirPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(dirPref, "setTitle", "脚本目录");
+        XposedHelpers.callMethod(dirPref, "setKey", "sbplus_userscript_dir");
+        XposedHelpers.callMethod(dirPref, "setSummary", dir == null ? "目录未初始化" : dir.getAbsolutePath());
+        XposedHelpers.callMethod(screen, "addPreference", dirPref);
+
+                // —— 脚本列表入口 ——
+        Object listPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(listPref, "setTitle", "脚本列表 (" + metas.size() + ")");
+        XposedHelpers.callMethod(listPref, "setKey", "sbplus_userscript_list");
+        XposedHelpers.callMethod(listPref, "setSummary", "点击管理已安装的脚本");
+        bindPreferenceClick(listPref, cl, new Runnable() {
+            public void run() {
+                android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+                if (act != null) navigateToUserscriptList(act);
+            }
+        });
+        XposedHelpers.callMethod(screen, "addPreference", listPref);
+
+        XposedBridge.log("[SBPlus] userscript picker injected, scripts=" + metas.size());
+    }
+
+    /** 脚本列表子页：列出所有已安装脚本，每行点击进入详情。 */
+    private void injectUserscriptListPicker(Context ctx, ClassLoader cl, Object screen) {
+        Class<?> prefCustomCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+
+        java.util.List<UserscriptMeta> metas = loadUserscripts();
+
+        if (metas.isEmpty()) {
+            Object emptyPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+            XposedHelpers.callMethod(emptyPref, "setTitle", "暂无脚本");
+            XposedHelpers.callMethod(emptyPref, "setKey", "sbplus_userscript_list_empty");
+            XposedHelpers.callMethod(emptyPref, "setSummary", "返回后点「添加脚本」或「下载脚本」");
+            XposedHelpers.callMethod(screen, "addPreference", emptyPref);
+        } else {
+            for (int i = 0; i < metas.size(); i++) {
+                final UserscriptMeta meta = metas.get(i);
+                Object row = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+                String enabledTag = isUserscriptFileEnabled(meta.fileName) ? "" : " [已停用]";
+                XposedHelpers.callMethod(row, "setTitle", meta.name + (meta.version.isEmpty() ? "" : "  v" + meta.version) + enabledTag);
+                XposedHelpers.callMethod(row, "setKey", "sbplus_userscript_row_" + i);
+                XposedHelpers.callMethod(row, "setSummary", buildUserscriptSummary(meta));
+                bindPreferenceClick(row, cl, new Runnable() {
+                    public void run() {
+                        android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+                        if (act != null) navigateToUserscriptDetail(act, meta.fileName);
+                    }
+                });
+                XposedHelpers.callMethod(screen, "addPreference", row);
+            }
+        }
+
+        XposedBridge.log("[SBPlus] userscript list injected, scripts=" + metas.size());
+    }
+
+    /** 脚本详情子页：启用开关 + 编辑 + 配置页 + 匹配规则 + 删除。 */
+    private void injectUserscriptDetailPicker(Context ctx, ClassLoader cl, Object screen, String fileName) {
+        Class<?> prefCustomCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+        Class<?> switchPrefCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+
+        UserscriptMeta target = null;
+        java.util.List<UserscriptMeta> metas = loadUserscripts();
+        for (UserscriptMeta m : metas) {
+            if (m.fileName != null && m.fileName.equals(fileName)) { target = m; break; }
+        }
+        if (target == null) {
+            Object emptyPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+            XposedHelpers.callMethod(emptyPref, "setTitle", "脚本不存在");
+            XposedHelpers.callMethod(emptyPref, "setKey", "sbplus_userscript_detail_empty");
+            XposedHelpers.callMethod(emptyPref, "setSummary", "文件可能已被删除");
+            XposedHelpers.callMethod(screen, "addPreference", emptyPref);
+            return;
+        }
+
+        final UserscriptMeta meta = target;
+
+        // 标题行（名字 + 版本 + 作者/描述）。
+        Object titlePref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(titlePref, "setTitle", meta.name);
+        XposedHelpers.callMethod(titlePref, "setKey", "sbplus_userscript_detail_title");
+        StringBuilder tsum = new StringBuilder();
+        if (!meta.version.isEmpty()) tsum.append("版本 ").append(meta.version);
+        if (!meta.description.isEmpty()) { if (tsum.length() > 0) tsum.append(" · "); tsum.append(meta.description); }
+        XposedHelpers.callMethod(titlePref, "setSummary", tsum.toString());
+        XposedHelpers.callMethod(screen, "addPreference", titlePref);
+
+        // 启用开关。
+        Object enPref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(enPref, "setTitle", "启用脚本");
+        XposedHelpers.callMethod(enPref, "setKey", "sbplus_userscript_detail_enable");
+        XposedHelpers.callMethod(enPref, "setSummary", "关闭后脚本不会注入页面");
+        XposedHelpers.callMethod(enPref, "setChecked", isUserscriptFileEnabled(meta.fileName));
+        bindUserscriptEnableChange(enPref, cl, meta.fileName);
+        XposedHelpers.callMethod(screen, "addPreference", enPref);
+
+        // 编辑。
+        Object editPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(editPref, "setTitle", "编辑源码");
+        XposedHelpers.callMethod(editPref, "setKey", "sbplus_userscript_detail_edit");
+        XposedHelpers.callMethod(editPref, "setSummary", "修改后保存覆盖原文件");
+        bindPreferenceClick(editPref, cl, new Runnable() { public void run() { editUserscript(meta.fileName); } });
+        XposedHelpers.callMethod(screen, "addPreference", editPref);
+
+        // 导出。
+        Object exportPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(exportPref, "setTitle", "导出脚本");
+        XposedHelpers.callMethod(exportPref, "setKey", "sbplus_userscript_detail_export");
+        XposedHelpers.callMethod(exportPref, "setSummary", "复制到 Download/SBPlus/ 目录");
+        bindPreferenceClick(exportPref, cl, new Runnable() { public void run() { exportUserscript(meta.fileName, meta.name); } });
+        XposedHelpers.callMethod(screen, "addPreference", exportPref);
+
+        // 来源显示（真实记录 > @downloadURL > @homepageURL > 本地导入）。
+        String recordedSource = getSource(meta.fileName);
+        String srcText = recordedSource;
+        String srcUrl = null;
+        if ((srcText == null || srcText.isEmpty()) && meta.downloadURL != null && !meta.downloadURL.isEmpty()) {
+            srcText = meta.downloadURL;
+            srcUrl = meta.downloadURL;
+        } else if ((srcText == null || srcText.isEmpty()) && meta.homepageURL != null && !meta.homepageURL.isEmpty()) {
+            srcText = meta.homepageURL;
+            srcUrl = meta.homepageURL;
+        } else if (srcText == null || srcText.isEmpty()) {
+            srcText = "本地导入";
+        }
+        if (srcUrl == null && srcText != null && (srcText.startsWith("http://") || srcText.startsWith("https://"))) {
+            srcUrl = srcText;
+        }
+        final String srcUrlFinal = srcUrl;
+        {
+            Object homePref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+            XposedHelpers.callMethod(homePref, "setTitle", "来源");
+            XposedHelpers.callMethod(homePref, "setKey", "sbplus_userscript_detail_home");
+            XposedHelpers.callMethod(homePref, "setSummary", srcText);
+            if (srcUrlFinal != null && !srcUrlFinal.isEmpty()) {
+                bindPreferenceClick(homePref, cl, new Runnable() { public void run() { openUrl(srcUrlFinal); } });
+            }
+            XposedHelpers.callMethod(screen, "addPreference", homePref);
+        }
+
+        // 匹配规则展示。
+        Object matchPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(matchPref, "setTitle", "匹配规则");
+        XposedHelpers.callMethod(matchPref, "setKey", "sbplus_userscript_detail_match");
+        StringBuilder ms = new StringBuilder();
+        for (String s : meta.match) ms.append("match: ").append(s).append(" · ");
+        for (String s : meta.include) ms.append("include: ").append(s).append(" · ");
+        if (ms.length() == 0) ms.append("无匹配规则");
+        XposedHelpers.callMethod(matchPref, "setSummary", ms.toString());
+        XposedHelpers.callMethod(screen, "addPreference", matchPref);
+
+        // 删除。
+        Object delPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(delPref, "setTitle", "删除脚本");
+        XposedHelpers.callMethod(delPref, "setKey", "sbplus_userscript_detail_del");
+        XposedHelpers.callMethod(delPref, "setSummary", "从目录删除此脚本文件");
+        bindPreferenceClick(delPref, cl, new Runnable() { public void run() { deleteUserscript(meta.fileName, meta.name); } });
+        XposedHelpers.callMethod(screen, "addPreference", delPref);
+
+        XposedBridge.log("[SBPlus] userscript detail injected: " + meta.name);
+    }
+
+    /** 通用点击绑定：点击后执行 runnable。 */
+    private void bindPreferenceClick(Object pref, ClassLoader cl, final Runnable action) {
+        try {
+            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
+            Object onPreferenceClick = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{listenerType},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceClick")) {
+                                    // 从被点击的 preference 捕获当前 Activity。
+                                    try {
+                                        Object ctx = XposedHelpers.callMethod(args[0], "getContext");
+                                        if (ctx instanceof android.app.Activity) sCurrentActivity = (android.app.Activity) ctx;
+                                    } catch (Throwable ignored) {}
+                                    action.run();
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] preference click error: " + t);
+                            }
+                            return Boolean.FALSE;
+                        }
+                    });
+            XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", onPreferenceClick);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] bindPreferenceClick failed: " + t);
+        }
+    }
+
+    /** 绑定脚本启用开关。 */
+    private void bindUserscriptEnableChange(Object pref, ClassLoader cl, final String fileName) {
+        try {
+            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+            Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{listenerType},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceChange")) {
+                                    boolean enabled = args[1] instanceof Boolean && (Boolean) args[1];
+                                    setUserscriptFileEnabled(fileName, enabled);
+                                    XposedBridge.log("[SBPlus] userscript " + fileName + " enabled=" + enabled);
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] userscript enable error: " + t);
+                            }
+                            return Boolean.FALSE;
+                        }
+                    });
+            XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", changeListener);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] bindUserscriptEnableChange failed: " + t);
+        }
+    }
+
+    /** 删除脚本文件。 */
+    private void deleteUserscript(String fileName, String name) {
+        try {
+            java.io.File dir = userscriptDir();
+            if (dir == null) return;
+            if (fileName != null && !fileName.isEmpty()) {
+                java.io.File f = new java.io.File(dir, fileName);
+                if (f.exists()) f.delete();
+            }
+            // 同时从禁用列表移除。
+            java.util.Set<String> set = disabledUserscripts();
+            if (fileName != null) set.remove(fileName);
+            saveDisabledUserscripts(set);
+            toastOnMain("已删除脚本: " + name);
+            // 刷新当前子页。
+            refreshCurrentUserscriptPicker();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] deleteUserscript error: " + t);
+        }
+    }
+
+    /** 导出单个脚本到公共下载目录 Download/SBPlus/。 */
+    private void exportUserscript(String fileName, String name) {
+        try {
+            java.io.File dir = userscriptDir();
+            if (dir == null || fileName == null || fileName.isEmpty()) {
+                toastOnMain("导出失败：脚本目录未初始化");
+                return;
+            }
+            java.io.File src = new java.io.File(dir, fileName);
+            if (!src.exists()) {
+                toastOnMain("导出失败：源文件不存在");
+                return;
+            }
+            java.io.File outDir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
+            if (!outDir.exists()) outDir.mkdirs();
+            String safeName = (name == null || name.trim().isEmpty()) ? fileName : sanitizeFileName(name);
+            if (!safeName.endsWith(".user.js")) safeName = safeName + ".user.js";
+            java.io.File dst = new java.io.File(outDir, safeName);
+            java.io.FileInputStream in = new java.io.FileInputStream(src);
+            java.io.FileOutputStream out = new java.io.FileOutputStream(dst);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.flush();
+            out.close();
+            in.close();
+            toastOnMain("已导出到:\n" + dst.getAbsolutePath());
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] exportUserscript error: " + t);
+            toastOnMain("导出失败: " + t.getMessage());
+        }
+    }
+
+    /** 构建脚本摘要（描述 + 匹配规则数）。 */
+    private String buildUserscriptSummary(UserscriptMeta meta) {
+        int rules = meta.match.size() + meta.include.size();
+        StringBuilder sum = new StringBuilder();
+        if (!meta.description.isEmpty()) {
+            sum.append(meta.description);
+            sum.append("  ·  ");
+        }
+        sum.append("匹配规则 ").append(rules).append(" 条");
+        return sum.toString();
+    }
+
+    /** 编辑已有脚本：加载其内容到编辑器，保存时覆盖原文件。 */
+    private void editUserscript(final String fileName) {
+        try {
+            android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            java.io.File dir = userscriptDir();
+            if (dir == null) { toastOnMain("脚本目录未初始化"); return; }
+            java.io.File f = new java.io.File(dir, fileName);
+            String content;
+            try {
+                content = readFileText(f);
+            } catch (Throwable e) {
+                content = "";
+            }
+            showUserscriptEditorDialog(act, fileName, content);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] editUserscript error: " + t);
+        }
+    }
+
+    /** 打开脚本源选择对话框。 */
+    private void openGreasyFork() {
+        try {
+            android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            showSourcePickerDialog(act);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] openGreasyFork error: " + t);
+        }
+    }
+
+    /** 脚本源结构。 */
+    private static class ScriptSource {
+        String name;
+        String url;
+        ScriptSource(String n, String u) { name = n; url = u; }
+    }
+
+    /** 预置脚本源。 */
+    private ScriptSource[] defaultSources() {
+        return new ScriptSource[]{
+                new ScriptSource("ScriptCat", "https://scriptcat.org/zh-CN/search"),
+                new ScriptSource("Userscript.Zone", "https://www.userscript.zone/"),
+                new ScriptSource("GreasyFork", "https://greasyfork.org/zh-CN/scripts")
+        };
+    }
+
+    /** 读取自定义源（格式：每行 name|url）。 */
+    private java.util.List<ScriptSource> customSources() {
+        java.util.List<ScriptSource> list = new java.util.ArrayList<ScriptSource>();
+        try {
+            if (sAppContext != null) {
+                String raw = processPrefs(sAppContext).getString(KEY_USERSCRIPT_SOURCES, "");
+                if (raw != null && !raw.isEmpty()) {
+                    for (String line : raw.split("\n")) {
+                        if (line == null || line.trim().isEmpty()) continue;
+                        int bar = line.indexOf('|');
+                        if (bar < 0) continue;
+                        String n = line.substring(0, bar).trim();
+                        String u = line.substring(bar + 1).trim();
+                        if (!n.isEmpty() && !u.isEmpty()) list.add(new ScriptSource(n, u));
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] customSources error: " + t);
+        }
+        return list;
+    }
+
+    private void saveCustomSources(java.util.List<ScriptSource> list) {
+        try {
+            if (sAppContext == null) return;
+            StringBuilder sb = new StringBuilder();
+            for (ScriptSource src : list) {
+                if (sb.length() > 0) sb.append("\n");
+                sb.append(src.name).append("|").append(src.url);
+            }
+            processPrefs(sAppContext).edit().putString(KEY_USERSCRIPT_SOURCES, sb.toString()).commit();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] saveCustomSources error: " + t);
+        }
+    }
+
+    /** 合并源列表：自定义在前，预置后。 */
+    private java.util.List<ScriptSource> allSources() {
+        java.util.List<ScriptSource> list = customSources();
+        for (ScriptSource s : defaultSources()) list.add(s);
+        return list;
+    }
+
+    /** 弹出脚本源选择对话框。 */
+    private void showSourcePickerDialog(final android.app.Activity act) {
+        try {
+            final java.util.List<ScriptSource> sources = allSources();
+            final String[] names = new String[sources.size() + 1];
+            for (int i = 0; i < sources.size(); i++) names[i] = sources.get(i).name;
+            names[sources.size()] = "＋ 添加网址";
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
+            b.setTitle("选择脚本源");
+            b.setItems(names, new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int which) {
+                    if (which == sources.size()) {
+                        showAddSourceDialog(act);
+                    } else {
+                        openUrl(sources.get(which).url);
+                    }
+                }
+            });
+            b.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showSourcePickerDialog error: " + t);
+        }
+    }
+
+    /** 弹出添加网址对话框（名字 + 网址）。 */
+    private void showAddSourceDialog(final android.app.Activity act) {
+        try {
+            android.widget.LinearLayout ll = new android.widget.LinearLayout(act);
+            ll.setOrientation(android.widget.LinearLayout.VERTICAL);
+            ll.setPadding(48, 24, 48, 8);
+            final android.widget.EditText nameEt = new android.widget.EditText(act);
+            nameEt.setHint("名称（如：我的源）");
+            final android.widget.EditText urlEt = new android.widget.EditText(act);
+            urlEt.setHint("网址（如：https://example.com/）");
+            urlEt.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_URI);
+            ll.addView(nameEt);
+            ll.addView(urlEt);
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
+            b.setTitle("添加脚本源");
+            b.setView(ll);
+            b.setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int w) {
+                    String n = nameEt.getText().toString().trim();
+                    String u = urlEt.getText().toString().trim();
+                    if (n.isEmpty() || u.isEmpty()) { toastOnMain("名称和网址不能为空"); return; }
+                    if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
+                    java.util.List<ScriptSource> list = customSources();
+                    list.add(new ScriptSource(n, u));
+                    saveCustomSources(list);
+                    toastOnMain("已添加脚本源: " + n);
+                }
+            });
+            b.setNegativeButton("取消", null);
+            b.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showAddSourceDialog error: " + t);
+        }
+    }
+
+    /** 用浏览器打开网址。 */
+    private void openUrl(String url) {
+        try {
+            if (sAppContext == null || url == null || url.isEmpty()) return;
+            android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse(url));
+            i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            sAppContext.startActivity(i);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] openUrl error: " + t);
+        }
+    }
+
+
+    /** 启动添加脚本（单一输入窗口，预置模板 + 保存前检测）。 */
+    private void launchAddUserscript() {
+        try {
+            android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            showUserscriptEditorDialog(act);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] launchAddUserscript error: " + t);
+        }
+    }
+
+    /** 脚本编辑对话框：全屏、内容可滚动，预置模板，点保存先校验再写入。 */
+    private void showUserscriptEditorDialog(final android.app.Activity act) {
+        showUserscriptEditorDialog(act, null, USERSCRIPT_TEMPLATE);
+    }
+
+    /** 核心编辑器：新增（fileName=null）或编辑已有脚本（fileName=原文件名）。 */
+    private void showUserscriptEditorDialog(final android.app.Activity act, final String fileName, final String initialContent) {
+        try {
+            final android.widget.EditText et = new android.widget.EditText(act);
+            et.setText(initialContent == null ? USERSCRIPT_TEMPLATE : initialContent);
+            et.setGravity(android.view.Gravity.TOP | android.view.Gravity.LEFT);
+            et.setHorizontallyScrolling(true);
+            et.setVerticalScrollBarEnabled(true);
+            et.setMovementMethod(android.text.method.ScrollingMovementMethod.getInstance());
+            et.setTextSize(14);
+            et.setTypeface(android.graphics.Typeface.MONOSPACE);
+            et.setPadding(24, 24, 24, 24);
+            et.setBackgroundColor(0xFF1E1E1E);
+            et.setTextColor(0xFFDDDDDD);
+            et.setGravity(android.view.Gravity.TOP | android.view.Gravity.LEFT);
+
+            android.widget.LinearLayout ll = new android.widget.LinearLayout(act);
+            ll.setOrientation(android.widget.LinearLayout.VERTICAL);
+
+            // 顶部标题栏。
+            android.widget.TextView tv = new android.widget.TextView(act);
+            tv.setText(fileName == null ? "编写脚本" : "编辑脚本");
+            tv.setTextSize(18);
+            tv.setGravity(android.view.Gravity.CENTER);
+            tv.setPadding(0, 24, 0, 24);
+            tv.setTextColor(0xFF000000);
+            ll.addView(tv, new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
+
+            // 编辑区占满剩余空间。
+            ll.addView(et, new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f));
+
+            // 底部按钮栏。
+            android.widget.LinearLayout btns = new android.widget.LinearLayout(act);
+            btns.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            btns.setPadding(16, 16, 16, 16);
+
+            android.widget.Button cancelBtn = new android.widget.Button(act);
+            cancelBtn.setText("取消");
+            cancelBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { /* dialog 由下方引用关闭 */ }
+            });
+
+            android.widget.Button saveBtn = new android.widget.Button(act);
+            saveBtn.setText("保存");
+            saveBtn.setTextColor(0xFF000000);
+
+            android.widget.LinearLayout.LayoutParams bp = new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+            btns.addView(cancelBtn, bp);
+            btns.addView(saveBtn, bp);
+            ll.addView(btns, new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
+
+            final android.app.Dialog dialog = new android.app.Dialog(act);
+            dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+            dialog.setContentView(ll);
+            android.view.Window win = dialog.getWindow();
+            if (win != null) {
+                win.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT);
+                win.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+            }
+
+            cancelBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { dialog.dismiss(); }
+            });
+            saveBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    String content = et.getText().toString();
+                    String err = validateUserscript(content);
+                    if (err != null) {
+                        toastOnMain("脚本无效，未保存：" + err);
+                        return;
+                    }
+                    String fn;
+                    if (fileName != null && !fileName.isEmpty()) {
+                        fn = overwriteUserscriptContent(fileName, content);
+                        saveSource(fileName, getSource(fileName) != null ? getSource(fileName) : "手动添加");
+                    } else {
+                        fn = saveUserscriptContent(content);
+                        if (fn != null) saveSource(fn, "手动添加");
+                    }
+                    toastOnMain(fn == null ? "保存失败" : ("已保存: " + fn));
+                    refreshCurrentUserscriptPicker();
+                    dialog.dismiss();
+                }
+            });
+
+            dialog.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showUserscriptEditorDialog error: " + t);
+        }
+    }
+
+    /** 脚本模板（预置 ==UserScript== 头）。 */
+    private static final String USERSCRIPT_TEMPLATE =
+        "// ==UserScript==\n" +
+        "// @name        我的脚本\n" +
+        "// @namespace   https://example.com/\n" +
+        "// @version     1.0\n" +
+        "// @description 在这里写描述\n" +
+        "// @match       *://*/*\n" +
+        "// @run-at      document-end\n" +
+        "// ==/UserScript==\n" +
+        "\n" +
+        "(function() {\n" +
+        "    'use strict';\n" +
+        "\n" +
+        "    // 在这里写你的脚本代码\n" +
+        "\n" +
+        "})();\n";
+
+    /** 校验脚本：返回 null 表示合法，否则返回错误信息。 */
+    private String validateUserscript(String content) {
+        if (content == null || content.trim().isEmpty()) return "内容为空";
+        // 必须以 ==UserScript== 开头（允许前导空白/注释）。
+        if (!content.contains("==UserScript==")) return "缺少 ==UserScript== 声明头";
+        if (!content.contains("==/UserScript==")) return "缺少 ==/UserScript== 结束标记";
+        UserscriptMeta meta = UserscriptMeta.parse(content);
+        if (meta == null || meta.name.isEmpty()) return "缺少 @name";
+        // 必须有至少一条匹配规则，否则邮箱般全站注入风险太高，强制要求。
+        if (meta.match.isEmpty() && meta.include.isEmpty()) return "缺少 @match 或 @include 匹配规则";
+        // 至少有可执行代码（metadata 之后非空）。
+        String after = meta.code;
+        if (after == null || after.trim().isEmpty()) return "没有可执行的脚本代码";
+        return null;
+    }
+
+    /** 粘贴脚本内容对话框。 */
+    private void showPasteUserscriptDialog() {
+        try {
+            android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            final android.widget.EditText et = new android.widget.EditText(act);
+            et.setHint("粘贴完整 .user.js 脚本内容（含 ==UserScript== 头）");
+            et.setMinLines(8);
+            et.setMaxLines(16);
+            et.setGravity(android.view.Gravity.TOP);
+            new android.app.AlertDialog.Builder(act)
+                    .setTitle("粘贴脚本内容")
+                    .setView(et)
+                    .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(android.content.DialogInterface d, int w) {
+                            String content = et.getText().toString();
+                            if (content.trim().isEmpty()) { toastOnMain("内容为空"); return; }
+                            String fn = saveUserscriptContent(content);
+                            toastOnMain(fn == null ? "保存失败" : ("已保存: " + fn));
+                            refreshCurrentUserscriptPicker();
+                        }
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showPasteUserscriptDialog error: " + t);
+        }
+    }
+
+    /** 启动文件选择器导入 .user.js。 */
+    private void launchUserscriptFilePicker() {
+        try {
+            android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            act.startActivityForResult(i, REQUEST_USERSCRIPT_PICK);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] launchUserscriptFilePicker error: " + t);
+        }
+    }
+
+    /** 将脚本内容写入目录，返回文件名（自动按 @name 生成，冲突加序号）。 */
+    private String saveUserscriptContent(String content) {
+        try {
+            java.io.File dir = userscriptDir();
+            if (dir == null) return null;
+            // 从内容解析名字，生成文件名。
+            UserscriptMeta meta = UserscriptMeta.parse(content);
+            XposedBridge.log("[SBPlus] saveUserscript parsed name='" + meta.name + "' version=" + meta.version);
+            String base = sanitizeFileName(meta.name.isEmpty() ? "script" : meta.name);
+            java.io.File f = new java.io.File(dir, base + ".user.js");
+            int n = 1;
+            while (f.exists()) { f = new java.io.File(dir, base + "_" + (n++) + ".user.js"); }
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+            fos.write(content.getBytes("UTF-8"));
+            fos.close();
+            return f.getName();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] saveUserscriptContent error: " + t);
+            return null;
+        }
+    }
+
+    /** 覆盖已有脚本文件（编辑模式），返回文件名；失败返回 null。 */
+    private String overwriteUserscriptContent(String fileName, String content) {
+        try {
+            java.io.File dir = userscriptDir();
+            if (dir == null) return null;
+            java.io.File f = new java.io.File(dir, fileName);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+            fos.write(content.getBytes("UTF-8"));
+            fos.close();
+            return f.getName();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] overwriteUserscriptContent error: " + t);
+            return null;
+        }
+    }
+
+    /** 文件名合法化（移除 Windows/Android 非法字符）。 */
+    private String sanitizeFileName(String name) {
+        if (name == null) return "script";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?'
+                    || c == '"' || c == '<' || c == '>' || c == '|'
+                    || c < 0x20) {
+                sb.append('_');
+            } else {
+                sb.append(c);
+            }
+        }        String r = sb.toString().trim();
+        if (r.isEmpty()) r = "script";
+        if (r.length() > 60) r = r.substring(0, 60);
+        return r;
+    }
+
+    /** 记录脚本来源（下载地址 / 本地导入 / 手动添加）。 */
+    private void saveSource(String fileName, String source) {
+        try {
+            java.io.File dir = userscriptDir();
+            if (dir == null || fileName == null) return;
+            java.io.File f = new java.io.File(dir, "_sources.json");
+            org.json.JSONObject obj = new org.json.JSONObject();
+            if (f.exists()) {
+                try {
+                    java.io.FileInputStream in = new java.io.FileInputStream(f);
+                    byte[] buf = new byte[(int) f.length()];
+                    in.read(buf);
+                    in.close();
+                    obj = new org.json.JSONObject(new String(buf, "UTF-8"));
+                } catch (Throwable t) {}
+            }
+            obj.put(fileName, source == null ? "" : source);
+            java.io.FileOutputStream out = new java.io.FileOutputStream(f);
+            out.write(obj.toString().getBytes("UTF-8"));
+            out.close();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] saveSource error: " + t);
+        }
+    }
+
+    /** 读取脚本来源；无记录返回空。 */
+    private String getSource(String fileName) {
+        try {
+            java.io.File dir = userscriptDir();
+            if (dir == null || fileName == null) return null;
+            java.io.File f = new java.io.File(dir, "_sources.json");
+            if (!f.exists()) return null;
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            byte[] buf = new byte[(int) f.length()];
+            in.read(buf);
+            in.close();
+            org.json.JSONObject obj = new org.json.JSONObject(new String(buf, "UTF-8"));
+            return obj.optString(fileName, null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 更新所有脚本（异步下载对比版本）。 */
+    private void updateAllUserscripts() {
+        java.util.List<UserscriptMeta> metas = loadUserscripts();
+        int updatable = 0;
+        for (UserscriptMeta m : metas) {
+            String src = !m.updateURL.isEmpty() ? m.updateURL : m.downloadURL;
+            if (!src.isEmpty()) updatable++;
+        }
+        final int total = updatable;
+        if (total == 0) {
+            toastOnMain("没有可检测更新的脚本（需声明 @updateURL 或 @downloadURL）");
+            return;
+        }
+        toastOnMain("开始检测 " + total + " 个脚本更新...");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                int updated = 0;
+                for (UserscriptMeta m : metas) {
+                    String src = !m.updateURL.isEmpty() ? m.updateURL : m.downloadURL;
+                    if (src.isEmpty()) continue;
+                    try {
+                        String remote = httpGet(src);
+                        if (remote == null || remote.isEmpty()) continue;
+                        UserscriptMeta rm = UserscriptMeta.parse(remote);
+                        if (rm.version.isEmpty() || m.version.isEmpty() || rm.version.equals(m.version)) {
+                            continue; // 无版本或版本相同，跳过
+                        }
+                        // 有更新，覆盖写入。
+                        java.io.File dir = userscriptDir();
+                        if (dir == null) continue;
+                        java.io.File f = new java.io.File(dir, m.fileName);
+                        java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+                        fos.write(remote.getBytes("UTF-8"));
+                        fos.close();
+                        updated++;
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] update " + m.name + " error: " + t);
+                    }
+                }
+                final int u = updated;
+                toastOnMain("更新完成：更新了 " + u + " 个脚本");
+                refreshCurrentUserscriptPicker();
+            }
+        }).start();
+    }
+
+    /** 从 url 下载 .user.js 到目录（供下载拦截使用）。 */
+    private void downloadUserscriptToDir(String url) {
+        try {
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    try {
+                        String content = httpGet(url);
+                        if (content == null || content.isEmpty()) { toastOnMain("下载失败: " + url); return; }
+                        String fn = saveUserscriptContent(content);
+                        if (fn != null) saveSource(fn, url);
+                        toastOnMain(fn == null ? "保存失败" : ("已安装脚本: " + fn));
+                        refreshCurrentUserscriptPicker();
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] downloadUserscriptToDir error: " + t);
+                    }
+                }
+            }).start();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] downloadUserscriptToDir error: " + t);
+        }
+    }
+
+    /** 简单 HTTP GET，返回响应体字符串。 */
+    private String httpGet(String url) {
+        java.net.HttpURLConnection conn = null;
+        try {
+            java.net.URL u = new java.net.URL(url);
+            conn = (java.net.HttpURLConnection) u.openConnection();
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(15000);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (SBPlus Userscript)");
+            conn.setInstanceFollowRedirects(true);
+            int code = conn.getResponseCode();
+            java.io.InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+            if (is == null) return null;
+            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(is, "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line).append("\n");
+            br.close();
+            return sb.toString();
+        }
+ catch (Throwable t) {
+            XposedBridge.log("[SBPlus] httpGet error: " + t);
+            return null;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** 判断 url/文件名是否为油猴脚本（.user.js，兼容被加 .txt 后缀的情况）。 */
+    private boolean isUserScriptUrl(String url, String fileName) {
+        try {
+            if (fileName != null) {
+                String f = fileName.toLowerCase();
+                // 兼容 .user.js 被浏览器误加 .txt 后缀（如 a.user.js.txt）
+                if (f.contains(".user.js")) return true;
+            }
+            if (url == null) return false;
+            String u = url.toLowerCase();
+            int q = u.indexOf('?'); if (q >= 0) u = u.substring(0, q);
+            int h = u.indexOf('#'); if (h >= 0) u = u.substring(0, h);
+            return u.contains(".user.js");
+        } catch (Throwable t) { return false; }
+    }
+
+    /** 读取 content:// URI 文本内容（用于导入本地 .user.js 文件）。 */
+    private String readUriText(android.content.Context ctx, android.net.Uri uri) {
+        java.io.InputStream is = null;
+        try {
+            is = ctx.getContentResolver().openInputStream(uri);
+            if (is == null) return null;
+            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(is, "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line).append("\n");
+            br.close();
+            return sb.toString();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] readUriText error: " + t);
+            return null;
+        } finally {
+            if (is != null) try { is.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 主线程 Toast。 */
+    private void toastOnMain(final String msg) {
+        try {
+            if (sAppContext == null) return;
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                android.widget.Toast.makeText(sAppContext, msg, android.widget.Toast.LENGTH_SHORT).show();
+            } else {
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+                    @Override public void run() {
+                        android.widget.Toast.makeText(sAppContext, msg, android.widget.Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 刷新当前油猴子页（重新进入）。 */
+    private void refreshCurrentUserscriptPicker() {
+        try {
+            // 简单起见：记录一个标记，下次进入时 reload；这里不做内存级刷新，
+            // 改用 toast 提示用户返回重进。
+            toastOnMain("返回后重新进入即可看到更新");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] refresh error: " + t);
+        }
+    }
+
+    /** 打开脚本目录（直接提示路径，避免 FileProvider 跨包引用问题）。 */
+    private void bindOpenUserscriptDirClick(Object pref, ClassLoader cl) {
+        try {
+            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
+            Object onPreferenceClick = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{listenerType},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceClick")) {
+                                    Object clicked = args[0];
+                                    Context ctx = (Context) XposedHelpers.callMethod(clicked, "getContext");
+                                    java.io.File dir = userscriptDir();
+                                    if (dir == null) {
+                                        android.widget.Toast.makeText(ctx, "目录未初始化", android.widget.Toast.LENGTH_SHORT).show();
+                                    } else {
+                                        android.widget.Toast.makeText(ctx, "脚本目录：\n" + dir.getAbsolutePath(), android.widget.Toast.LENGTH_LONG).show();
+                                    }
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] open userscript dir error: " + t);
+                            }
+                            return Boolean.FALSE;
+                        }
+                    });
+            XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", onPreferenceClick);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] open userscript dir bind failed: " + t);
+        }
+    }
+
     /** 扫描并解析脚本目录，返回解析出的脚本元数据列表。 */
     private java.util.List<UserscriptMeta> loadUserscripts() {
         java.util.List<UserscriptMeta> list = new java.util.ArrayList<UserscriptMeta>();
@@ -3197,7 +4368,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 try {
                     String content = readFileText(f);
                     UserscriptMeta meta = UserscriptMeta.parse(content);
-                    if (meta != null && !meta.name.isEmpty()) list.add(meta);
+                    if (meta != null && !meta.name.isEmpty()) {
+                        meta.fileName = f.getName();
+                        list.add(meta);
+                    }
                 } catch (Throwable t) {
                     XposedBridge.log("[SBPlus] parse userscript " + f.getName() + " error: " + t);
                 }
@@ -3235,7 +4409,17 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         java.util.List<String> include = new java.util.ArrayList<String>();
         java.util.List<String> exclude = new java.util.ArrayList<String>();
         String runAt = "document-end";
+        java.util.List<String> requires = new java.util.ArrayList<String>(); // @require 外部库
+        java.util.List<String> resources = new java.util.ArrayList<String>();   // @resource 名称 URL
+        java.util.List<String> grants = new java.util.ArrayList<String>();      // @grant 需要的能力
         String code = "";
+        String version = "";
+        String description = "";
+        String downloadURL = "";
+        String updateURL = "";
+        String fileName = "";
+        String homepageURL = "";
+        String namespace = "";
 
         static UserscriptMeta parse(String content) {
             UserscriptMeta m = new UserscriptMeta();
@@ -3254,11 +4438,26 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             String[] lines = metaBlock.split("\n");
             for (String ln : lines) {
                 String l = ln.trim();
-                if (l.startsWith("@name")) { m.name = l.substring("@name".length()).trim(); }
+                while (l.startsWith("//")) { l = l.substring(2).trim(); }  // 去掉 // 前缀，如 // @name
+                if (l.startsWith("@name:zh-CN")) { m.name = stripMetaValue(l, "@name:zh-CN"); }
+                else if (l.startsWith("@name:zh")) { m.name = stripMetaValue(l, "@name:zh"); }
+                else if (l.startsWith("@name:")) { m.name = stripMetaValue(l, "@name:"); }
+                else if (l.startsWith("@name ") || l.equals("@name")) { m.name = stripMetaValue(l, "@name"); }
                 else if (l.startsWith("@match")) { m.match.add(stripMetaValue(l, "@match")); }
                 else if (l.startsWith("@include")) { m.include.add(stripMetaValue(l, "@include")); }
                 else if (l.startsWith("@exclude")) { m.exclude.add(stripMetaValue(l, "@exclude")); }
                 else if (l.startsWith("@run-at")) { m.runAt = stripMetaValue(l, "@run-at"); }
+                else if (l.startsWith("@version")) { m.version = stripMetaValue(l, "@version"); }
+                else if (l.startsWith("@description")) { m.description = stripMetaValue(l, "@description"); }
+                else if (l.startsWith("@downloadURL")) { m.downloadURL = stripMetaValue(l, "@downloadURL"); }
+                else if (l.startsWith("@updateURL")) { m.updateURL = stripMetaValue(l, "@updateURL"); }
+                else if (l.startsWith("@homepageURL")) { m.homepageURL = stripMetaValue(l, "@homepageURL"); }
+                else if (l.startsWith("@namespace")) { m.namespace = stripMetaValue(l, "@namespace"); }
+                else if (l.startsWith("@homepage ")) { m.homepageURL = stripMetaValue(l, "@homepage"); }
+                else if (l.startsWith("@homepage")) { m.homepageURL = stripMetaValue(l, "@homepage"); }
+                else if (l.startsWith("@require")) { m.requires.add(stripMetaValue(l, "@require")); }
+                else if (l.startsWith("@resource")) { m.resources.add(stripMetaValue(l, "@resource")); }
+                else if (l.startsWith("@grant")) { m.grants.add(stripMetaValue(l, "@grant")); }
             }
             if (m.name.isEmpty()) m.name = "untitled";
             return m;
@@ -3286,8 +4485,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             if (pattern == null || pattern.isEmpty()) return false;
             String p = pattern.trim();
             if (!p.contains("*")) return url.contains(p);
-            // 转 * 为正则 .*
-            String regex = java.util.regex.Pattern.quote(p).replace("*", ".*");
+            // 手动转义正则特殊字符，仅保留 * 作为通配符 -> .*
+            String esc = p.replace("\\", "\\\\").replace(".", "\\.").replace("+", "\\+").replace("?", "\\?").replace("(", "\\(").replace(")", "\\)").replace("[", "\\[").replace("]", "\\]").replace("^", "\\^").replace("$", "\\$").replace("|", "\\|").replace("{", "\\{").replace("}", "\\}");
+            String regex = esc.replace("*", ".*");
             return url.matches(".*" + regex + ".*");
         } catch (Throwable t) { return false; }
     }
@@ -3300,6 +4500,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         "  var GM={};" +
         // 存储：桥接到 Java（若未注入 __sbplus__，则回退 localStorage）
         "  var store=(function(){try{return window.__sbplus__;}catch(e){return null;}})();" +
+        "  window.onerror=function(m,src,l,c){try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('ERR '+m+' @'+src+':'+l+':'+c);}catch(e){}};" +
+        "  window.addEventListener('unhandledrejection',function(e){try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('PROMISE '+(e.reason&&e.reason.message||e.reason));}catch(x){}});" +
         "  GM.setValue=function(k,v){try{if(store&&store.gmSetValue)store.gmSetValue(k,String(v));else localStorage.setItem('gm_'+k,String(v));}catch(e){}};" +
         "  GM.getValue=function(k,d){try{if(store&&store.gmGetValue){var v=store.gmGetValue(k);return (v===null||v==='')?d:v;}var v=localStorage.getItem('gm_'+k);return (v===null)?d:v;}catch(e){return d;}};" +
         "  GM.deleteValue=function(k){try{if(store&&store.gmDeleteValue)store.gmDeleteValue(k);else localStorage.removeItem('gm_'+k);}catch(e){}};" +
@@ -3307,11 +4509,18 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         "  GM.addStyle=function(css){try{var st=document.createElement('style');st.type='text/css';st.textContent=css;document.head.appendChild(st);}catch(e){}};" +
         "  GM.log=function(){try{pushLog(Array.prototype.join.call(arguments,' '));}catch(e){}};" +
         "  GM.info={scriptHandler:'SBPlus',version:'1.0',script:{name:'',version:''}};" +
-        "  GM.xmlHttpRequest=function(o){try{var x=new XMLHttpRequest();x.open(o.method||'GET',o.url,true);x.onreadystatechange=function(){if(x.readyState===4){var r={status:x.status,statusText:x.statusText,responseText:x.responseText,response:x.responseText,responseHeaders:'',finalUrl:o.url};try{if(o.onload)o.onload(r);}catch(e){}}};if(o.headers){for(var h in o.headers)x.setRequestHeader(h,o.headers[h]);}if(o.timeout)x.timeout=o.timeout;x.send(o.data||null);}catch(e){try{if(o.onerror)o.onerror();}catch(e2){}}};" +
+        "  GM.xmlHttpRequest=function(o){try{var b=window.__sbplus__&&window.__sbplus__.gmXhr;if(b){try{if(window.__sbplus__.gmLog)window.__sbplus__.gmLog('XHR-BRIDGE '+o.method+' '+o.url);}catch(e){}var hd={};if(o.headers)for(var h in o.headers)hd[h]=o.headers[h];var j=b.gmXhr(o.method||'GET',o.url,JSON.stringify(hd),o.data||null);var p=JSON.parse(j);var r={status:p.status,statusText:'',responseText:p.responseText,response:p.responseText,responseHeaders:'',finalUrl:o.url};if(p.status>=200&&p.status<400){try{if(o.onload)o.onload(r);}catch(e){}}else{try{if(o.onerror)o.onerror(r);}catch(e){}}return;}try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('XHR-FALLBACK '+o.method+' '+o.url);}catch(e){}var x=new XMLHttpRequest();x.open(o.method||'GET',o.url,true);x.onreadystatechange=function(){if(x.readyState===4){var r={status:x.status,statusText:x.statusText,responseText:x.responseText,response:x.responseText,responseHeaders:'',finalUrl:o.url};try{if(o.onload)o.onload(r);}catch(e){}}};if(o.headers){for(var h in o.headers)x.setRequestHeader(h,o.headers[h]);}if(o.timeout)x.timeout=o.timeout;x.send(o.data||null);}catch(e){try{if(o.onerror)o.onerror();}catch(e2){}}};" +
         "  GM.openInTab=function(url,opt){try{window.open(url,'_blank');}catch(e){}};" +
         "  GM.setClipboard=function(t){try{if(store&&store.gmSetClipboard)store.gmSetClipboard(String(t));}catch(e){}};" +
-        "  var g={'GM':GM,'GM_setValue':GM.setValue,'GM_getValue':GM.getValue,'GM_deleteValue':GM.deleteValue,'GM_listValues':GM.listValues,'GM_addStyle':GM.addStyle,'GM_log':GM.log,'GM_info':GM.info,'GM_xmlhttpRequest':GM.xmlHttpRequest,'GM_openInTab':GM.openInTab,'GM_setClipboard':GM.setClipboard,'unsafeWindow':window};" +
+        "  GM.setValues=function(obj){try{if(obj)for(var k in obj)GM.setValue(k,obj[k]);}catch(e){}};" +
+        "  GM.registerMenuCommand=function(name,fn,acc){try{window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REG:'+name+'@'+(window.__sbplus_current_tag__||'NULL'));window.__sbplus_menus__=window.__sbplus_menus__||{};var tag=window.__sbplus_current_tag__||'__default__';if(!window.__sbplus_menus__[tag])window.__sbplus_menus__[tag]=[];var id=window.__sbplus_menus__[tag].length;window.__sbplus_menus__[tag].push({n:name,f:fn});return id;}catch(e){window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REGERR:'+e);return 0;}};" +
+        "  GM.unregisterMenuCommand=function(id){return 0;};" +
+        "  GM.addValueChangeListener=function(k,cb){return 0;};" +
+        "  GM.removeValueChangeListener=function(id){};" +
+        "  GM.getResourceText=function(name){try{var r=window.__sbplus_resources__;return (r&&r[name])?r[name]:'';}catch(e){return '';}};" +
+        "  var g={'GM':GM,'GM_setValue':GM.setValue,'GM_getValue':GM.getValue,'GM_deleteValue':GM.deleteValue,'GM_listValues':GM.listValues,'GM_addStyle':GM.addStyle,'GM_log':GM.log,'GM_info':GM.info,'GM_xmlhttpRequest':GM.xmlHttpRequest,'GM_openInTab':GM.openInTab,'GM_setClipboard':GM.setClipboard,'GM_setValues':GM.setValues,'GM_registerMenuCommand':GM.registerMenuCommand,'GM_unregisterMenuCommand':GM.unregisterMenuCommand,'GM_addValueChangeListener':GM.addValueChangeListener,'GM_removeValueChangeListener':GM.removeValueChangeListener,'GM_getResourceText':GM.getResourceText,'unsafeWindow':window};" +
         "  for(var k in g){try{if(typeof window[k]==='undefined')window[k]=g[k];}catch(e){}};" +
+        "  window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('GM_TYPEOF_'+typeof window.GM_registerMenuCommand);window.__sbplus_dbg__.push('GM_TYPEOF_UNDERSCORE_'+typeof window.GM_registerMenuCommand);" +
         "  try{window.GM=window.GM||GM;}catch(e){};" +
         "})();";
 
@@ -3331,44 +4540,755 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             }
                         }
                     });
-            XposedBridge.log("[SBPlus] TabEventHandler.onLoadFinished hooked for userscript");
+            // 页面开始加载时就注册 JS 桥，确保 window.__sbplus__ 在页面上下文建立时就存在。
+            XposedHelpers.findAndHookMethod(tabEventHandler, "onLoadStarted", String.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                registerJsBridge(param.thisObject);
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] registerJsBridge(onLoadStarted) error: " + t);
+                            }
+                        }
+                    });
+            XposedBridge.log("[SBPlus] TabEventHandler.onLoadFinished/onLoadStarted hooked for userscript");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] userscript hook failed: " + t);
         }
     }
 
     /** 在页面加载完成后，把匹配的油猴脚本注入当前 Tab。 */
+    /**
+     * 地址栏油猴图标：hook LocationBarButtonLayout.onFinishInflate，在刷新按钮旁注入一个
+     * 油猴图标。点击图标弹出「当前页面生效脚本」列表，点脚本可查看/触发其菜单命令。
+     */
+    private void hookUserscriptToolbar(ClassLoader cl) {
+        try {
+            Class<?> layoutCls = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.omnibox.LocationBarButtonLayout", cl);
+            XposedHelpers.findAndHookMethod(layoutCls, "onFinishInflate", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    try {
+                        injectUserscriptToolbarButton(param.thisObject, cl);
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] injectUserscriptToolbarButton error: " + t);
+                    }
+                }
+            });
+            XposedBridge.log("[SBPlus] LocationBarButtonLayout.onFinishInflate hooked for userscript toolbar");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] hookUserscriptToolbar failed: " + t);
+        }
+    }
+
+    /** 在刷新按钮旁插入油猴图标按钮（幂等）。 */
+    private void injectUserscriptToolbarButton(final Object layoutObj, final ClassLoader cl) {
+        try {
+            final Object urlBarParent = XposedHelpers.getObjectField(layoutObj, "mUrlBarParent");
+            if (!(urlBarParent instanceof android.view.ViewGroup)) return;
+            android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
+            android.view.View already = parent.findViewWithTag("sbplus_monkey_btn");
+            if (already != null) return;
+
+            final Context ctx = parent.getContext();
+            Object reloadBtn = XposedHelpers.getObjectField(layoutObj, "mReloadButton");
+            Object copyBtn = XposedHelpers.getObjectField(layoutObj, "mCopyButton");
+            Object zoomBtn = XposedHelpers.getObjectField(layoutObj, "mZoomButton");
+            int insertIndex = -1;
+            // 优先放 copy 按钮之后（即跳转App等右侧图标的最前面）。
+            if (copyBtn instanceof android.view.View) {
+                insertIndex = parent.indexOfChild((android.view.View) copyBtn) + 1;
+            } else if (zoomBtn instanceof android.view.View) {
+                insertIndex = parent.indexOfChild((android.view.View) zoomBtn) + 1;
+            } else if (reloadBtn instanceof android.view.View) {
+                insertIndex = parent.indexOfChild((android.view.View) reloadBtn);
+            }
+            if (insertIndex < 0) insertIndex = parent.getChildCount();
+
+            int iconSize = getDimen(ctx, "location_bar_icon_size", 40);
+            int iconHeight = getDimen(ctx, "location_bar_height", 48);
+            int margin = getDimen(ctx, "location_bar_icon_margin", 6);
+
+            android.widget.TextView btn = new android.widget.TextView(ctx);
+            btn.setText("\uD83D\uDC35");
+            btn.setTextSize(16);
+            btn.setGravity(android.view.Gravity.CENTER);
+            btn.setTag("sbplus_monkey_btn");
+            btn.setContentDescription("[SBPlus] 油猴脚本");
+            btn.setPadding(margin, 0, margin, 0);
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                    iconSize, iconHeight);
+            lp.gravity = android.view.Gravity.CENTER_VERTICAL;
+            btn.setLayoutParams(lp);
+            btn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override
+                public void onClick(android.view.View v) {
+                    try {
+                        showUserscriptScriptsPopup(layoutObj, cl, v);
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] onclick userscript popup error: " + t);
+                    }
+                }
+            });
+
+            parent.addView(btn, insertIndex);
+            XposedBridge.log("[SBPlus] userscript toolbar button injected at index " + insertIndex);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] injectUserscriptToolbarButton inner error: " + t);
+        }
+    }
+
+    /** 从 anchor 下方弹出一个列表 PopupWindow。onItem(itemIndex) 回调点击。 */
+        private String dumpChars(String s) {
+        if (s == null) return "null";
+        StringBuilder b = new StringBuilder();
+        int n = Math.min(s.length(), 80);
+        for (int i = 0; i < n; i++) {
+            char c = s.charAt(i);
+            b.append((int)c).append(",");
+        }
+        return b.toString();
+    }
+
+    private void showAnchoredList(final android.view.View anchor, final String title,
+                                  final java.util.List<String> items,
+                                  final com.sbplus.browser.MainHook.ItemClickListener onItem) {
+        try {
+            final Context ctx = anchor.getContext();
+            final boolean dark = isDarkMode(ctx);
+
+            final int BG      = dark ? 0xFF1E1E1E : 0xFFFFFFFF;
+            final int BG_POP  = dark ? 0xFF2A2A2A : 0xFFFFFFFF;
+            final int FG      = dark ? 0xFFE6E6E6 : 0xFF111111;
+            final int FG_SUB  = dark ? 0xFF9A9A9A : 0xFF777777;
+            final int DIVIDER = dark ? 0xFF383838 : 0xFFE5E5E5;
+
+            android.widget.LinearLayout root = new android.widget.LinearLayout(ctx);
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+            root.setBackgroundColor(BG);
+
+            boolean hasTitle = title != null && !title.isEmpty();
+            if (hasTitle) {
+                android.widget.TextView tvTitle = new android.widget.TextView(ctx);
+                tvTitle.setText(title);
+                tvTitle.setTextSize(13);
+                tvTitle.setTextColor(FG_SUB);
+                tvTitle.setPadding(dp(ctx, 16), dp(ctx, 12), dp(ctx, 16), dp(ctx, 4));
+                root.addView(tvTitle, new android.widget.LinearLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+
+            final android.widget.PopupWindow[] popRef = new android.widget.PopupWindow[1];
+            for (int i = 0; i < items.size(); i++) {
+                final int idx = i;
+                final String label = items.get(i);
+                android.widget.TextView tv = new android.widget.TextView(ctx);
+                tv.setText(label);
+                tv.setTextSize(15);
+                tv.setTextColor(FG);
+                tv.setSingleLine(true);
+                tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                tv.setPadding(dp(ctx, 20), dp(ctx, 12), dp(ctx, 20), dp(ctx, 12));
+                tv.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override
+                    public void onClick(android.view.View v) {
+                        if (popRef[0] != null) popRef[0].dismiss();
+                        if (onItem != null) onItem.onItem(idx);
+                    }
+                });
+                root.addView(tv, new android.widget.LinearLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                if (i < items.size() - 1) {
+                    android.view.View dv = new android.view.View(ctx);
+                    dv.setBackgroundColor(DIVIDER);
+                    root.addView(dv, new android.widget.LinearLayout.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT, 1));
+                }
+            }
+
+            android.widget.PopupWindow pop = new android.widget.PopupWindow(
+                    root, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, true);
+            pop.setOutsideTouchable(true);
+            pop.setFocusable(true);
+            pop.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(BG_POP));
+            popRef[0] = pop;
+            showPopup(pop, anchor, ctx);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showAnchoredList error: " + t);
+        }
+    }
+
+    /** 主线程安全地显示弹窗，锚点失效时兜底定位到屏幕右上。 */
+    private void showPopup(final android.widget.PopupWindow pop, final android.view.View anchor, final Context ctx) {
+        final int offY = dp(ctx, 6);
+        final Runnable run = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (anchor != null && anchor.getWindowToken() != null) {
+                        pop.showAsDropDown(anchor, 0, offY);
+                    } else {
+                        int[] loc = new int[2];
+                        if (anchor != null) anchor.getLocationOnScreen(loc);
+                        pop.showAtLocation(anchor, android.view.Gravity.TOP | android.view.Gravity.END,
+                                dp(ctx, 8), (loc[1] > 0 ? loc[1] + dp(ctx, 40) : dp(ctx, 120)));
+                    }
+                } catch (Throwable t) { XposedBridge.log("[SBPlus] showPopup err: " + t); }
+            }
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            run.run();
+        } else {
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(run);
+        }
+    }
+
+    /** 判断系统是否为深色模式。 */
+    private boolean isDarkMode(Context ctx) {
+        try {
+            int mode = ctx.getResources().getConfiguration().uiMode
+                    & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+            return mode == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        } catch (Throwable t) { return false; }
+    }
+
+    /** 列表项点击回调。 */
+    public interface ItemClickListener {
+        void onItem(int index);
+    }
+
+    /** 弹出「当前页面生效脚本」列表（锚定到图标下方）。 */
+    private void showUserscriptScriptsPopup(final Object layoutObj, ClassLoader cl, final android.view.View anchor) {
+        try {
+            String url = null;
+            Object terrace = null;
+            try {
+                Object delegate = XposedHelpers.getObjectField(layoutObj, "mTabDelegate");
+                if (delegate != null) {
+                    try { url = (String) XposedHelpers.callMethod(delegate, "getCurrentUrl"); } catch (Throwable t) {}
+                    try { terrace = XposedHelpers.callMethod(delegate, "getTerrace"); } catch (Throwable t) {}
+                }
+            } catch (Throwable t) {}
+
+            if (url == null) url = sCurrentUrl;
+            if (terrace == null && sCurrentRealTab != null) terrace = sCurrentRealTab;
+
+            // 加载匹配当前页面的脚本（含 fileName/enabled，供开关使用）。
+            final java.util.List<UserscriptMeta> matched = new java.util.ArrayList<UserscriptMeta>();
+            java.util.List<UserscriptMeta> metas = loadUserscripts();
+            for (UserscriptMeta m : metas) {
+                if (m.matches(url)) matched.add(m);
+            }
+
+            final Object fTerrace = terrace;
+            if (matched.isEmpty()) {
+                java.util.List<String> emptyHint = new java.util.ArrayList<String>();
+                emptyHint.add("本页面没有生效的油猴脚本");
+                showAnchoredList(anchor, "油猴脚本", emptyHint, null);
+                return;
+            }
+            showScriptSwitchList(anchor, "当前页面脚本", matched, new com.sbplus.browser.MainHook.ItemClickListener() {
+                @Override
+                public void onItem(int index) {
+                    try {
+                        showUserscriptMenuCommandPopup(matched.get(index).name, fTerrace, anchor);
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] menu popup error: " + t);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showUserscriptScriptsPopup error: " + t);
+        }
+    }
+
+    /** 带开关的脚本列表弹窗：每行 = 脚本名（可换行） + 启用开关。 */
+    private void showScriptSwitchList(final android.view.View anchor, final String title,
+                                      final java.util.List<UserscriptMeta> scripts,
+                                      final com.sbplus.browser.MainHook.ItemClickListener onItem) {
+        try {
+            final Context ctx = anchor.getContext();
+            final boolean dark = isDarkMode(ctx);
+
+            final int BG      = dark ? 0xFF1E1E1E : 0xFFFFFFFF;
+            final int BG_POP  = dark ? 0xFF2A2A2A : 0xFFFFFFFF;
+            final int FG      = dark ? 0xFFE6E6E6 : 0xFF111111;
+            final int FG_SUB  = dark ? 0xFF9A9A9A : 0xFF777777;
+            final int DIVIDER = dark ? 0xFF383838 : 0xFFE5E5E5;
+
+            android.widget.LinearLayout root = new android.widget.LinearLayout(ctx);
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+            root.setBackgroundColor(BG);
+
+            if (title != null && !title.isEmpty()) {
+                android.widget.TextView tvTitle = new android.widget.TextView(ctx);
+                tvTitle.setText(title);
+                tvTitle.setTextSize(13);
+                tvTitle.setTextColor(FG_SUB);
+                tvTitle.setPadding(dp(ctx, 16), dp(ctx, 12), dp(ctx, 16), dp(ctx, 4));
+                root.addView(tvTitle, new android.widget.LinearLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+
+            final android.widget.PopupWindow[] popRef = new android.widget.PopupWindow[1];
+            for (int i = 0; i < scripts.size(); i++) {
+                final int idx = i;
+                final UserscriptMeta meta = scripts.get(i);
+
+                android.widget.LinearLayout row = new android.widget.LinearLayout(ctx);
+                row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(ctx, 16), dp(ctx, 10), dp(ctx, 16), dp(ctx, 10));
+
+                android.widget.TextView tvName = new android.widget.TextView(ctx);
+                tvName.setText(meta.name);
+                tvName.setTextSize(15);
+                tvName.setTextColor(FG);
+                tvName.setSingleLine(true);
+                tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                android.widget.LinearLayout.LayoutParams nameLp = new android.widget.LinearLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+                nameLp.rightMargin = dp(ctx, 12);
+                tvName.setLayoutParams(nameLp);
+
+                final android.widget.Switch sw = new android.widget.Switch(ctx);
+                sw.setChecked(isUserscriptFileEnabled(meta.fileName));
+                sw.setTextOn(null);
+                sw.setTextOff(null);
+                sw.setShowText(false);
+                sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(android.widget.CompoundButton btn, boolean checked) {
+                        setUserscriptFileEnabled(meta.fileName, checked);
+                        XposedBridge.log("[SBPlus] switch script " + meta.fileName + " -> " + checked);
+                    }
+                });
+
+                row.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override
+                    public void onClick(android.view.View v) {
+                        if (popRef[0] != null) popRef[0].dismiss();
+                        if (onItem != null) onItem.onItem(idx);
+                    }
+                });
+
+                row.addView(tvName);
+                row.addView(sw);
+                root.addView(row, new android.widget.LinearLayout.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                if (i < scripts.size() - 1) {
+                    android.view.View dv = new android.view.View(ctx);
+                    dv.setBackgroundColor(DIVIDER);
+                    root.addView(dv, new android.widget.LinearLayout.LayoutParams(
+                            android.view.ViewGroup.LayoutParams.MATCH_PARENT, 1));
+                }
+            }
+
+            android.widget.PopupWindow pop = new android.widget.PopupWindow(
+                    root, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, true);
+            pop.setOutsideTouchable(true);
+            pop.setFocusable(true);
+            pop.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(BG_POP));
+            popRef[0] = pop;
+            showPopup(pop, anchor, ctx);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showScriptSwitchList error: " + t);
+        }
+    }
+
+    /** 弹出某脚本在当前页面注册的菜单命令列表（锚定到图标下方），点命令触发回调。 */
+    private void showUserscriptMenuCommandPopup(final String scriptName, final Object terrace, final android.view.View anchor) {
+        try {
+            if (terrace == null) {
+                XposedBridge.log("[SBPlus] menu popup: terrace null");
+                return;
+            }
+            final String tag = quoteJsonString(scriptName);
+            final String js = "JSON.stringify((window.__sbplus_menus__&&window.__sbplus_menus__[" + tag + "]||[]).map(function(m){return m.n;}));";
+            // 调试：同时打所有 tag 和本脚本 tag。
+            final String dbgJs = "JSON.stringify(Object.keys(window.__sbplus_menus__||{}))+'|'+" + tag + "+'|'+JSON.stringify(window.__sbplus_menus__||{})+'|DBG:'+JSON.stringify(window.__sbplus_dbg__||[])";
+            evaluateJsWithResult(terrace, dbgJs, new com.sbplus.browser.MainHook.JsResultListener() {
+                @Override public void onResult(String r) { XposedBridge.log("[SBPlus] menus dbg: " + r); }
+            });
+            evaluateJsWithResult(terrace, js, new com.sbplus.browser.MainHook.JsResultListener() {
+                @Override
+                public void onResult(String result) {
+                    XposedBridge.log("[SBPlus] menu js result: [" + result + "] tag=" + tag);
+                    try {
+                        final java.util.List<String> cmdNames = new java.util.ArrayList<String>();
+                        try {
+                            // Terrace 对字符串返回值多做了一层 JSON 编码（result 形如 "[\"...\"]"），先解一层。
+                            String raw = result;
+                            try {
+                                Object tmp = new org.json.JSONTokener(raw).nextValue();
+                                if (tmp instanceof String) raw = (String) tmp;
+                            } catch (Throwable t) {}
+                            org.json.JSONArray arr = new org.json.JSONArray(raw);
+                            for (int i = 0; i < arr.length(); i++) cmdNames.add(arr.optString(i));
+                        } catch (Throwable t) {
+                            XposedBridge.log("[SBPlus] JSON parse fail: " + t + " resultChars=" + dumpChars(result));
+                        }
+
+                        final java.util.List<String> items = cmdNames;
+                        if (items.isEmpty()) {
+                            java.util.List<String> emptyHint = new java.util.ArrayList<String>();
+                            emptyHint.add("此脚本没有可配置的菜单命令");
+                            showAnchoredList(anchor, scriptName, emptyHint, null);
+                            return;
+                        }
+                        showAnchoredList(anchor, scriptName + " · 菜单", items, new com.sbplus.browser.MainHook.ItemClickListener() {
+                            @Override
+                            public void onItem(int which) {
+                                try {
+                                    String triggerJs = "(function(){var m=(window.__sbplus_menus__&&window.__sbplus_menus__[" + tag + "]||[]);var c=m[" + which + "];if(c&&c.f)try{c.f();}catch(e){}})();";
+                                    evaluateJsWithResult(terrace, triggerJs, null);
+                                } catch (Throwable t) {
+                                    XposedBridge.log("[SBPlus] trigger menu error: " + t);
+                                }
+                            }
+                        });
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] menu result parse error: " + t);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showUserscriptMenuCommandPopup error: " + t);
+        }
+    }
+
+    /** 用 Terrace 执行一段 JS，并通过回调拿字符串结果（listener 可空）。 */
+    private void evaluateJsWithResult(Object terrace, final String js, final com.sbplus.browser.MainHook.JsResultListener listener) {
+        try {
+            Class<?> cbCls = XposedHelpers.findClass("com.sec.terrace.TerraceJavaScriptCallback", sModuleClassLoader);
+            Object cb = java.lang.reflect.Proxy.newProxyInstance(
+                    sModuleClassLoader,
+                    new Class[]{ cbCls },
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method method, Object[] args) throws Throwable {
+                            if (listener != null && args != null && args.length > 0) {
+                                listener.onResult(String.valueOf(args[0]));
+                            }
+                            return null;
+                        }
+                    });
+            XposedHelpers.callMethod(terrace, "evaluateJavaScript", js, cb);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] evaluateJsWithResult error: " + t);
+        }
+    }
+
+    /** JS 结果回调。 */
+    public interface JsResultListener {
+        void onResult(String result);
+    }
+
+    private String quoteJsonString(String s) {
+        if (s == null) return "\"\"";
+        StringBuilder sb = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\') sb.append("\\\\");
+            else if (c == '"') sb.append("\\\"");
+            else if (c == '\n') sb.append("\\n");
+            else if (c == '\r') sb.append("\\r");
+            else if (c == '\t') sb.append("\\t");
+            else sb.append(c);
+        }
+        sb.append("\"");
+        return sb.toString();
+    }
+
+    private int getDimen(Context ctx, String name, int defPx) {
+        try {
+            int id = ctx.getResources().getIdentifier(name, "dimen", ctx.getPackageName());
+            if (id != 0) return ctx.getResources().getDimensionPixelSize(id);
+        } catch (Throwable t) {}
+        return defPx;
+    }
+
     private void injectUserscripts(Object tabEventHandlerObj, String url) {
+        XposedBridge.log("[SBPlus] injectUserscripts ENTER url=" + url + " enabled=" + isUserscriptEnabled());
         if (!isUserscriptEnabled()) return;
         if (url == null || url.isEmpty()) return;
         java.util.List<UserscriptMeta> metas = loadUserscripts();
-        if (metas.isEmpty()) return;
+        boolean isSourceSite = isScriptSourceSite(url);
 
         try {
             Object tab = XposedHelpers.getObjectField(tabEventHandlerObj, "mTab"); // SBrowserTab
-            if (tab == null) return;
+            if (tab == null) { XposedBridge.log("[SBPlus] inject: mTab is null"); return; }
             Object realTab = XposedHelpers.callMethod(tab, "getTab"); // com.sec...tab.Tab
-            if (realTab == null) return;
+            if (realTab == null) { XposedBridge.log("[SBPlus] inject: realTab is null"); return; }
             String curUrl = (String) XposedHelpers.callMethod(realTab, "getUrl");
             if (curUrl == null) curUrl = url;
 
-            StringBuilder sb = new StringBuilder();
-            sb.append(GM_API_JS); // 先注入 GM API 引擎
-            boolean anyMatch = false;
-            for (UserscriptMeta m : metas) {
-                if (!m.matches(curUrl)) continue;
-                anyMatch = true;
-                sb.append("\n(function(){"); sb.append(m.code); sb.append("\n})();");
+            // 脚本源站点：无条件注入 GM API，伪造“脚本管理器已安装”，
+            // 让 ScriptCat/GreasyFork 的“安装”按钮走正常下载路径而不弹引导。
+            if (isSourceSite) {
+                injectJs(realTab, GM_API_JS);
+                XposedBridge.log("[SBPlus] GM API injected to source site: " + curUrl);
+                if (metas.isEmpty()) return;
             }
-            if (!anyMatch) return;
 
-            // 跳过 document-start 脚本（本版本先只做 document-end 注入）。
-            XposedHelpers.callMethod(realTab, "evaluateJavaScript", sb.toString(), null);
-            XposedBridge.log("[SBPlus] userscript injected for " + curUrl + " (" + countMatched(metas, curUrl) + " scripts)");
+            if (metas.isEmpty()) return;
+
+            prefetchRequires(metas, curUrl, realTab);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] injectUserscripts error: " + t);
         }
     }
+
+    /** 注入 JS 到 Tab。 */
+    private void injectJs(Object realTab, String js) {
+        try {
+            XposedHelpers.callMethod(realTab, "evaluateJavaScript", js, null);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] injectJs error: " + t);
+        }
+    }
+
+    /** 从 TabEventHandler 对象拿到真实 Tab，并注册 __sbplus__ JS 桥（幂等）。 */
+    private void registerJsBridge(Object tabEventHandlerObj) {
+        try {
+            if (!isUserscriptEnabled()) { XposedBridge.log("[SBPlus] registerJsBridge: disabled"); return; }
+            Object tab = XposedHelpers.getObjectField(tabEventHandlerObj, "mTab");
+            if (tab == null) { XposedBridge.log("[SBPlus] registerJsBridge: mTab null"); return; }
+            Object realTab = XposedHelpers.callMethod(tab, "getTab");
+            if (realTab == null) { XposedBridge.log("[SBPlus] registerJsBridge: realTab null"); return; }
+            XposedHelpers.callMethod(realTab, "addJavaScriptInterface", new SbplusJsBridge(), "__sbplus__");
+            XposedBridge.log("[SBPlus] registerJsBridge OK on " + realTab.getClass().getName());
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] registerJsBridge error: " + t);
+        }
+    }
+
+    /** 从缓存拼接脚本声明的 @require 外部库（主线程调用，只读缓存不做网络）。 */
+    private String loadRequires(UserscriptMeta meta) {
+        StringBuilder out = new StringBuilder();
+        if (meta.requires == null || meta.requires.isEmpty()) return "";
+        int i = 0;
+        for (String reqUrl : meta.requires) {
+            String lib = null;
+            synchronized (requireCache) {
+                lib = requireCache.get(reqUrl);
+            }
+            if (lib != null && !lib.isEmpty()) {
+                out.append("\n/* ==== @require ").append(i).append(" ==== */\n");
+                out.append(lib).append("\n");
+            }
+            i++;
+        }
+        return out.toString();
+    }
+
+    /** 后台线程预下载脚本依赖的 @require 库到缓存；全部就绪后回到主线程执行注入。 */
+    private void prefetchRequires(final java.util.List<UserscriptMeta> metas, final String url, final Object realTab) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    for (UserscriptMeta m : metas) {
+                        if (!m.matches(url)) continue;
+                        if (!isUserscriptFileEnabled(m.fileName)) continue;
+                        if (m.requires == null) continue;
+                        for (String reqUrl : m.requires) {
+                            synchronized (requireCache) {
+                                if (requireCache.containsKey(reqUrl)) continue;
+                            }
+                            try {
+                                String lib = httpGet(reqUrl);
+                                if (lib != null && !lib.isEmpty()) {
+                                    synchronized (requireCache) { requireCache.put(reqUrl, lib); }
+                                    XposedBridge.log("[SBPlus] @require cached: " + reqUrl);
+                                } else {
+                                    XposedBridge.log("[SBPlus] @require FAILED: " + reqUrl);
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] @require error: " + reqUrl + " -> " + t);
+                            }
+                        }
+                    }
+                    // 下载 @resource 资源（name + 空格 + url）
+                    for (UserscriptMeta m : metas) {
+                        if (!m.matches(url)) continue;
+                        if (!isUserscriptFileEnabled(m.fileName)) continue;
+                        if (m.resources == null) continue;
+                        for (String res : m.resources) {
+                            if (res == null) continue;
+                            String trimmed = res.trim();
+                            int sp = trimmed.indexOf(' ');
+                            if (sp <= 0) continue;
+                            final String rName = trimmed.substring(0, sp).trim();
+                            final String rUrl = trimmed.substring(sp + 1).trim();
+                            if (rName.isEmpty() || rUrl.isEmpty()) continue;
+                            synchronized (resourceCache) {
+                                if (resourceCache.containsKey(rName)) continue;
+                            }
+                            try {
+                                String content = httpGet(rUrl);
+                                if (content != null && !content.isEmpty()) {
+                                    synchronized (resourceCache) { resourceCache.put(rName, content); }
+                                    XposedBridge.log("[SBPlus] @resource cached: " + rName);
+                                } else {
+                                    XposedBridge.log("[SBPlus] @resource FAILED: " + rName);
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] @resource error: " + rName + " -> " + t);
+                            }
+                        }
+                    }
+                    android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                    main.post(new Runnable() {
+                        @Override public void run() {
+                            doInjectOnMain(metas, url, realTab);
+                        }
+                    });
+                } catch (Throwable t) {
+                    XposedBridge.log("[SBPlus] prefetch error: " + t);
+                }
+            }
+        }).start();
+    }
+
+    /** 把 @resource 资源缓存拼成 window.__sbplus_resources__ 注入段。 */
+    private String buildResourcesJs() {
+        java.util.Map<String, String> copy;
+        synchronized (resourceCache) {
+            copy = new java.util.HashMap<String, String>(resourceCache);
+        }
+        if (copy.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        sb.append("window.__sbplus_resources__={};");
+        for (java.util.Map.Entry<String, String> e : copy.entrySet()) {
+            String k = e.getKey();
+            String v = e.getValue();
+            if (v == null) v = "";
+            // 转义反斜杠、双引号、换行、回车、制表符
+            v = v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+            sb.append("window.__sbplus_resources__[").append(jsonQuote(k)).append("]=").append(jsonQuote(v)).append(";");
+        }
+        return sb.toString();
+    }
+
+    /** 生成 JSON 双引号字符串字面量（含外层引号）。 */
+    private String jsonQuote(String s) {
+        if (s == null) return "\"\"";
+        String e = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+        return "\"" + e + "\"";
+    }
+
+    /** 主线程执行注入：只读缓存拼装 + evaluateJavaScript。 */
+    private void doInjectOnMain(java.util.List<UserscriptMeta> metas, String url, Object realTab) {
+        try {
+            // 注册 __sbplus__ JS 桥（脚本执行时用 GM_xmlhttpRequest 跨域）。
+            try {
+                XposedHelpers.callMethod(realTab, "addJavaScriptInterface", new SbplusJsBridge(), "__sbplus__");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] addJavaScriptInterface error: " + t);
+            }
+
+            // 一次性拼接注入：@resource 资源 + GM API 引擎 + 逐脚本（@require + tag + 主体）。
+            StringBuilder all = new StringBuilder();
+            String resourcesJs = buildResourcesJs();
+            if (resourcesJs != null && !resourcesJs.isEmpty()) all.append(resourcesJs);
+            all.append(GM_API_JS);
+            all.append("\nwindow.__sbplus_probe_done__='done';window.__sbplus_gm_typeof__=(typeof GM_registerMenuCommand);window.__sbplus_menus__={};window.__sbplus_dbg__=[];\n");
+            all.append("window.addEventListener('unhandledrejection',function(e){window.__sbplus_last_error__=('promise:'+(e&&e.reason&&e.reason.message?e.reason.message:e));});\n");
+            all.append("window.onerror=function(m,s,l,c){window.__sbplus_last_error__=('err:'+m+' @ '+(l||0));return false;};\n");
+
+            boolean anyMatch = false;
+            for (UserscriptMeta m : metas) {
+                if (!m.matches(url)) continue;
+                if (!isUserscriptFileEnabled(m.fileName)) continue;
+                anyMatch = true;
+                all.append(loadRequires(m));
+                all.append("\nwindow.__sbplus_current_tag__=").append(jsonQuote(m.name)).append(";\n");
+                all.append("\ntry{\n(function(){\n").append(m.code).append("\n})();\n}catch(e){window.__sbplus_last_error__=('script:'+window.__sbplus_current_tag__+':'+e.message+' stack:'+(e.stack||''));}\n");
+                XposedBridge.log("[SBPlus] inject script '" + m.name + "' codeLen=" + (m.code == null ? 0 : m.code.length()));
+            }
+            if (!anyMatch) return;
+
+            all.append("window.__sbplus_scripts_count__='").append(countMatched(metas, url)).append("';");
+            final String allJs = all.toString();
+            try {
+                java.io.File dd = sAppContext.getExternalFilesDir(null);
+                if (dd != null) {
+                    java.io.FileWriter fw = new java.io.FileWriter(new java.io.File(dd, "sbplus_injected.js"));
+                    fw.write(allJs);
+                    fw.close();
+                    XposedBridge.log("[SBPlus] dumped sbplus_injected.js len=" + allJs.length());
+                }
+            } catch (Throwable t) { XposedBridge.log("[SBPlus] dump err: " + t); }
+            XposedBridge.log("[SBPlus] ALLLEN=" + allJs.length() + " HEAD=" + safeHead(allJs, 200));
+            final String[] attempt = new String[]{ allJs };
+            // 确认式注入：注入后 600ms 读回探针，失败则最多重试 3 次（每次间隔递增）。
+            final int[] tries = new int[]{ 0 };
+            final Runnable[] injectOnceRef = new Runnable[1];
+            injectOnceRef[0] = new Runnable() {
+                @Override public void run() {
+                    try {
+                        evaluateJsWithResult(realTab, attempt[0], new com.sbplus.browser.MainHook.JsResultListener() {
+                            @Override public void onResult(String r) { XposedBridge.log("[SBPlus] inject result: " + r); }
+                        });
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                            @Override public void run() {
+                                try {
+                                    final int cur = tries[0];
+                                    evaluateJsWithResult(realTab, "window.__sbplus_probe_done__+'|'+window.__sbplus_gm_typeof__+'|'+window.__sbplus_scripts_count__+'|'+window.__sbplus_last_error__", new com.sbplus.browser.MainHook.JsResultListener() {
+                                        @Override public void onResult(String r2) {
+                                            XposedBridge.log("[SBPlus] PROBE(try=" + cur + "): " + r2);
+                                            boolean bad = (r2 == null || r2.contains("undefined") || r2.length() == 0);
+                                            if (bad && cur < 4) {
+                                                tries[0] = cur + 1;
+                                                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(injectOnceRef[0], 800);
+                                            } else {
+                                                XposedBridge.log("[SBPlus] PROBE OK: " + r2);
+                                            }
+                                        }
+                                    });
+                                } catch (Throwable t) { XposedBridge.log("[SBPlus] PROBE err: " + t); }
+                            }
+                        }, 600);
+                    } catch (Throwable t) { XposedBridge.log("[SBPlus] inject err: " + t); }
+                }
+            };
+            injectOnceRef[0].run();
+
+            java.util.List<String> active = new java.util.ArrayList<String>();
+            for (UserscriptMeta m : metas) {
+                if (m.matches(url) && isUserscriptFileEnabled(m.fileName)) active.add(m.name);
+            }
+            sActiveScriptsByUrl.put(url, active);
+            sCurrentUrl = url;
+            sCurrentRealTab = realTab;
+            XposedBridge.log("[SBPlus] userscript injected for " + url + " (" + countMatched(metas, url) + " scripts)");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] doInjectOnMain error: " + t);
+        }
+    }
+
+    /** 是否为脚本源站点（需要伪造脚本管理器）。 */
+    private boolean isScriptSourceSite(String url) {
+        if (url == null) return false;
+        String u = url.toLowerCase();
+        return u.contains("scriptcat.org")
+                || u.contains("greasyfork.org")
+                || u.contains("userscript.zone")
+                || u.contains("openuserjs.org")
+                || u.contains("sleazyfork.org");
+    }
+
+    private String safeHead(String s, int n) { if (s == null) return "null"; int m = Math.min(n, s.length()); return s.substring(0, m); }
+    private String safeTail(String s, int n, int skip) { if (s == null) return "null"; int L = s.length(); int start = Math.max(0, L - n - skip); return s.substring(start, Math.min(start + n, L)); }
 
     private int countMatched(java.util.List<UserscriptMeta> metas, String url) {
         int c = 0;
@@ -3404,6 +5324,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     }
                                 } catch (Throwable ignored) {}
                             }
+                            // 特殊项：无条件隐藏无 key 的「隐私」分类标题（装饰性空标题）。
+                            count += hidePrivacyCategory(frag);
                             XposedBridge.log("[SBPlus] clean settings hidden " + count + " items");
                         }
                     });
@@ -3470,6 +5392,38 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
      * *adds* a compensating scrollBy() after the native handler runs, so drag still works
      * while clicks/long-press stay intact.
      */
+
+    /** 隐藏无 key 的「隐私」分类标题（PreferenceCategory，按 title 遍历匹配）。返回隐藏数量。 */
+    private int hidePrivacyCategory(Object frag) {
+        int n = 0;
+        try {
+            Object screen = XposedHelpers.callMethod(frag, "getPreferenceScreen");
+            if (screen == null) return 0;
+            int cnt = (Integer) XposedHelpers.callMethod(screen, "getPreferenceCount");
+            XposedBridge.log("[SBPlus] hidePrivacyCategory: screen preferences = " + cnt);
+            for (int i = 0; i < cnt; i++) {
+                Object pref = XposedHelpers.callMethod(screen, "getPreference", i);
+                if (pref == null) continue;
+                CharSequence title = (CharSequence) XposedHelpers.callMethod(pref, "getTitle");
+                String ts = title == null ? "<null>" : title.toString().trim();
+                String cls = pref.getClass().getName();
+                Object key = XposedHelpers.callMethod(pref, "getKey");
+                XposedBridge.log("[SBPlus]   pref[" + i + "] cls=" + cls + " key=" + key + " title=" + ts);
+                // 匹配「隐私」「Privacy」标题的分类（无 key）。
+                if (!("隐私".equals(ts) || "Privacy".equals(ts))) continue;
+                if (key != null) continue;
+                boolean isCategory = cls.contains("PreferenceCategory");
+                if (!isCategory) continue;
+                XposedHelpers.callMethod(pref, "setVisible", false);
+                n++;
+            }
+            XposedBridge.log("[SBPlus] hidePrivacyCategory hidden=" + n);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] hidePrivacyCategory error: " + t);
+        }
+        return n;
+    }
+
     private void hookRegionTouchScroll(ClassLoader cl) {
         try {
             Class<?> rv = XposedHelpers.findClass(
@@ -4340,6 +6294,23 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 Object info = param.args[0];
                                 long guid = (Long) param.args[1];
                                 DownloadMeta meta = extractMeta(info);
+                                // 油猴脚本：总开关开启时，优先拦截 .user.js，自己下载保存，不走下载桥。
+                                boolean isUs = isUserscriptEnabled();
+                                boolean isUjs = isUserScriptUrl(meta.url, meta.fileName);
+                                XposedBridge.log("[SBPlus] pre-download check: enabled=" + isUs + " isUserJs=" + isUjs + " url=" + meta.url);
+                                if (isUs && isUjs) {
+                                    XposedBridge.log("[SBPlus] .user.js detected (pre-download): " + meta.url);
+                                    android.widget.Toast.makeText(sAppContext, "正在安装脚本...", android.widget.Toast.LENGTH_SHORT).show();
+                                    downloadUserscriptToDir(meta.url);
+                                    // 关闭空白 tab / 告知 native 拒绝下载，避免回退导航。
+                                    try {
+                                        XposedHelpers.callMethod(param.thisObject, "ignoreDownload", guid, info);
+                                    } catch (Throwable ig) {
+                                        XposedBridge.log("[SBPlus] ignoreDownload failed: " + ig);
+                                    }
+                                    param.setResult(null);
+                                    return;
+                                }
                                 XposedBridge.log("[SBPlus] onPreDownloadRequest(service) captured: " + meta);
                                 boolean dispatched = dispatchToDownloader(meta);
                                 if (dispatched && blockNativeDownload()) {
@@ -4385,6 +6356,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             try {
                                 Object info = param.args[0];
                                 DownloadMeta meta = extractMeta(info);
+                                // 油猴脚本：拦截 .user.js 下载，自动保存到脚本目录。
+                                if (isUserscriptEnabled() && isUserScriptUrl(meta.url, meta.fileName)) {
+                                    XposedBridge.log("[SBPlus] .user.js detected, intercept: " + meta.url);
+                                    android.widget.Toast.makeText(sAppContext, "正在安装脚本...", android.widget.Toast.LENGTH_SHORT).show();
+                                    downloadUserscriptToDir(meta.url);
+                                    param.setResult(null);
+                                    return;
+                                }
                                 XposedBridge.log("[SBPlus] onDownloadStarted captured: " + meta);
                                 LogWriter.log("bridge", "onDownloadStarted " + meta);
                                 boolean dispatched = dispatchToDownloader(meta);
