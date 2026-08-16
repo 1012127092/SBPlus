@@ -61,6 +61,28 @@ hook `SBrowserCommandLine.initialize()`，通过 `TerraceCommandLine.appendSwitc
 - 用 `TextureView + MediaPlayer` 循环静音播放（TextureView 规避 SurfaceView 被不透明背景色盖住的问题）
 - 子页提供「选择视频 / 清除视频 / 删除视频」三个操作
 
+### 9. 油猴脚本管理（Userscript）
+完整的内置油猴脚本管理器：
+- 脚本列表 / 添加 / 保存 / 删除 / 开关（开关在前、名字在后）
+- 拦截 `.user.js` 下载引导安装
+- 支持源管理（`@updateURL` / `@downloadURL`）、「更新所有脚本」
+- 内置精简版 GM API（`GM_setValue` / `GM_getValue` / `GM_registerMenuCommand` 等）
+- 脚本详情页 + 分享导入
+
+### 10. 书签管理
+- 导入 / 导出书签（Chrome / Edge / Firefox 通用 HTML 格式）
+- 树形勾选对话框（可选导入/导出指定节点）
+
+### 11. 随机浏览器标识（UA）
+内置 55 条真实 UA 池，支持随机轮换（桌面 Chrome / 手机 / iPhone / 自定义）。
+
+### 12. 主页美化子菜单
+主页搜索框等页面元素的个性化设置。
+
+### 13. 版本号 + 项目地址 + 自动检测更新
+- SBPlus 应用首页与浏览器 SBPlus 菜单里都显示版本号 + 项目地址
+- 启动/进入页面时自动检测 GitHub 最新 release，有新版本在版本号后提示「点击更新」，点击后确认下载 apk
+
 ## 构建
 
 ```bat
@@ -91,9 +113,9 @@ SBPlus/
 │       ├── assets/xposed_init    (模块入口)
 │       ├── res/values/           (app_name=SBPlus, xposedscope)
 │       └── java/com/sbplus/browser/
-│           ├── MainHook.java               (核心 hook，功能 1-8)
-│           ├── MainActivity.java
-│           ├── SBPlusSettingsFragment.java
+│           ├── MainHook.java               (核心 hook，功能 1-13)
+│           ├── MainActivity.java           (模块首页/版本号/更新检测)
+│           ├── UpdateChecker.java          (GitHub 最新版本查询)
 │           ├── MenuReorderHelper.java      (网格菜单拖拽排序)
 │           ├── MenuAddButtonHelper.java    (添加图标)
 │           ├── MenuEditHelper.java         (编辑图标)

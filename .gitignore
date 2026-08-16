@@ -39,5 +39,5 @@ injected_all.js
 *.keystore
 *.jks
 
-# 密钥文件（绝对不要提交）
+# 瀵嗛挜鏂囦欢锛堢粷瀵逛笉瑕佹彁浜わ級
 _secrets.txt
