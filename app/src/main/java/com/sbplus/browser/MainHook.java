@@ -80,7 +80,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_VIDEO_BG_PATH = "video_bg_path";
     // 模块自身版本号（编译期确定，连 app/build.gradle 的 versionName）。
     // 浏览器进程无法加载 BuildConfig，这里作为 prefs 缺失时的兜底。
-    private static final String APP_VERSION = "2.0";
+    private static final String APP_VERSION = "2.1";
     private static final String KEY_ENABLE_HOME_CLEAR_TEXT = "enable_home_clear_text";
     private static final String KEY_ENABLE_HOME_MOVE_BTN = "enable_home_move_btn";
     private static final String KEY_ENABLE_USERSCRIPT = "enable_userscript";
