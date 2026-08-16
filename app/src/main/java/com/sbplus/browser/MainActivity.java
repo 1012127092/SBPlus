@@ -8,6 +8,7 @@ import android.os.Bundle;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
+import de.robv.android.xposed.XSharedPreferences;
 
 /**
  * SBPlus module entry / status screen.
@@ -29,11 +30,17 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // 把版本号写入 prefs，供浏览器进程的 SBPlus 菜单读取（XSharedPreferences）
+        // 把版本号写入 prefs，供浏览器进程的 SBPlus 菜单读取（XSharedPreferences）。
+        // 注意：必须用 makeWorldReadable 让浏览器进程（不同 UID）可读，否则读到旧值/空值。
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putString(KEY_VERSION_NAME, BuildConfig.VERSION_NAME)
                 .putInt(KEY_VERSION_CODE, BuildConfig.VERSION_CODE)
                 .apply();
+        try {
+            XSharedPreferences xp = new XSharedPreferences(getPackageName(), PREFS_NAME);
+            xp.makeWorldReadable();
+            xp.reload();
+        } catch (Throwable ignored) {}
 
         mVersionView = findViewById(R.id.tv_version);
         TextView projectView = findViewById(R.id.tv_project);

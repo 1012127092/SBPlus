@@ -78,6 +78,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_ENABLE_BLOCK_UPDATE = "enable_block_update";
     private static final String KEY_ENABLE_VIDEO_BG = "enable_video_bg";
     private static final String KEY_VIDEO_BG_PATH = "video_bg_path";
+    // 模块自身版本号（编译期确定，连 app/build.gradle 的 versionName）。
+    // 浏览器进程无法加载 BuildConfig，这里作为 prefs 缺失时的兜底。
+    private static final String APP_VERSION = "2.0";
     private static final String KEY_ENABLE_HOME_CLEAR_TEXT = "enable_home_clear_text";
     private static final String KEY_ENABLE_HOME_MOVE_BTN = "enable_home_move_btn";
     private static final String KEY_ENABLE_USERSCRIPT = "enable_userscript";
@@ -1041,6 +1044,24 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         }
                     });
 
+            // 离开地区页时复位 sRegionPageActive，避免返回后在其它页面误触发滚动补偿。
+            XposedHelpers.findAndHookMethod(prefFrag, "onDestroyView",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                android.os.Bundle args = (android.os.Bundle)
+                                        XposedHelpers.callMethod(param.thisObject, "getArguments");
+                                if (args != null && PAGE_REGION_PICKER.equals(args.getString(ARG_PAGE))) {
+                                    sRegionPageActive = false;
+                                    XposedBridge.log("[SBPlus] region page left, scroll compensation off");
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] region onDestroyView reset error: " + t);
+                            }
+                        }
+                    });
+
             XposedBridge.log("[SBPlus] PreferenceFragmentCustom.onCreatePreferences hooked");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] submenu hook failed: " + t);
@@ -1311,18 +1332,40 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 XposedBridge.log("[SBPlus] bookmark manager inject error: " + t);
             }
 
-            // —— 版本号（点击检测更新）——
+            // —— 版本号（自动探测更新）——
             final Context verFinalCtx = ctx;
             try {
                 Class<?> verPrefCls = XposedHelpers.findClass(
                         "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
-                Object verPref = XposedHelpers.newInstance(verPrefCls, new Class[]{Context.class}, ctx);
+                final Object verPref = XposedHelpers.newInstance(verPrefCls, new Class[]{Context.class}, ctx);
                 XposedHelpers.callMethod(verPref, "setTitle", "版本号");
                 XposedHelpers.callMethod(verPref, "setKey", "sbplus_version");
-                XposedHelpers.callMethod(verPref, "setSummary", "当前 " + readModuleVersion() + "（点击检测更新）");
+                String localVer = readModuleVersion();
+                XposedHelpers.callMethod(verPref, "setSummary", "当前 " + localVer + "（自动检测更新中…）");
                 bindPreferenceClick(verPref, cl, new Runnable() { public void run() { checkUpdateInteractive(verFinalCtx); } });
                 XposedHelpers.callMethod(screen, "addPreference", verPref);
-                XposedBridge.log("[SBPlus] version item injected");
+                // 后台自动检测最新版本，有新版本则在 summary 提示
+                final String localVerF = localVer;
+                new Thread(new Runnable() { public void run() {
+                    try {
+                        String remote = checkLatestVersionOnline();
+                        if (remote != null && versionNewer(remote, localVerF)) {
+                            String disp = stripV(remote);
+                            final String msg = "当前 " + localVerF + "，有新版 " + disp + "，点击更新";
+                            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                            main.post(new Runnable() { public void run() {
+                                try { XposedHelpers.callMethod(verPref, "setSummary", msg); } catch (Throwable ignored) {}
+                            }});
+                        } else {
+                            final String msg = "当前 " + localVerF + "（已是最新）";
+                            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                            main.post(new Runnable() { public void run() {
+                                try { XposedHelpers.callMethod(verPref, "setSummary", msg); } catch (Throwable ignored) {}
+                            }});
+                        }
+                    } catch (Throwable ignored) {}
+                }}).start();
+                XposedBridge.log("[SBPlus] version item injected (auto-check enabled)");
             } catch (Throwable t) {
                 XposedBridge.log("[SBPlus] version item inject error: " + t);
             }
@@ -1345,7 +1388,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
-    /** 从模块 prefs 读版本号（MainActivity 写入），读不到则 fallback。 */
+    /** 从模块 prefs 读版本号（MainActivity 写入），读不到则用编译期常量 APP_VERSION。 */
     private String readModuleVersion() {
         try {
             XSharedPreferences xp = new XSharedPreferences(MODULE_PACKAGE, PREFS_NAME);
@@ -1353,7 +1396,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             String v = xp.getString("version_name", null);
             if (v != null && !v.isEmpty()) return v;
         } catch (Throwable ignored) {}
-        return "1.0";
+        return APP_VERSION;
     }
 
     /** 用浏览器打开项目主页。 */
@@ -1365,6 +1408,35 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             ctx.startActivity(i);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] openProjectPage error: " + t);
+        }
+    }
+
+    /** 查询 GitHub 最新 release 的 tag（如 v2.1），失败返回 null。 */
+    private String checkLatestVersionOnline() {
+        java.net.HttpURLConnection c = null;
+        try {
+            c = (java.net.HttpURLConnection) new java.net.URL(
+                    "https://api.github.com/repos/1012127092/SBPlus/releases/latest").openConnection();
+            c.setRequestMethod("GET");
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(10000);
+            c.setRequestProperty("Accept", "application/vnd.github+json");
+            c.setRequestProperty("User-Agent", "SBPlus");
+            int code = c.getResponseCode();
+            if (code != 200) return null;
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(c.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) sb.append(line).append('\n');
+            r.close();
+            org.json.JSONObject o = new org.json.JSONObject(sb.toString());
+            String tag = o.optString("tag_name", "");
+            return (tag == null || tag.isEmpty()) ? null : tag;
+        } catch (Throwable e) {
+            return null;
+        } finally {
+            if (c != null) { try { c.disconnect(); } catch (Throwable ignored) {} }
         }
     }
 
@@ -1454,6 +1526,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] showUpdateDialog error: " + t);
         }
+    }
+
+    /** 剥离 tag 前导的 'v'，用于展示（如 v2.0 -> 2.0）。 */
+    private String stripV(String s) {
+        if (s == null) return "";
+        String r = s.trim();
+        if (r.toLowerCase().startsWith("v")) r = r.substring(1);
+        return r;
     }
 
     /** 比较版本号 remote > local。 */
@@ -1742,6 +1822,12 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     private int dp(Context ctx, int v) {
         return (int) (v * ctx.getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    /** 弹窗内多行文本的最大可用宽度（px）：屏幕宽度的 85%。 */
+    private int screenPopupMaxWidth(Context ctx) {
+        int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
+        return (int) (screenW * 0.85f);
     }
 
     /**
@@ -5215,7 +5301,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             final android.widget.LinearLayout tree = new android.widget.LinearLayout(act);
             tree.setOrientation(android.widget.LinearLayout.VERTICAL);
             android.widget.ScrollView sv = new android.widget.ScrollView(act);
-            sv.addView(tree);
+            sv.addView(tree, new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
             int screenH = act.getResources().getDisplayMetrics().heightPixels;
             int treeH = Math.max(420, (int) (screenH * 0.65f));
             android.widget.LinearLayout.LayoutParams svlp = new android.widget.LinearLayout.LayoutParams(
@@ -5293,6 +5381,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             // 缩进
             android.widget.LinearLayout row = new android.widget.LinearLayout(act);
             row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
             int indent = depth * 22;
             row.setPadding(indent, 2, 0, 2);
 
@@ -5326,14 +5415,18 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 android.widget.TextView label = new android.widget.TextView(act);
                 label.setText(child.title == null ? "(文件夹)" : child.title);
                 label.setTextSize(16);
+                label.setSingleLine(false);
                 label.setOnClickListener(new android.view.View.OnClickListener() {
                     @Override public void onClick(android.view.View v) {
                         child.expanded = !child.expanded;
                         rerender.run();
                     }
                 });
-                row.addView(label);
-                tree.addView(row);
+                row.addView(label, new android.widget.LinearLayout.LayoutParams(
+                        0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                tree.addView(row, new android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
 
                 if (child.expanded) {
                     renderTreeRows(tree, child, depth + 1, act, rerender);
@@ -5356,8 +5449,12 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 android.widget.TextView label = new android.widget.TextView(act);
                 label.setText(child.title == null ? "(无标题)" : child.title);
                 label.setTextSize(15);
-                row.addView(label);
-                tree.addView(row);
+                label.setSingleLine(false);
+                row.addView(label, new android.widget.LinearLayout.LayoutParams(
+                        0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                tree.addView(row, new android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
             }
         }
     }
@@ -6009,6 +6106,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
             }
 
+            final int maxTextW = screenPopupMaxWidth(ctx);
             final android.widget.PopupWindow[] popRef = new android.widget.PopupWindow[1];
             for (int i = 0; i < items.size(); i++) {
                 final int idx = i;
@@ -6017,8 +6115,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 tv.setText(label);
                 tv.setTextSize(15);
                 tv.setTextColor(FG);
-                tv.setSingleLine(true);
-                tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                tv.setSingleLine(false);
+                tv.setMaxWidth(maxTextW);
                 tv.setPadding(dp(ctx, 20), dp(ctx, 12), dp(ctx, 20), dp(ctx, 12));
                 tv.setOnClickListener(new android.view.View.OnClickListener() {
                     @Override
@@ -6164,6 +6262,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
             }
 
+            final int maxTextW = screenPopupMaxWidth(ctx) - dp(ctx, 16) - dp(ctx, 16) - dp(ctx, 12);
             final android.widget.PopupWindow[] popRef = new android.widget.PopupWindow[1];
             for (int i = 0; i < scripts.size(); i++) {
                 final int idx = i;
@@ -6178,8 +6277,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 tvName.setText(meta.name);
                 tvName.setTextSize(15);
                 tvName.setTextColor(FG);
-                tvName.setSingleLine(true);
-                tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                tvName.setSingleLine(false);
+                tvName.setMaxWidth(maxTextW);
 
                 final android.widget.Switch sw = new android.widget.Switch(ctx);
                 sw.setChecked(isUserscriptFileEnabled(meta.fileName));
@@ -6205,8 +6304,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 // 开关在前，名字在后；开关与名字之间留 12dp 空隙。
                 row.addView(sw);
                 android.widget.LinearLayout.LayoutParams nameLp = new android.widget.LinearLayout.LayoutParams(
-                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+                        0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
                 nameLp.leftMargin = dp(ctx, 12);
                 tvName.setLayoutParams(nameLp);
                 row.addView(tvName);
@@ -6758,43 +6856,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     }
 
     private void hookRegionTouchScroll(ClassLoader cl) {
-        try {
-            Class<?> rv = XposedHelpers.findClass(
-                    "androidx.recyclerview.widget.RecyclerView", cl);
-            XposedHelpers.findAndHookMethod(rv, "onTouchEvent",
-                    android.view.MotionEvent.class, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    if (!sRegionPageActive) return;
-                    Object self = param.thisObject;
-                    if (!(self instanceof android.view.View)) return;
-                    android.view.View v = (android.view.View) self;
-                    android.view.MotionEvent ev = (android.view.MotionEvent) param.args[0];
-                    int action = ev.getActionMasked();
-                    if (action == android.view.MotionEvent.ACTION_DOWN) {
-                        mLastRegionY = ev.getRawY();
-                    } else if (action == android.view.MotionEvent.ACTION_MOVE) {
-                        float y = ev.getRawY();
-                        int dy = (int) (mLastRegionY - y);
-                        mLastRegionY = y;
-                        if (dy != 0) {
-                            XposedHelpers.callMethod(v, "scrollBy", 0, dy);
-                            if (mRegionTouchLog++ % 20 == 0) {
-                                Object off = XposedHelpers.callMethod(v, "computeVerticalScrollOffset");
-                                XposedBridge.log("[SBPlus] scrollBy dy=" + dy + " offset=" + off);
-                            }
-                        }
-                    }
-                    if (action == android.view.MotionEvent.ACTION_UP) {
-                        XposedBridge.log("[SBPlus] region RV class=" + v.getClass().getName()
-                                + " super=" + v.getClass().getSuperclass().getName());
-                    }
-                }
-            });
-            XposedBridge.log("[SBPlus] region touch scroll compensation hooked");
-        } catch (Throwable t) {
-            XposedBridge.log("[SBPlus] region touch scroll hook failed: " + t);
-        }
+        // [已禁用] 早期误判 SeslRecyclerView 会掉 ACTION_MOVE 导致滑不动，
+        // 于是额外 scrollBy 补偿；但实际三星原生滚动正常，补偿造成“双倍滚动→跳动”。
+        // 现今设备原生滚动已可正常工作，这里不再额外补偿。保留方法仅为避免调用处报错。
+        XposedBridge.log("[SBPlus] region touch scroll compensation DISABLED (native scroll works)");
     }
 
     /**

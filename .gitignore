@@ -38,3 +38,6 @@ injected_all.js
 # ç­¾åå¯†é’¥ï¼ˆå‹¿ä¸Šä¼ ï¼‰
 *.keystore
 *.jks
+
+# ÃÜÔ¿ÎÄ¼ş£¨¾ø¶Ô²»ÒªÌá½»£©
+_secrets.txt
