@@ -5,6 +5,48 @@ Samsung Browser 增强模块（**LSPosed** 模块）。
 以 LSPosed 为运行框架，为三星浏览器（Samsung Internet，包名 `com.sec.android.app.sbrowser`）
 补充官方未提供的功能。
 
+---
+
+## English
+
+A **LSPosed** module that enhances Samsung Internet Browser (package `com.sec.android.app.sbrowser`) with features not provided officially.
+
+### Features
+
+1. **Download Bridge** — forward downloads to a third-party manager (ADM / IDM+ / 1DM, customizable package), passing Cookie / UA / Referer; optionally block the native download.
+2. **Settings Integration + Logging** — inject an SBPlus submenu into browser settings, with a built-in log viewer.
+3. **Via-style Grid Menu** — turn the "More" menu into a multi-column grid, drag-to-reorder, add/remove icons.
+4. **Region Switch** — switch the browser region to one of 17 countries.
+5. **UA Spoofing** — fully replace the User-Agent (Desktop Chrome / Mobile / iPhone / custom).
+6. **Streamlined Settings** — master switch + multi-select hiding for unneeded items.
+7. **Block Updates & Red Dots** — block browser updates, clear update notifications / popups / red dots.
+8. **Homepage Video Background** — play a video on the homepage (loop, muted).
+9. **Userscript Manager** — full built-in manager: list / add / save / delete / toggle, `.user.js` interception, source management, "update all", lightweight GM API, detail page + share import.
+10. **Bookmark Management** — import / export bookmarks (Chrome / Edge / Firefox HTML format), tree checkbox dialog.
+11. **Random UA** — 55 real UA strings with random rotation.
+12. **Homepage Beautification** — personalize the homepage search box and other elements.
+13. **Version + Project URL + Auto Update Check** — version and project URL shown in module home and browser menu, with auto update checking.
+
+### Requirements
+
+1. Rooted device with **LSPosed** installed (via Magisk).
+2. Install the module APK, then enable it in LSPosed Manager.
+3. Set scope to **Samsung Internet** (`com.sec.android.app.sbrowser`) or Beta (`com.sec.android.app.sbrowser.beta`).
+4. Restart the browser (or device).
+
+### Build
+
+```bat
+call <path-to-android-sdk>/env.bat
+gradle assembleDebug --no-daemon
+```
+
+Output: `app\build\outputs\apk\debug\app-debug.apk`
+
+---
+
+## 中文
+
 ## 框架说明
 
 - **目标框架：LSPosed**（接口兼容标准 Xposed API）
