@@ -1107,8 +1107,16 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             String page = null;
             android.os.Bundle args = (android.os.Bundle) XposedHelpers.callMethod(frag, "getArguments");
             if (args != null) page = args.getString(ARG_PAGE);
+            if (PAGE_REGION_PICKER.equals(page)) {
+                sRegionPageActive = true;
+            }
+            // 长列表/选择器子页：统一底部加 padding，避免最后一项被底部栏遮挡。
+            // （除 region_picker 外，它走 collapseAppBar 顶部折叠方案，不叠加 bottom padding）
+            if (isBottomPadPage(page)) {
+                applyListBottomPadding(frag);
+                return;
+            }
             if (!PAGE_REGION_PICKER.equals(page)) return;
-            sRegionPageActive = true;
 
             Object rvObj = XposedHelpers.callMethod(frag, "getListView");
             if (rvObj instanceof android.view.View) {
@@ -1127,6 +1135,39 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] fixRegionScroll error: " + t);
         }
+    }
+
+    /** 需要底部 padding 的长列表/选择器子页（region_picker 走 collapseAppBar，不在此列）。 */
+    private boolean isBottomPadPage(String page) {
+        if (page == null) return false;
+        return PAGE_DOWNLOADER_PICKER.equals(page)
+                || PAGE_UA_PICKER.equals(page)
+                || PAGE_CLEAN_SETTINGS_PICKER.equals(page)
+                || PAGE_VIDEO_BG_PICKER.equals(page)
+                || PAGE_HOME_BEAUTIFY.equals(page)
+                || PAGE_USERSCRIPT_PICKER.equals(page)
+                || PAGE_USERSCRIPT_DETAIL.equals(page)
+                || PAGE_USERSCRIPT_LIST.equals(page);
+    }
+
+    /** 给列表页的 RecyclerView 底部加 padding，确保最后一项能完整滚出（不被底部栏遮挡）。 */
+    private void applyListBottomPadding(Object frag) {
+        try {
+            Object rvObj = XposedHelpers.callMethod(frag, "getListView");
+            if (!(rvObj instanceof android.view.View)) return;
+            final android.view.View rv = (android.view.View) rvObj;
+            rv.post(new Runnable() {
+                @Override public void run() {
+                    try {
+                        int bottomPad = dp(rv.getContext(), 96);
+                        int left = rv.getPaddingLeft();
+                        int top = rv.getPaddingTop();
+                        int right = rv.getPaddingRight();
+                        rv.setPadding(left, top, right, rv.getPaddingBottom() + bottomPad);
+                    } catch (Throwable ignored) {}
+                }
+            });
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -6143,13 +6184,52 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             pop.setFocusable(true);
             pop.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(BG_POP));
             popRef[0] = pop;
+            // 包一层 ScrollView，限制最大高度为屏幕 60%，过时可滚动、避免末尾项被截断。
+            wrapWithScroll(pop, ctx, root);
             showPopup(pop, anchor, ctx);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] showAnchoredList error: " + t);
         }
     }
 
-    /** 主线程安全地显示弹窗，锚点失效时兜底定位到屏幕右上。 */
+    /** 把弹窗内容包进 ScrollView，限制最大高度并保证可滚动，避免列表过长时末尾项被截断。 */
+    private void wrapWithScroll(final android.widget.PopupWindow pop, final Context ctx, final android.view.View content) {
+        try {
+            int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
+            int screenH = ctx.getResources().getDisplayMetrics().heightPixels;
+            // 限宽：内容不超过屏幕宽的 85%。
+            int maxW = (int) (screenW * 0.85f);
+            int maxH = (int) (screenH * 0.6f);
+            // 第一步：用 AT_MOST(限宽) 测宽度，拿到真实宽度（UNSPECIFIED 会让 weight=1 的 child 得到 0 宽）。
+            int wSpec = android.view.View.MeasureSpec.makeMeasureSpec(maxW, android.view.View.MeasureSpec.AT_MOST);
+            int hSpec0 = android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED);
+            content.measure(wSpec, hSpec0);
+            int contentW = Math.min(content.getMeasuredWidth(), maxW);
+            // 第二步：用已确定宽度测高度（宽度固定后，weight=1 的 child 才得到正确宽度与换行）。
+            int wSpec2 = android.view.View.MeasureSpec.makeMeasureSpec(contentW, android.view.View.MeasureSpec.EXACTLY);
+            int hSpec2 = android.view.View.MeasureSpec.makeMeasureSpec(maxH, android.view.View.MeasureSpec.AT_MOST);
+            content.measure(wSpec2, hSpec2);
+            int contentH = content.getMeasuredHeight();
+            int w = contentW > 0 ? contentW : maxW;
+            int h = contentH > 0 && contentH < maxH ? contentH : maxH;
+
+            android.widget.ScrollView sv = new android.widget.ScrollView(ctx);
+            sv.setVerticalScrollBarEnabled(false);
+            sv.setOverScrollMode(android.view.View.OVER_SCROLL_NEVER);
+            sv.setLayoutParams(new android.view.ViewGroup.LayoutParams(w, h));
+            sv.addView(content, new android.view.ViewGroup.LayoutParams(w,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+            pop.setContentView(sv);
+            pop.setWidth(w);
+            pop.setHeight(h);
+            // 裁剪关闭（API 21+），避免系统自动裁剪弹窗导致高度丢失。
+            try { pop.setClippingEnabled(false); } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] wrapWithScroll error: " + t);
+        }
+    }
+
+    /** 主线程安全地显示弹窗，锚点失效时兜底定位到屏幕右上。锚点在屏幕下半时向上展开。 */
     private void showPopup(final android.widget.PopupWindow pop, final android.view.View anchor, final Context ctx) {
         final int offY = dp(ctx, 6);
         final Runnable run = new Runnable() {
@@ -6157,7 +6237,18 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             public void run() {
                 try {
                     if (anchor != null && anchor.getWindowToken() != null) {
-                        pop.showAsDropDown(anchor, 0, offY);
+                        // 判断锚点位置：在屏幕下半部则向上展开，避免底部工具栏锚点导致弹窗被屏幕底部截断。
+                        int[] loc = new int[2];
+                        anchor.getLocationOnScreen(loc);
+                        int screenH = ctx.getResources().getDisplayMetrics().heightPixels;
+                        int anchorCenterY = loc[1] + anchor.getHeight() / 2;
+                        if (anchorCenterY > screenH / 2) {
+                            int popH = pop.getHeight() > 0 ? pop.getHeight() : 0;
+                            int yOff = -(popH + anchor.getHeight() + offY);
+                            pop.showAsDropDown(anchor, 0, yOff);
+                        } else {
+                            pop.showAsDropDown(anchor, 0, offY);
+                        }
                     } else {
                         int[] loc = new int[2];
                         if (anchor != null) anchor.getLocationOnScreen(loc);
@@ -6326,6 +6417,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             pop.setFocusable(true);
             pop.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(BG_POP));
             popRef[0] = pop;
+            // 包一层 ScrollView，限制最大高度为屏幕 60%，过时可滚动、避免末尾项被截断。
+            wrapWithScroll(pop, ctx, root);
             showPopup(pop, anchor, ctx);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] showScriptSwitchList error: " + t);
