@@ -80,7 +80,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_VIDEO_BG_PATH = "video_bg_path";
     // 模块自身版本号（编译期确定，连 app/build.gradle 的 versionName）。
     // 浏览器进程无法加载 BuildConfig，这里作为 prefs 缺失时的兜底。
-    private static final String APP_VERSION = "2.1";
+    private static final String APP_VERSION = "2.2";
     private static final String KEY_ENABLE_HOME_CLEAR_TEXT = "enable_home_clear_text";
     private static final String KEY_ENABLE_HOME_MOVE_BTN = "enable_home_move_btn";
     private static final String KEY_ENABLE_USERSCRIPT = "enable_userscript";
@@ -5145,7 +5145,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     if (src.isEmpty()) continue;
                     try {
                         String remote = httpGet(src);
-                        if (remote == null || remote.isEmpty()) continue;
+                        if (remote == null || !isUserscriptContentValid(remote)) continue;
                         UserscriptMeta rm = UserscriptMeta.parse(remote);
                         if (rm.version.isEmpty() || m.version.isEmpty() || rm.version.equals(m.version)) {
                             continue; // 无版本或版本相同，跳过
@@ -5176,7 +5176,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 @Override public void run() {
                     try {
                         String content = httpGet(url);
-                        if (content == null || content.isEmpty()) { toastOnMain("下载失败: " + url); return; }
+                        if (content == null || !isUserscriptContentValid(content)) { toastOnMain("下载不完整，请重试: " + url); return; }
                         String fn = saveUserscriptContent(content);
                         if (fn != null) saveSource(fn, url);
                         toastOnMain(fn == null ? "保存失败" : ("已安装脚本: " + fn));
@@ -5191,25 +5191,31 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
-    /** 简单 HTTP GET，返回响应体字符串。 */
+    /** 简单 HTTP GET，返回响应体字符串。用 read() 批量读+长超时，避免大脚本下载中断截断。 */
     private String httpGet(String url) {
         java.net.HttpURLConnection conn = null;
         try {
             java.net.URL u = new java.net.URL(url);
             conn = (java.net.HttpURLConnection) u.openConnection();
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(15000);
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(60000);
             conn.setRequestProperty("User-Agent", "Mozilla/5.0 (SBPlus Userscript)");
+            conn.setRequestProperty("Accept-Encoding", "identity");
             conn.setInstanceFollowRedirects(true);
             int code = conn.getResponseCode();
             java.io.InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
             if (is == null) return null;
-            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(is, "UTF-8"));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = br.readLine()) != null) sb.append(line).append("\n");
-            br.close();
-            return sb.toString();
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int r;
+            while ((r = is.read(buf)) != -1) bos.write(buf, 0, r);
+            is.close();
+            String out = new String(bos.toByteArray(), "UTF-8");
+            if (code >= 400) {
+                XposedBridge.log("[SBPlus] httpGet HTTP " + code + " for " + url);
+                return null;
+            }
+            return out;
         }
  catch (Throwable t) {
             XposedBridge.log("[SBPlus] httpGet error: " + t);
@@ -5217,6 +5223,12 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         } finally {
             if (conn != null) conn.disconnect();
         }
+    }
+
+    /** 校验油猴脚本内容完整性：非空且同时包含 ==UserScript== 开头块与 ==/UserScript== 结束。 */
+    private boolean isUserscriptContentValid(String content) {
+        if (content == null || content.length() < 30) return false;
+        return content.indexOf("==UserScript==") >= 0 && content.indexOf("==/UserScript==") >= 0;
     }
 
     /** 判断 url/文件名是否为油猴脚本（.user.js，兼容被加 .txt 后缀的情况）。 */
