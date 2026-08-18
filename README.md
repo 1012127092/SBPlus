@@ -43,17 +43,27 @@ gradle assembleDebug --no-daemon
 
 Output: `app\build\outputs\apk\debug\app-debug.apk`
 
+### Self-adaptation
+
+The module resolves Samsung's obfuscated / version-dependent class and method names **at runtime**, instead of hardcoding them:
+
+- **Dynamic parent resolution** — obtains the parent (obfuscated androidx class) of `PreferenceFragmentCustom` at launch, so it adapts to whichever obfuscation name the browser version uses.
+- **Multi-candidate method fallback** — for obfuscated methods (e.g. `PreferenceManager`'s `createPreferenceScreen`), tries candidate names in order, standard first then obfuscated names.
+- **Isolated error handling** — each hook is independently guarded; a failure in one does not break others or the browser itself.
+
+Re-resolution happens on every browser start, so after a browser update the module adapts automatically without a module update.
+
 ---
 
 ## 中文
 
-## 框架说明
+### 框架说明
 
 - **目标框架：LSPosed**（接口兼容标准 Xposed API）
 - 模块入口：`assets/xposed_init` → `com.sbplus.browser.MainHook`
 - 兼容：LSPosed 可加载，老 Xposed / EdXposed 理论上也可加载
 
-## 使用前提
+### 使用前提
 
 1. 手机已 root，并安装 **LSPosed**（Magisk 模块方式）
 2. 安装本模块 APK 后，打开 LSPosed Manager：
@@ -63,7 +73,7 @@ Output: `app\build\outputs\apk\debug\app-debug.apk`
 
 > 作用域需要时可在 LSPosed 界面手动勾选。
 
-## 已实现功能
+### 已实现功能
 
 ### 1. 下载桥接（第三方下载器接管）
 把三星浏览器的下载请求转交给第三方下载器（ADM / IDM+ / 1DM，包名可自定义）。
@@ -125,7 +135,7 @@ hook `SBrowserCommandLine.initialize()`，通过 `TerraceCommandLine.appendSwitc
 - SBPlus 应用首页与浏览器 SBPlus 菜单里都显示版本号 + 项目地址
 - 启动/进入页面时自动检测 GitHub 最新 release，有新版本在版本号后提示「点击更新」，点击后确认下载 apk
 
-## 构建
+### 构建
 
 ```bat
 call <path-to-android-sdk>\env.bat
@@ -134,7 +144,19 @@ gradle assembleDebug --no-daemon
 
 产物：`app\build\outputs\apk\debug\app-debug.apk`
 
-## 开发环境
+### 自适应说明
+
+模块对三星浏览器内部被混淆/随版本变化的类名与方法名做了**运行时自适应解析**，而非硬编码：
+
+- **动态父类解析**：通过明文类 `PreferenceFragmentCustom` 动态获取其父类（androidx 混淆类），
+  无论浏览器版本把混淆名改成 `H2.A` 还是其他，都能自动找到。
+- **多候选方法回退**：对被混淆的方法（如 `PreferenceManager` 的 `createPreferenceScreen`）
+  按候选名列表依次尝试，标准名优先、混淆名兜底。
+- **独立容错**：每个 hook 点单独保护，单个失败不影响其他功能，也不影响浏览器自身。
+
+浏览器每次启动时都会重新解析适配，浏览器更新后无需模块更新即可自动适配新版本。
+
+### 开发环境
 
 - Windows AMD64
 - Java 17（Temurin）
@@ -143,7 +165,7 @@ gradle assembleDebug --no-daemon
 - 依赖仓库：阿里云镜像（解决国内拉取 AGP 依赖超时问题）
 - 测试设备：三星 Galaxy（Android 16 / SDK 36）
 
-## 项目结构
+### 项目结构
 
 ```
 SBPlus/
@@ -166,13 +188,3 @@ SBPlus/
 ├── settings.gradle               (rootProject.name=SBPlus)
 └── gradle.properties
 ```
-
-## 关键逆向结论
-
-- 改区 hook 正确入口是 `CountryUtil.getCountryIsoCode()`
-- UA 是启动时一次性注入，改后需重启浏览器；真正 UA 组装在 Chromium native 层
-- 三星设置页 `H2.A` = androidx `PreferenceFragmentCompat` 混淆名
-- `QuickAccessCustomBackground extends ImageView`，无参 `onFinishInflate` 不存在，三星自定义了
-  `onFinishInflate(View$OnLayoutChangeListener, Runnable)` 作为背景置 VISIBLE 时机
-- 主页视频背景：`SurfaceView` 会被 `QuickAccessMainLayout` 不透明背景色盖住，必须用 `TextureView`
-- 三星 RecyclerView 在高刷屏触控滚动失效，长列表需「塞满一屏」方案

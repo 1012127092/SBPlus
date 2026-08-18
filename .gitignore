@@ -41,3 +41,6 @@ injected_all.js
 
 # 密钥文件（绝对不要提交）
 _secrets.txt
+
+# 内部开发笔记（勿上传）
+_DEV_NOTES.md
