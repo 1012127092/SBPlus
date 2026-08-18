@@ -94,6 +94,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_ENABLE_RANDOM_UA = "enable_random_ua";
     private static final String KEY_UA_GROUPS = "ua_groups";
     private static final String KEY_UA_CUSTOM = "ua_custom";
+    private static final String KEY_UA_GROUP_PREFIX = "ua_grp_";
     private static final String ARG_PAGE = "sbplus_page";
     private static final String PAGE_DOWNLOADER_PICKER = "downloader_picker";
     private static final String PAGE_REGION_PICKER = "region_picker";
@@ -2279,24 +2280,65 @@ private static final String[] RANDOM_UAS = new String[]{
         try {
             java.util.List<String> pool = new java.util.ArrayList<String>();
             java.util.Set<Integer> en = loadEnabledUaGroups();
-            if (en.isEmpty()) {
-                for (String s : RANDOM_UAS) pool.add(s);
-            } else {
-                for (Integer gi : en) {
-                    if (gi == null || gi < 0 || gi >= UA_GROUPS.length) continue;
-                    int s = Integer.parseInt(UA_GROUPS[gi][1]);
-                    int e = Integer.parseInt(UA_GROUPS[gi][2]);
-                    if (s < 0) s = 0; if (e > RANDOM_UAS.length) e = RANDOM_UAS.length;
-                    for (int i = s; i < e && i < RANDOM_UAS.length; i++) pool.add(RANDOM_UAS[i]);
+            boolean any = false;
+            for (int gi = 0; gi < UA_GROUPS.length; gi++) {
+                if (en.isEmpty() || en.contains(gi)) {
+                    java.util.List<String> gl = loadGroupUas(gi);
+                    if (gl != null && !gl.isEmpty()) { pool.addAll(gl); any = true; }
                 }
             }
-            for (String u : loadCustomUas()) pool.add(u);
+            if (pool.isEmpty()) {
+                // 兜底：全部内置池
+                for (String s : RANDOM_UAS) pool.add(s);
+            }
             if (pool.isEmpty()) return null;
             return pool.get(new java.util.Random().nextInt(pool.size()));
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] randomUa error: " + t);
             try { return RANDOM_UAS[new java.util.Random().nextInt(RANDOM_UAS.length)]; } catch (Throwable t2) { return null; }
         }
+    }
+
+    /** 读取某分类最终生效的 UA 列表：用户编辑覆盖优先，否则用内置静态数组区间。 */
+    private java.util.List<String> loadGroupUas(int gi) {
+        java.util.List<String> list = new java.util.ArrayList<String>();
+        try {
+            if (sAppContext != null) {
+                String raw = processPrefs(sAppContext).getString(KEY_UA_GROUP_PREFIX + gi, "");
+                if (raw != null && !raw.isEmpty()) {
+                    for (String k : raw.split("\n")) {
+                        String t = k.trim();
+                        if (!t.isEmpty()) list.add(t);
+                    }
+                    if (!list.isEmpty()) return list;
+                }
+            }
+            // 兜底：内置静态数组 [start,end)
+            if (gi >= 0 && gi < UA_GROUPS.length) {
+                int s = Integer.parseInt(UA_GROUPS[gi][1]);
+                int e = Integer.parseInt(UA_GROUPS[gi][2]);
+                if (s < 0) s = 0; if (e > RANDOM_UAS.length) e = RANDOM_UAS.length;
+                for (int i = s; i < e && i < RANDOM_UAS.length; i++) list.add(RANDOM_UAS[i]);
+            }
+        } catch (Throwable ignored) {}
+        return list;
+    }
+
+    /** 保存某分类用户编辑后的 UA 列表（每行一条，空列表则清除覆盖、回退内置）。 */
+    private void saveGroupUas(int gi, java.util.List<String> list) {
+        try {
+            if (sAppContext != null) {
+                java.util.List<String> clean = new java.util.ArrayList<String>();
+                for (String k : list) { String t = k.trim(); if (!t.isEmpty()) clean.add(t); }
+                if (clean.isEmpty()) {
+                    processPrefs(sAppContext).edit().remove(KEY_UA_GROUP_PREFIX + gi).commit();
+                } else {
+                    StringBuilder sb = new StringBuilder();
+                    for (String k : clean) { if (sb.length() > 0) sb.append("\n"); sb.append(k); }
+                    processPrefs(sAppContext).edit().putString(KEY_UA_GROUP_PREFIX + gi, sb.toString()).commit();
+                }
+            }
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] save group UA error: " + t); }
     }
 
     private java.util.Set<Integer> loadEnabledUaGroups() {
@@ -3238,13 +3280,7 @@ private static final String[] RANDOM_UAS = new String[]{
             XposedHelpers.callMethod(screen, "addPreference", pref);
         }
 
-        boolean isCustom = !isPresetUa(current) && current.length() > 0;
-        Object custom = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(custom, "setTitle", T("自定义 UA", "Custom UA"));
-        XposedHelpers.callMethod(custom, "setKey", "sbplus_ua_custom");
-        XposedHelpers.callMethod(custom, "setSummary", isCustom ? ("当前: " + current) : T("输入 UA 并确认", "Enter UA and confirm"));
-        bindUaCustomClick(custom, cl, screen);
-        XposedHelpers.callMethod(screen, "addPreference", custom);
+
 
         XposedBridge.log("[SBPlus] ua picker injected (3 presets + custom)");
     }
@@ -3320,48 +3356,70 @@ private static final String[] RANDOM_UAS = new String[]{
     private void showUaGroupDialog(final Context ctx) {
         try {
             final java.util.Set<Integer> en = loadEnabledUaGroups();
+            final java.util.Map<Integer, android.widget.CheckBox> cbs = new java.util.LinkedHashMap<Integer, android.widget.CheckBox>();
             final android.widget.LinearLayout ll = new android.widget.LinearLayout(ctx);
             ll.setOrientation(android.widget.LinearLayout.VERTICAL);
             int pad = dp(ctx, 16);
             ll.setPadding(pad, pad, pad, 0);
-            final java.util.Map<Integer, android.widget.CheckBox> cbs = new java.util.LinkedHashMap<Integer, android.widget.CheckBox>();
             for (int g = 0; g < UA_GROUPS.length; g++) {
                 final int gi = g;
+                android.widget.LinearLayout row = new android.widget.LinearLayout(ctx);
+                row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                row.setPadding(0, 0, 0, 0);
+                android.widget.LinearLayout.LayoutParams rowLp = new android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp(ctx, 54));
+                row.setLayoutParams(rowLp);
+                // 参与随机勾选框
                 android.widget.CheckBox cb = new android.widget.CheckBox(ctx);
-                cb.setText(UA_GROUPS[gi][0]);
-                cb.setChecked(en.contains(gi) || (en.isEmpty())); // 未设置过则默认全选
-                android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
-                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp(ctx, 48));
-                cb.setLayoutParams(lp);
-                ll.addView(cb);
+                cb.setChecked(en.contains(gi) || en.isEmpty());
+                android.widget.LinearLayout.LayoutParams cbLp = new android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, android.widget.LinearLayout.LayoutParams.MATCH_PARENT);
+                cb.setLayoutParams(cbLp);
+                row.addView(cb);
                 cbs.put(gi, cb);
+                // 分类名 + 提示点开编辑
+                android.widget.LinearLayout txtCol = new android.widget.LinearLayout(ctx);
+                txtCol.setOrientation(android.widget.LinearLayout.VERTICAL);
+                txtCol.setPadding(dp(ctx, 8), 0, 0, 0);
+                android.widget.LinearLayout.LayoutParams tcLp = new android.widget.LinearLayout.LayoutParams(
+                        0, android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 1f);
+                txtCol.setLayoutParams(tcLp);
+                android.widget.TextView tvName = new android.widget.TextView(ctx);
+                tvName.setText(UA_GROUPS[gi][0]);
+                tvName.setTextSize(15);
+                tvName.setTextColor(0xFF111111);
+                txtCol.addView(tvName);
+                int glen = loadGroupUas(gi).size();
+                android.widget.TextView tvSub = new android.widget.TextView(ctx);
+                tvSub.setText(T(glen + " 条 UA · 点按编辑", glen + " UAs · tap to edit"));
+                tvSub.setTextSize(12);
+                tvSub.setTextColor(0xFF888888);
+                txtCol.addView(tvSub);
+                row.addView(txtCol);
+                // 行点击 -> 打开该分类 UA 编辑框
+                row.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override public void onClick(android.view.View v) {
+                        showGroupUaEditor(ctx, gi);
+                    }
+                });
+                ll.addView(row);
             }
-            // 自定义 UA 分隔提示 + 列表
-            android.widget.TextView customTitle = new android.widget.TextView(ctx);
-            customTitle.setText(T("自定义 UA（可手动添加，同样参与随机）", "Custom UAs (participate in randomization)"));
-            customTitle.setPadding(0, dp(ctx, 8), 0, 0);
-            customTitle.setTextSize(13);
-            customTitle.setTextColor(0xFF888888);
-            ll.addView(customTitle);
-            final java.util.List<String> customs = loadCustomUas();
-            final java.util.List<String> curCustoms = new java.util.ArrayList<String>(customs);
-            final android.widget.LinearLayout customBox = new android.widget.LinearLayout(ctx);
-            customBox.setOrientation(android.widget.LinearLayout.VERTICAL);
-            ll.addView(customBox);
-            refreshCustomUaList(ctx, customBox, curCustoms);
-            // 添加按钮
-            android.widget.Button addBtn = new android.widget.Button(ctx);
-            addBtn.setText(T("＋ 添加自定义 UA", "+ Add Custom UA"));
-            ll.addView(addBtn);
-            // 滚动容器
+            // 说明
+            android.widget.TextView hint = new android.widget.TextView(ctx);
+            hint.setText(T("勾选 = 参与随机；点按分类名编辑该分类的 UA", "Check = participate; tap a category to edit its UAs"));
+            hint.setPadding(0, dp(ctx, 6), 0, 0);
+            hint.setTextSize(12);
+            hint.setTextColor(0xFF888888);
+            ll.addView(hint);
             android.widget.ScrollView sv = new android.widget.ScrollView(ctx);
             sv.addView(ll);
             sv.setOverScrollMode(android.view.View.OVER_SCROLL_NEVER);
-            int maxH = dp(ctx, 420);
+            int maxH = dp(ctx, 460);
             sv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                     android.widget.LinearLayout.LayoutParams.MATCH_PARENT, maxH));
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
-            b.setTitle(T("随机浏览器标识 - 选择参与随机的分类", "Random UA - select categories"));
+            b.setTitle(T("随机浏览器标识 - 分类", "Random UA - categories"));
             b.setView(sv);
             b.setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
                 @Override
@@ -3371,43 +3429,52 @@ private static final String[] RANDOM_UAS = new String[]{
                         if (e.getValue().isChecked()) sel.add(e.getKey());
                     }
                     saveEnabledUaGroups(sel);
-                    saveCustomUas(curCustoms);
                     saveRandomUaEnabled(true);
-                                        try {
+                    try {
                         android.widget.Toast.makeText(ctx, T("已保存：下次启动随机生效", "Saved: takes effect on next start"),
                                 android.widget.Toast.LENGTH_SHORT).show();
                     } catch (Throwable ignored) {}
-                    XposedBridge.log("[SBPlus] UA groups saved: " + sel + " custom=" + curCustoms.size());
+                    XposedBridge.log("[SBPlus] UA groups saved: " + sel);
                 }
             });
             b.setNegativeButton(T("取消", "Cancel"), null);
-            addBtn.setOnClickListener(new android.view.View.OnClickListener() {
-                @Override
-                public void onClick(android.view.View v) {
-                    final android.widget.EditText input = new android.widget.EditText(ctx);
-                    input.setHint(T("输入完整 UA 字符串", "Enter full UA string"));
-                    input.setSingleLine(false);
-                    input.setMinLines(2);
-                    int p = dp(ctx, 16);
-                    input.setPadding(p, p, p, p);
-                    android.app.AlertDialog.Builder ib = new android.app.AlertDialog.Builder(ctx);
-                    ib.setTitle(T("添加自定义 UA", "Add Custom UA"));
-                    ib.setView(input);
-                    ib.setPositiveButton(T("添加", "Add"), new android.content.DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(android.content.DialogInterface d2, int w2) {
-                            String v = input.getText() == null ? "" : input.getText().toString().trim();
-                            if (!v.isEmpty() && !curCustoms.contains(v)) { curCustoms.add(v); refreshCustomUaList(ctx, customBox, curCustoms); }
-                        }
-                    });
-                    ib.setNegativeButton(T("取消", "Cancel"), null);
-                    ib.show();
-                }
-            });
             b.show();
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] show UA group dialog error: " + t);
         }
+    }
+
+    /** 弹出某分类的多行 UA 编辑框：每行一条，可增删改，保存后记住。 */
+    private void showGroupUaEditor(final Context ctx, final int gi) {
+        try {
+            final java.util.List<String> cur = new java.util.ArrayList<String>(loadGroupUas(gi));
+            java.util.List<String> init = new java.util.ArrayList<String>(cur);
+            final android.widget.EditText input = new android.widget.EditText(ctx);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < init.size(); i++) { if (sb.length() > 0) sb.append("\n"); sb.append(init.get(i)); }
+            input.setText(sb.toString());
+            input.setSingleLine(false);
+            input.setMinLines(6);
+            input.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
+            int p = dp(ctx, 16);
+            input.setPadding(p, p, p, p);
+            input.setTextColor(0xFF111111);
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
+            b.setTitle(UA_GROUPS[gi][0] + T(" - 编辑 UA（每行一条）", " - edit UAs (one per line)"));
+            b.setView(input);
+            b.setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d2, int w2) {
+                    String t = (input.getText() == null) ? "" : input.getText().toString();
+                    java.util.List<String> out = new java.util.ArrayList<String>();
+                    for (String line : t.split("\n")) { String lt = line.trim(); if (!lt.isEmpty()) out.add(lt); }
+                    saveGroupUas(gi, out);
+                    XposedBridge.log("[SBPlus] UA group " + gi + " edited -> " + out.size() + " uas");
+                }
+            });
+            b.setNegativeButton(T("取消", "Cancel"), null);
+            b.show();
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] show group UA editor error: " + t); }
     }
 
     private void refreshCustomUaList(final Context ctx, final android.widget.LinearLayout box, final java.util.List<String> customs) {
