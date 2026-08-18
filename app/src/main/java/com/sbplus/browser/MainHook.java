@@ -5516,7 +5516,7 @@ private void showUaGroupDialog(final Context ctx) {
             sum.append(meta.description);
             sum.append("  ·  ");
         }
-        sum.append(T("匹配规则 ", "Match rules: ")).append(rules).append(T(" 条", ""));
+        sum.append(T("匹配规则 ", "Match rules: ")).append(rules).append(T(" 条", " items"));
         return sum.toString();
     }
 
@@ -6986,7 +6986,7 @@ private void showUaGroupDialog(final Context ctx) {
                     iconSize, iconHeight);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
             lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.6f);
-            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.7f);
+            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.4f);
             btn.setLayoutParams(lp);
             btn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override
@@ -8307,6 +8307,13 @@ private boolean showMediaDialog(String json) {
                     }};
                     cell.setClickable(true);
                     cell.setFocusable(true);
+                    // 禁用所有子view的触摸拦截（解决第一列难以点击的问题）
+                    iv.setClickable(false);
+                    iv.setFocusable(false);
+                    selOverlay.setClickable(false);
+                    selOverlay.setFocusable(false);
+                    chkBadge.setClickable(false);
+                    chkBadge.setFocusable(false);
                     cell.setOnClickListener(new android.view.View.OnClickListener() {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx];
@@ -8571,7 +8578,13 @@ private boolean showMediaDialog(String json) {
             btnAll.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) {
                     allSelected[0] = !allSelected[0];
-                    for (int i = 0; i < n; i++) checked[i] = allSelected[0];
+                    // 只操作当前tab对应类型的资源（curTab: 0=video, 1=audio, 2=image）
+                    String currentType = (curTab[0] == 0) ? "video" : ((curTab[0] == 1) ? "audio" : "image");
+                    for (int i = 0; i < n; i++) {
+                        if (types.get(i).equals(currentType)) {
+                            checked[i] = allSelected[0];
+                        }
+                    }
                     btnAll.setText(allSelected[0] ? T("取消全选", "Deselect All") : T("全选", "Select All"));
                     gridAdp.notifyDataSetChanged();
                     listVideo.invalidateViews(); listAudio.invalidateViews();
