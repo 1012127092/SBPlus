@@ -4700,12 +4700,6 @@ private static final String[] RANDOM_UAS = new String[]{
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_sniff");
         XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，点击识别当前页面的音频/视频/图片并下载（可预览、多选、打包）", "Show a sniffer icon in the address bar. Detect audio/video/images on the current page, preview, multi-select and download"));
         XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
-        try {
-            android.graphics.Bitmap bm = emojiBitmap(ctx, "\uD83D\uDC3D", 48);
-            if (bm != null) {
-                XposedHelpers.callMethod(pref, "setIcon", new android.graphics.drawable.BitmapDrawable(ctx.getResources(), bm));
-            }
-        } catch (Throwable ignored) {}
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try { XposedHelpers.callMethod(pref, "setDividerVisible", false); } catch (Throwable ignored) {}
 
