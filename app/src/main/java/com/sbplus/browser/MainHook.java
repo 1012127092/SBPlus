@@ -6623,13 +6623,13 @@ private static final String[] RANDOM_UAS = new String[]{
             }
             if (insertIndex < 0) insertIndex = parent.getChildCount();
 
-            int iconSize = (int)(getDimen(ctx, "location_bar_icon_size", 40) * 1.45f);
+            int iconSize = (int)(getDimen(ctx, "location_bar_icon_size", 40) * 1.15f);
             int iconHeight = getDimen(ctx, "location_bar_height", 48);
             int margin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.4f);
 
             android.widget.TextView btn = new android.widget.TextView(ctx);
             btn.setText("\uD83D\uDC35");
-            btn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, Math.max(28, iconSize * 0.68f));
+            btn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, Math.max(27, iconSize * 0.66f));
             btn.setGravity(android.view.Gravity.CENTER);
             btn.setTag("sbplus_monkey_btn");
             btn.setContentDescription(T("[SBPlus] 油猴脚本", "[SBPlus] Userscripts"));
@@ -7216,10 +7216,12 @@ private static final String[] RANDOM_UAS = new String[]{
         "if(st.seen[u])return;st.seen[u]=1;st.list.push({url:u,type:t||'',title:ti||'',w:w||0,h:h||0,dur:du||0});" +
         "}catch(e){}}" +
         "function typeOf(u){" +
-        "try{var x=u.split(/[?#]/)[0].toLowerCase();" +
-        "if(/video|\\.(mp4|m4v|webm|mkv|flv|mov|ts|m4s|mpd)$/.test(x))return 'video';" +
-        "if(/audio|\\.(mp3|m4a|aac|ogg|opus|wav|flac)$/.test(x))return 'audio';" +
+        "try{var lo=u.toLowerCase();var x=lo.split(/[?#]/)[0];var q=lo.indexOf('?')>=0?lo.substring(lo.indexOf('?')+1):'';" +
         "if(/\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$/.test(x))return 'image';" +
+        "if(/\\.(mp3|m4a|aac|ogg|opus|wav|flac)$/.test(x))return 'audio';" +
+        "if(/\\.(mp4|m4v|webm|mkv|flv|mov|ts|m4s|mpd)$/.test(x)){if(/audio|mime=audio|audio\\/mp4|audio\\/mpeg/.test(q))return 'audio';return 'video';}" +
+        "if(/upgcx\\/|bilivideo\\.com\\//.test(lo)&&/\\.m4s|\\.mp4|\\.ts/.test(lo))return 'video';" +
+        "if(/\\/audio\\//.test(lo))return 'audio';" +
         "return '';}catch(e){return '';}}" +
         "function scanNow(){try{" +
         "var imgs=document.querySelectorAll('img');" +
@@ -7959,9 +7961,9 @@ private boolean showMediaDialog(String json) {
                     row.removeAllViews();
                     final android.widget.CheckBox cb = new android.widget.CheckBox(act);
                     cb.setChecked(checked[realIdx]);
-                    cb.setOnClickListener(new android.view.View.OnClickListener() {
-                        @Override public void onClick(android.view.View v) { checked[realIdx] = cb.isChecked(); }
-                    });
+                    // 禁用 CheckBox 自身点击，统一由行 onClick 处理勾选，避免双重翻转导致勾不上
+                    cb.setClickable(false);
+                    cb.setFocusable(false);
                     row.addView(cb, new android.widget.LinearLayout.LayoutParams(-2, -2));
 
                     // 缩略图占位（视频封面通常拿不到，用 🎬 图标 + 深色底代表）
@@ -8046,9 +8048,9 @@ private boolean showMediaDialog(String json) {
                     row.removeAllViews();
                     final android.widget.CheckBox cb = new android.widget.CheckBox(act);
                     cb.setChecked(checked[realIdx]);
-                    cb.setOnClickListener(new android.view.View.OnClickListener() {
-                        @Override public void onClick(android.view.View v) { checked[realIdx] = cb.isChecked(); }
-                    });
+                    // 禁用 CheckBox 自身点击，统一由行 onClick 处理勾选，避免双重翻转导致勾不上
+                    cb.setClickable(false);
+                    cb.setFocusable(false);
                     row.addView(cb, new android.widget.LinearLayout.LayoutParams(-2, -2));
                     // ♪ 图标（不下载缩略图）
                     final android.widget.TextView icon = new android.widget.TextView(act);
@@ -8168,19 +8170,22 @@ private boolean showMediaDialog(String json) {
             listAudio.setOnTouchListener(tabTouch);
             showPage[0].run();
 
-            // 底部按钮：全选/取消全选 + 下载 + 取消
+            // 底部按钮：刷新 + 全选/取消全选 + 下载 + 取消
             final android.widget.LinearLayout btnRow = new android.widget.LinearLayout(act);
             btnRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            final android.widget.Button btnRefresh = new android.widget.Button(act);
             final android.widget.Button btnAll = new android.widget.Button(act);
             final android.widget.Button btnDl = new android.widget.Button(act);
             final android.widget.Button btnCancel = new android.widget.Button(act);
+            btnRefresh.setText(T("刷新", "Refresh"));
             btnAll.setText(T("全选", "Select All"));
             btnDl.setText(T("下载", "Download"));
             btnCancel.setText(T("取消", "Cancel"));
+            android.widget.LinearLayout.LayoutParams b0p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
             android.widget.LinearLayout.LayoutParams b1p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
             android.widget.LinearLayout.LayoutParams b2p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
             android.widget.LinearLayout.LayoutParams b3p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
-            btnRow.addView(btnAll, b1p); btnRow.addView(btnDl, b2p); btnRow.addView(btnCancel, b3p);
+            btnRow.addView(btnRefresh, b0p); btnRow.addView(btnAll, b1p); btnRow.addView(btnDl, b2p); btnRow.addView(btnCancel, b3p);
             root.addView(btnRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
 
             final boolean[] allSelected = new boolean[]{false};
@@ -8188,7 +8193,7 @@ private boolean showMediaDialog(String json) {
                 @Override public void onClick(android.view.View v) {
                     allSelected[0] = !allSelected[0];
                     for (int i = 0; i < n; i++) checked[i] = allSelected[0];
-                    btnAll.setText(allSelected[0] ? T("全选", "Select All") : T("取消全选", "Deselect All"));
+                    btnAll.setText(allSelected[0] ? T("取消全选", "Deselect All") : T("全选", "Select All"));
                     gridAdp.notifyDataSetChanged();
                     listVideo.invalidateViews(); listAudio.invalidateViews();
                 }
@@ -8208,6 +8213,16 @@ private boolean showMediaDialog(String json) {
                 .create();
             btnCancel.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) { try { dlg.dismiss(); } catch (Throwable ignored) {} }
+            });
+            btnRefresh.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try { dlg.dismiss(); } catch (Throwable ignored) {}
+                    // 重新嗅探：SNIFF_JS 会返回已累积(含新捕获)的全部资源，handleSniffResult 自动开新面板
+                    Thread t = new Thread(new Runnable() { @Override public void run() {
+                        try { injectSniffJs(sCurrentRealTab); } catch (Throwable ignored) {}
+                    }});
+                    t.start();
+                }
             });
             dlg.show();
             return true;
