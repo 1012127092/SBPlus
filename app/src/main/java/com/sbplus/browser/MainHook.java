@@ -110,6 +110,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_ENABLE_HOME_CLEAR_TEXT = "enable_home_clear_text";
     private static final String KEY_ENABLE_HOME_MOVE_BTN = "enable_home_move_btn";
     private static final String KEY_ENABLE_USERSCRIPT = "enable_userscript";
+    private static final String KEY_ENABLE_SNIFF = "enable_sniff";
     private static final String KEY_DISABLED_USERSCRIPTS = "disabled_userscripts";
     private static final int REQUEST_USERSCRIPT_PICK = 61002;
     private static final String KEY_USERSCRIPT_SOURCES = "userscript_sources";
@@ -1337,6 +1338,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             Object userscriptPref = buildUserscriptSwitch(ctx, cl);
             boolean addedUserscript = (Boolean) XposedHelpers.callMethod(screen, "addPreference", userscriptPref);
             XposedBridge.log("[SBPlus] userscript item injected: " + addedUserscript);
+
+            Object sniffPref = buildSniffSwitch(ctx, cl);
+            boolean addedSniff = (Boolean) XposedHelpers.callMethod(screen, "addPreference", sniffPref);
+            XposedBridge.log("[SBPlus] sniff item injected: " + addedSniff);
 
             Object pref = buildExternalDownloaderSwitch(ctx, cl);
             boolean added = (Boolean) XposedHelpers.callMethod(screen, "addPreference", pref);
@@ -4282,6 +4287,23 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     // ============ 油猴脚本（Userscript）支持 ============
 
+    private boolean isSniffEnabled() {
+        try {
+            if (sAppContext != null) return processPrefs(sAppContext).getBoolean(KEY_ENABLE_SNIFF, true);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] isSniffEnabled error: " + t);
+        }
+        return true;
+    }
+
+    private void saveSniffEnabled(boolean enabled) {
+        try {
+            if (sAppContext != null) processPrefs(sAppContext).edit().putBoolean(KEY_ENABLE_SNIFF, enabled).commit();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] saveSniffEnabled error: " + t);
+        }
+    }
+
     private boolean isUserscriptEnabled() {
         try {
             if (sAppContext != null) return processPrefs(sAppContext).getBoolean(KEY_ENABLE_USERSCRIPT, false);
@@ -4452,6 +4474,69 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
         return pref;
     }
+
+    /** 资源嗅探开关：控制地址栏 🔍 图标。 */
+    private Object buildSniffSwitch(Context ctx, ClassLoader cl) {
+        Class<?> switchPrefCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+        Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(pref, "setTitle", T("资源嗅探", "Media Sniffer"));
+        XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_sniff");
+        XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，点击识别当前页面的音频/视频并下载", "Show a sniffer icon in the address bar to detect audio/video on the current page and download"));
+        XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
+        XposedHelpers.callMethod(pref, "setSelectable", true);
+        try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+
+        try {
+            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+            Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{listenerType},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceChange")) {
+                                    boolean enabled = args[1] instanceof Boolean && (Boolean) args[1];
+                                    saveSniffEnabled(enabled);
+                                    XposedBridge.log("[SBPlus] sniff toggled: " + enabled);
+                                    applySniffSwitchIcon(enabled);
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] sniff listener error: " + t);
+                            }
+                            return Boolean.FALSE;
+                        }
+                    });
+            XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", changeListener);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] sniff listener bind failed: " + t);
+        }
+        return pref;
+    }
+
+    /** 嗅探开关变化时，立即从当前地址栏移除图标（启用则等下次布局重建自动出现）。 */
+    private void applySniffSwitchIcon(final boolean enabled) {
+        try {
+            if (sCurrentActivity == null) return;
+            sCurrentActivity.runOnUiThread(new Runnable() { @Override public void run() {
+                try {
+                    android.view.ViewGroup root = (android.view.ViewGroup) sCurrentActivity.getWindow().getDecorView();
+                    removeViewByTagRecursive(root, "sbplus_sniff_btn");
+                    if (enabled) {
+                        XposedBridge.log("[SBPlus] sniff enabled, icon will appear on next layout build");
+                    } else {
+                        XposedBridge.log("[SBPlus] sniff icon removed");
+                    }
+                } catch (Throwable t) {
+                    XposedBridge.log("[SBPlus] applySniffSwitchIcon error: " + t);
+                }
+            }});
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] applySniffSwitchIcon outer error: " + t);
+        }
+    }
+
 
     /** 油猴脚本子页：脚本列表（启用/删除）+ 添加/更新/下载操作。 */
     private void injectUserscriptPicker(Context ctx, ClassLoader cl, Object screen) {
@@ -6250,19 +6335,33 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             if (!(urlBarParent instanceof android.view.ViewGroup)) return;
             android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
             android.view.View already = parent.findViewWithTag("sbplus_sniff_btn");
+            // 开关关闭时不注入，并移除已存在图标（用户切回浏览器后图标消失）
+            if (!isSniffEnabled()) {
+                if (already != null) {
+                    try { ((android.view.ViewGroup) already.getParent()).removeView(already); } catch (Throwable ignored) {}
+                }
+                return;
+            }
             if (already != null) return;
 
             final Context ctx = parent.getContext();
             Object reloadBtn = XposedHelpers.getObjectField(layoutObj, "mReloadButton");
             Object copyBtn = XposedHelpers.getObjectField(layoutObj, "mCopyButton");
             Object zoomBtn = XposedHelpers.getObjectField(layoutObj, "mZoomButton");
+            Object monkeyBtn = parent.findViewWithTag("sbplus_monkey_btn");
             int insertIndex = -1;
-            if (copyBtn instanceof android.view.View) {
-                insertIndex = parent.indexOfChild((android.view.View) copyBtn) + 1;
-            } else if (zoomBtn instanceof android.view.View) {
-                insertIndex = parent.indexOfChild((android.view.View) zoomBtn) + 1;
-            } else if (reloadBtn instanceof android.view.View) {
-                insertIndex = parent.indexOfChild((android.view.View) reloadBtn);
+            // 显式放在油猴🐵图标之前
+            if (monkeyBtn instanceof android.view.View) {
+                insertIndex = parent.indexOfChild((android.view.View) monkeyBtn) - 1;
+            }
+            if (insertIndex < 0) {
+                if (copyBtn instanceof android.view.View) {
+                    insertIndex = parent.indexOfChild((android.view.View) copyBtn) + 1;
+                } else if (zoomBtn instanceof android.view.View) {
+                    insertIndex = parent.indexOfChild((android.view.View) zoomBtn) + 1;
+                } else if (reloadBtn instanceof android.view.View) {
+                    insertIndex = parent.indexOfChild((android.view.View) reloadBtn);
+                }
             }
             if (insertIndex < 0) insertIndex = parent.getChildCount();
 
