@@ -7370,14 +7370,19 @@ private static final String[] RANDOM_UAS = new String[]{
                               final java.util.List<String> types,
                               final java.util.List<String> titles) {
         try {
-            // ---- 需求2: 分段(m4s)自动识别并合并为完整文件 ----
+            // ---- 需求2: 分段(视频音频)自动识别合并，与包装zip不冲突 ----
             try {
                 java.util.List<java.util.List<Integer>> groups = groupSegments(idxList, urls, types);
                 if (groups != null && !groups.isEmpty()) {
-                    int merged = groups.size();
-                    final java.util.List<java.util.List<Integer>> fg = groups;
+                    // 拆分出被合并的分片索引，以及剩余非分段项
+                    java.util.Set<Integer> mergedSet = new java.util.HashSet<Integer>();
+                    for (java.util.List<Integer> g : groups) for (Integer i : g) mergedSet.add(i);
+                    java.util.List<Integer> rest = new java.util.ArrayList<Integer>();
+                    for (int i : idxList) if (!mergedSet.contains(Integer.valueOf(i))) rest.add(Integer.valueOf(i));
+                    final java.util.List<java.util.List<Integer>> fg = new java.util.ArrayList<java.util.List<Integer>>(groups);
                     final java.util.List<String> fUrls = urls, fTypes = types, fTitles = titles;
-                    final java.util.List<Integer> allSel = new java.util.ArrayList<Integer>(idxList);
+                    final boolean hasRest = !rest.isEmpty();
+                    final java.util.List<Integer> fRest = rest;
                     new Thread(new Runnable() {
                         @Override public void run() {
                             final int[] ok = new int[]{0};
@@ -7390,10 +7395,6 @@ private static final String[] RANDOM_UAS = new String[]{
                                 }
                             }
                             final int done = ok[0];
-                            // 被合并的分片索引去除后，剩余单独下载
-                            java.util.Set<Integer> mergedSet = new java.util.HashSet<Integer>();
-                            for (java.util.List<Integer> g : fg) for (Integer i : g) mergedSet.add(i);
-                            final int remain = allSel.size() - mergedSet.size();
                             android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
                             h.post(new Runnable() { @Override public void run() {
                                 if (done > 0) {
@@ -7402,15 +7403,11 @@ private static final String[] RANDOM_UAS = new String[]{
                                     toastShort(T("分段合成失败", "Merge failed"));
                                 }
                             }});
-                            // 剩余非分段项仍逐一下载
-                            if (remain > 0) {
-                                java.util.List<Integer> rest = new java.util.ArrayList<Integer>();
-                                for (Integer i : allSel) if (!mergedSet.contains(i)) rest.add(i);
-                                for (int i : rest) {
-                                    try { sniffDownload(fUrls.get(i), fTypes.get(i), fTitles.get(i)); } catch (Throwable ignored) {}
-                                }
+                            // 剩余非分段项：重新交由 downloadMany 自身的逻辑处理（含 >10 打包 zip）
+                            if (hasRest && !fRest.isEmpty()) {
+                                try { downloadMany(fRest, fUrls, fTypes, fTitles); } catch (Throwable t) { XposedBridge.log("[SBPlus] rest download error: " + t); }
                             }
-                            XposedBridge.log("[SBPlus] segments merged groups=" + merged + " ok=" + done + " remain=" + remain);
+                            XposedBridge.log("[SBPlus] segments merged groups=" + fg.size() + " ok=" + done + " rest=" + fRest.size());
                         }
                     }).start();
                     return;
@@ -7540,7 +7537,9 @@ private static final String[] RANDOM_UAS = new String[]{
             if (url == null) return new String[]{null, "0"};
             String path = url.split("[?#]")[0];
             String lower = path.toLowerCase();
-            if (!lower.endsWith(".m4s") && !lower.endsWith(".ts") && !lower.endsWith(".mp4") && !lower.endsWith(".m4v")) {
+            if (!lower.endsWith(".m4s") && !lower.endsWith(".ts") && !lower.endsWith(".mp4") && !lower.endsWith(".m4v")
+                    && !lower.endsWith(".m4a") && !lower.endsWith(".aac") && !lower.endsWith(".mp3")
+                    && !lower.endsWith(".ogg") && !lower.endsWith(".opus")) {
                 return new String[]{null, "0"};
             }
             // 去掉扩展名后，找末尾的序号模式: -N / _N
@@ -7583,8 +7582,18 @@ private static final String[] RANDOM_UAS = new String[]{
             } else {
                 baseName = sanitizeFileName(baseName);
             }
-            // 判断扩展名 (允许 .ts / .mp4 分段)
-            try { String u = urls.get(group.get(0)); String p = u.split("[?#]")[0].toLowerCase(); if (p.endsWith(".ts")) ext=".ts"; else if (p.endsWith(".mp4")||p.endsWith(".m4v")) ext=".mp4"; } catch (Throwable ignored) {}
+            // 判断扩展名 (视频: .ts/.mp4/m4s; 音频: m4a/aac/mp3/ogg/opus)
+            try {
+                String u = urls.get(group.get(0));
+                String p = u.split("[?#]")[0].toLowerCase();
+                if (p.endsWith(".ts")) ext = ".ts";
+                else if (p.endsWith(".mp4") || p.endsWith(".m4v")) ext = ".mp4";
+                else if (p.endsWith(".m4a")) ext = ".m4a";
+                else if (p.endsWith(".mp3")) ext = ".mp3";
+                else if (p.endsWith(".aac")) ext = ".aac";
+                else if (p.endsWith(".ogg")) ext = ".ogg";
+                else if (p.endsWith(".opus")) ext = ".opus";
+            } catch (Throwable ignored) {}
             java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
                     android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
             if (!dir.exists()) dir.mkdirs();
