@@ -7436,7 +7436,7 @@ private static final String[] RANDOM_UAS = new String[]{
                         java.io.File zipFile = null;
                         try {
                             java.io.File tmp = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
-                                    android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus_zips");
+                                    android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus/zips");
                             if (!tmp.exists()) tmp.mkdirs();
                             zipFile = new java.io.File(tmp, "sbplus_" + System.currentTimeMillis() + ".zip");
                             java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(
