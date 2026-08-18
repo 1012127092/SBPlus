@@ -92,6 +92,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_ENABLE_UA = "enable_ua_override";
     private static final String KEY_UA = "ua_string";
     private static final String KEY_ENABLE_RANDOM_UA = "enable_random_ua";
+    private static final String KEY_UA_GROUPS = "ua_groups";
+    private static final String KEY_UA_CUSTOM = "ua_custom";
     private static final String ARG_PAGE = "sbplus_page";
     private static final String PAGE_DOWNLOADER_PICKER = "downloader_picker";
     private static final String PAGE_REGION_PICKER = "region_picker";
@@ -143,7 +145,16 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     // 随机浏览器标识：每次启动随机刷新的 UA 池（覆盖手机/电脑 × 多系统 × 多浏览器）。
     // Android 9~17、iOS 15.0~18.2、Windows/macOS/Linux；浏览器含 Chrome/Firefox/Edge/Safari/Opera/Vivaldi/Brave/UC 等。
-    private static final String[] RANDOM_UAS = new String[]{
+        // UA 随机池分组元数据: {组名, 起始索引, 结束索引(不含)}。与下方 RANDOM_UAS 注释分组一一对应。
+    private static final String[][] UA_GROUPS = new String[][]{
+            {T3("Android 手机 (Chrome)","Android Phone (Chrome)","Androidスマホ (Chrome)"), "0", "16"},
+            {T3("Android 其他浏览器","Android Other Browsers","Android他ブラウザ"), "16", "23"},
+            {T3("iPhone / iPad","iPhone / iPad","iPhone / iPad"), "23", "35"},
+            {T3("桌面 Windows","Desktop Windows","デスクトップ Windows"), "35", "45"},
+            {T3("桌面 macOS","Desktop macOS","デスクトップ macOS"), "45", "51"},
+            {T3("桌面 Linux","Desktop Linux","デスクトップ Linux"), "51", "55"},
+    };
+private static final String[] RANDOM_UAS = new String[]{
             // —— Android 手机 ——
             "Mozilla/5.0 (Linux; Android 9; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36",
             "Mozilla/5.0 (Linux; Android 9; SM-A505F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Mobile Safari/537.36",
@@ -2266,11 +2277,77 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     /** 随机挑选一个 UA（每次启动调用一次，模拟“每次启动随机刷新”）。 */
     private String randomUa() {
         try {
-            int idx = new java.util.Random().nextInt(RANDOM_UAS.length);
-            return RANDOM_UAS[idx];
+            java.util.List<String> pool = new java.util.ArrayList<String>();
+            java.util.Set<Integer> en = loadEnabledUaGroups();
+            if (en.isEmpty()) {
+                for (String s : RANDOM_UAS) pool.add(s);
+            } else {
+                for (Integer gi : en) {
+                    if (gi == null || gi < 0 || gi >= UA_GROUPS.length) continue;
+                    int s = Integer.parseInt(UA_GROUPS[gi][1]);
+                    int e = Integer.parseInt(UA_GROUPS[gi][2]);
+                    if (s < 0) s = 0; if (e > RANDOM_UAS.length) e = RANDOM_UAS.length;
+                    for (int i = s; i < e && i < RANDOM_UAS.length; i++) pool.add(RANDOM_UAS[i]);
+                }
+            }
+            for (String u : loadCustomUas()) pool.add(u);
+            if (pool.isEmpty()) return null;
+            return pool.get(new java.util.Random().nextInt(pool.size()));
         } catch (Throwable t) {
-            return null;
+            XposedBridge.log("[SBPlus] randomUa error: " + t);
+            try { return RANDOM_UAS[new java.util.Random().nextInt(RANDOM_UAS.length)]; } catch (Throwable t2) { return null; }
         }
+    }
+
+    private java.util.Set<Integer> loadEnabledUaGroups() {
+        java.util.Set<Integer> set = new java.util.LinkedHashSet<Integer>();
+        try {
+            if (sAppContext != null) {
+                String raw = processPrefs(sAppContext).getString(KEY_UA_GROUPS, "");
+                if (raw != null && !raw.isEmpty()) {
+                    for (String k : raw.split(",")) {
+                        try { if (!k.trim().isEmpty()) set.add(Integer.parseInt(k.trim())); } catch (Throwable ignored) {}
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return set;
+    }
+
+    private void saveEnabledUaGroups(java.util.Set<Integer> set) {
+        try {
+            if (sAppContext != null) {
+                StringBuilder sb = new StringBuilder();
+                for (Integer k : set) { if (sb.length() > 0) sb.append(","); sb.append(k); }
+                processPrefs(sAppContext).edit().putString(KEY_UA_GROUPS, sb.toString()).commit();
+            }
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] save UA groups error: " + t); }
+    }
+
+    private java.util.List<String> loadCustomUas() {
+        java.util.List<String> list = new java.util.ArrayList<String>();
+        try {
+            if (sAppContext != null) {
+                String raw = processPrefs(sAppContext).getString(KEY_UA_CUSTOM, "");
+                if (raw != null && !raw.isEmpty()) {
+                    for (String k : raw.split("\n")) {
+                        String t = k.trim();
+                        if (!t.isEmpty()) list.add(t);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return list;
+    }
+
+    private void saveCustomUas(java.util.List<String> list) {
+        try {
+            if (sAppContext != null) {
+                StringBuilder sb = new StringBuilder();
+                for (String k : list) { if (sb.length() > 0) sb.append("\n"); sb.append(k.trim()); }
+                processPrefs(sAppContext).edit().putString(KEY_UA_CUSTOM, sb.toString()).commit();
+            }
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] save custom UA error: " + t); }
     }
 
     private boolean isPresetUa(String ua) {
@@ -3219,14 +3296,12 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             try {
                                 if (m.getName().equals("onPreferenceClick")) {
                                     Object clicked = args[0];
-                                    saveRandomUaEnabled(true);
                                     Object ctxObj = XposedHelpers.callMethod(clicked, "getContext");
                                     if (ctxObj instanceof Context) {
-                                        android.widget.Toast.makeText((Context) ctxObj,
-                                                T("已启用随机浏览器标识（重启后随机刷新）", "Random UA enabled (randomized on restart)"), android.widget.Toast.LENGTH_SHORT).show();
+                                        showUaGroupDialog((Context) ctxObj);
                                     }
                                     refreshRadioDots("sbplus_ua_random");
-                                    XposedBridge.log("[SBPlus] random UA selected");
+                                    XposedBridge.log("[SBPlus] random UA dialog shown");
                                     return Boolean.TRUE;
                                 }
                             } catch (Throwable t) {
@@ -3240,6 +3315,136 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             XposedBridge.log("[SBPlus] random UA click bind failed: " + t);
         }
     }
+
+    /** 弹出“随机浏览器标识”选项对话框：勾选参与随机的分类 + 管理自定义 UA。 */
+    private void showUaGroupDialog(final Context ctx) {
+        try {
+            final java.util.Set<Integer> en = loadEnabledUaGroups();
+            final android.widget.LinearLayout ll = new android.widget.LinearLayout(ctx);
+            ll.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int pad = dp(ctx, 16);
+            ll.setPadding(pad, pad, pad, 0);
+            final java.util.Map<Integer, android.widget.CheckBox> cbs = new java.util.LinkedHashMap<Integer, android.widget.CheckBox>();
+            for (int g = 0; g < UA_GROUPS.length; g++) {
+                final int gi = g;
+                android.widget.CheckBox cb = new android.widget.CheckBox(ctx);
+                cb.setText(UA_GROUPS[gi][0]);
+                cb.setChecked(en.contains(gi) || (en.isEmpty())); // 未设置过则默认全选
+                android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp(ctx, 48));
+                cb.setLayoutParams(lp);
+                ll.addView(cb);
+                cbs.put(gi, cb);
+            }
+            // 自定义 UA 分隔提示 + 列表
+            android.widget.TextView customTitle = new android.widget.TextView(ctx);
+            customTitle.setText(T("自定义 UA（可手动添加，同样参与随机）", "Custom UAs (participate in randomization)"));
+            customTitle.setPadding(0, dp(ctx, 8), 0, 0);
+            customTitle.setTextSize(13);
+            customTitle.setTextColor(0xFF888888);
+            ll.addView(customTitle);
+            final java.util.List<String> customs = loadCustomUas();
+            final java.util.List<String> curCustoms = new java.util.ArrayList<String>(customs);
+            final android.widget.LinearLayout customBox = new android.widget.LinearLayout(ctx);
+            customBox.setOrientation(android.widget.LinearLayout.VERTICAL);
+            ll.addView(customBox);
+            refreshCustomUaList(ctx, customBox, curCustoms);
+            // 添加按钮
+            android.widget.Button addBtn = new android.widget.Button(ctx);
+            addBtn.setText(T("＋ 添加自定义 UA", "+ Add Custom UA"));
+            ll.addView(addBtn);
+            // 滚动容器
+            android.widget.ScrollView sv = new android.widget.ScrollView(ctx);
+            sv.addView(ll);
+            sv.setOverScrollMode(android.view.View.OVER_SCROLL_NEVER);
+            int maxH = dp(ctx, 420);
+            sv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT, maxH));
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
+            b.setTitle(T("随机浏览器标识 - 选择参与随机的分类", "Random UA - select categories"));
+            b.setView(sv);
+            b.setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface dlg, int which) {
+                    java.util.Set<Integer> sel = new java.util.LinkedHashSet<Integer>();
+                    for (java.util.Map.Entry<Integer, android.widget.CheckBox> e : cbs.entrySet()) {
+                        if (e.getValue().isChecked()) sel.add(e.getKey());
+                    }
+                    saveEnabledUaGroups(sel);
+                    saveCustomUas(curCustoms);
+                    saveRandomUaEnabled(true);
+                                        try {
+                        android.widget.Toast.makeText(ctx, T("已保存：下次启动随机生效", "Saved: takes effect on next start"),
+                                android.widget.Toast.LENGTH_SHORT).show();
+                    } catch (Throwable ignored) {}
+                    XposedBridge.log("[SBPlus] UA groups saved: " + sel + " custom=" + curCustoms.size());
+                }
+            });
+            b.setNegativeButton(T("取消", "Cancel"), null);
+            addBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override
+                public void onClick(android.view.View v) {
+                    final android.widget.EditText input = new android.widget.EditText(ctx);
+                    input.setHint(T("输入完整 UA 字符串", "Enter full UA string"));
+                    input.setSingleLine(false);
+                    input.setMinLines(2);
+                    int p = dp(ctx, 16);
+                    input.setPadding(p, p, p, p);
+                    android.app.AlertDialog.Builder ib = new android.app.AlertDialog.Builder(ctx);
+                    ib.setTitle(T("添加自定义 UA", "Add Custom UA"));
+                    ib.setView(input);
+                    ib.setPositiveButton(T("添加", "Add"), new android.content.DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(android.content.DialogInterface d2, int w2) {
+                            String v = input.getText() == null ? "" : input.getText().toString().trim();
+                            if (!v.isEmpty() && !curCustoms.contains(v)) { curCustoms.add(v); refreshCustomUaList(ctx, customBox, curCustoms); }
+                        }
+                    });
+                    ib.setNegativeButton(T("取消", "Cancel"), null);
+                    ib.show();
+                }
+            });
+            b.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] show UA group dialog error: " + t);
+        }
+    }
+
+    private void refreshCustomUaList(final Context ctx, final android.widget.LinearLayout box, final java.util.List<String> customs) {
+        try {
+            box.removeAllViews();
+            if (customs.isEmpty()) {
+                android.widget.TextView none = new android.widget.TextView(ctx);
+                none.setText(T("（暂无自定义 UA）", "(no custom UA)"));
+                none.setTextColor(0xFFBBBBBB);
+                none.setTextSize(13);
+                box.addView(none);
+                return;
+            }
+            for (int i = 0; i < customs.size(); i++) {
+                final int idx = i;
+                android.widget.TextView tv = new android.widget.TextView(ctx);
+                String t = customs.get(i);
+                tv.setText((i + 1) + ". " + (t.length() > 46 ? t.substring(0, 43) + "..." : t));
+                tv.setTextSize(12);
+                tv.setTextColor(0xFF666666);
+                android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT);
+                lp.bottomMargin = dp(ctx, 4);
+                tv.setLayoutParams(lp);
+                box.addView(tv);
+                tv.setOnLongClickListener(new android.view.View.OnLongClickListener() {
+                    @Override
+                    public boolean onLongClick(android.view.View v) {
+                        customs.remove(idx);
+                        refreshCustomUaList(ctx, box, customs);
+                        return true;
+                    }
+                });
+            }
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] refresh custom UA list error: " + t); }
+    }
+
 
     /** Bind click on the custom UA row: select its dot + focus the inline EditText. */
     private void bindUaCustomClick(Object pref, ClassLoader cl, final Object screen) {
