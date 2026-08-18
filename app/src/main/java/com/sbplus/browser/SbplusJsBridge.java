@@ -14,6 +14,19 @@ public class SbplusJsBridge {
     }
 
     /**
+     * 资源嗅探结果上报（由页面嗅探 JS 调用）。
+     * @param jsons 媒体 JSON 数组字符串，每项含 url/type/title。
+     */
+    @JavascriptInterface
+    public void reportMedia(String jsons) {
+        try {
+            MainHook.onSniffedMedia(jsons);
+        } catch (Throwable t) {
+            de.robv.android.xposed.XposedBridge.log("[SBPlus] reportMedia error: " + t);
+        }
+    }
+
+    /**
      * 跨域请求。由页面 GM_xmlhttpRequest 通过 window.__sbplus__.gmXhr(...) 调用。
      * @return JSON 字符串：{"status":200,"responseText":"...","error":"..."}
      */

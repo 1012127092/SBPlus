@@ -299,6 +299,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final java.util.Map<String, String> requireCache = new java.util.HashMap<String, String>(); // @require 库缓存：url -> js 内容
     private static final java.util.Map<String, String> resourceCache = new java.util.HashMap<String, String>(); // @resource 资源缓存：name -> 内容
     private static volatile boolean sRegionPageActive;
+    // 资源嗅探状态：JS 回调写入，主线程等待读取
+    private static volatile String sSniffedMediaJson = null;
+    private static final Object sSniffLock = new Object();
     @Override
     public void initZygote(StartupParam startupParam) {
         prefs = new XSharedPreferences(MODULE_PACKAGE, PREFS_NAME);
@@ -6137,6 +6140,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
+                                updateCurrentRealTab(param.thisObject);
                                 registerJsBridge(param.thisObject);
                             } catch (Throwable t) {
                                 XposedBridge.log("[SBPlus] registerJsBridge(onLoadStarted) error: " + t);
@@ -6163,6 +6167,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     try {
                         injectUserscriptToolbarButton(param.thisObject, cl);
+                injectSniffToolbarButton(param.thisObject, cl);
                     } catch (Throwable t) {
                         XposedBridge.log("[SBPlus] injectUserscriptToolbarButton error: " + t);
                     }
@@ -6237,6 +6242,63 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             XposedBridge.log("[SBPlus] injectUserscriptToolbarButton inner error: " + t);
         }
     }
+
+    /** 注入「资源嗅探」图标按钮（在油猴图标之前）。 */
+    private void injectSniffToolbarButton(final Object layoutObj, final ClassLoader cl) {
+        try {
+            final Object urlBarParent = XposedHelpers.getObjectField(layoutObj, "mUrlBarParent");
+            if (!(urlBarParent instanceof android.view.ViewGroup)) return;
+            android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
+            android.view.View already = parent.findViewWithTag("sbplus_sniff_btn");
+            if (already != null) return;
+
+            final Context ctx = parent.getContext();
+            Object reloadBtn = XposedHelpers.getObjectField(layoutObj, "mReloadButton");
+            Object copyBtn = XposedHelpers.getObjectField(layoutObj, "mCopyButton");
+            Object zoomBtn = XposedHelpers.getObjectField(layoutObj, "mZoomButton");
+            int insertIndex = -1;
+            if (copyBtn instanceof android.view.View) {
+                insertIndex = parent.indexOfChild((android.view.View) copyBtn) + 1;
+            } else if (zoomBtn instanceof android.view.View) {
+                insertIndex = parent.indexOfChild((android.view.View) zoomBtn) + 1;
+            } else if (reloadBtn instanceof android.view.View) {
+                insertIndex = parent.indexOfChild((android.view.View) reloadBtn);
+            }
+            if (insertIndex < 0) insertIndex = parent.getChildCount();
+
+            int iconSize = getDimen(ctx, "location_bar_icon_size", 40);
+            int iconHeight = getDimen(ctx, "location_bar_height", 48);
+            int margin = getDimen(ctx, "location_bar_icon_margin", 6);
+
+            android.widget.TextView btn = new android.widget.TextView(ctx);
+            btn.setText("\uD83D\uDD0E");
+            btn.setTextSize(16);
+            btn.setGravity(android.view.Gravity.CENTER);
+            btn.setTag("sbplus_sniff_btn");
+            btn.setContentDescription(T("资源嗅探", "Media Sniffer"));
+            btn.setPadding(margin, 0, margin, 0);
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                    iconSize, iconHeight);
+            lp.gravity = android.view.Gravity.CENTER_VERTICAL;
+            btn.setLayoutParams(lp);
+            btn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override
+                public void onClick(android.view.View v) {
+                    try {
+                        sniffCurrentPage();
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] sniff button onclick error: " + t);
+                    }
+                }
+            });
+
+            parent.addView(btn, insertIndex);
+            XposedBridge.log("[SBPlus] sniff toolbar button injected at index " + insertIndex);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] injectSniffToolbarButton inner error: " + t);
+        }
+    }
+
 
     /** 从 anchor 下方弹出一个列表 PopupWindow。onItem(itemIndex) 回调点击。 */
         private String dumpChars(String s) {
@@ -6709,6 +6771,182 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    // ================= 资源嗅探（音频/视频下载） =================
+
+    /** 页面嗅探 JS：扫描 <audio>/<video> 元素 + 已加载媒体资源，上报给 __sbplus__.reportMedia。 */
+    private static final String SNIFF_JS =
+        "(function(){" +
+        "try{" +
+        "var out=[];var seen={};" +
+        "function push(u,t,ti){if(!u||seen[u])return;if(u.indexOf('blob:')===0||u.indexOf('data:')===0)return;" +
+        "seen[u]=1;out.push({url:u,type:t||'',title:ti||''});}" +
+        "// 1) <audio>/<video> 当前媒体源" +
+        "var els=document.querySelectorAll('video,audio');" +
+        "for(var i=0;i<els.length;i++){var e=els[i];" +
+        "var s=e.currentSrc||e.src;if(s)push(s, (e.tagName==='VIDEO'?'video':'audio'), (e.title||document.title));" +
+        "var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)push(so,(e.tagName==='VIDEO'?'video':'audio'),'');}" +
+        "}" +
+        "// 2) 已加载的媒体资源（performance entries）" +
+        "try{" +
+        "var rs=performance.getEntriesByType('resource');" +
+        "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;" +
+        "var ext=r.name.split(/[?#]/)[0].toLowerCase();" +
+        "if(/\\.(mp3|m4a|aac|ogg|opus|wav|flac|mp4|m4v|webm|mkv|flv|mov|ts|m3u8|aac)$/.test(ext)||" +
+        "  (r.initiatorType==='media')){push(r.name,(/video|\\.(mp4|m4v|webm|mkv|flv|mov|ts)$/.test(r.name)?'video':'audio'),'');}" +
+        "}" +
+        "}catch(e2){}" +
+        "// 3) 拦截未来新增的 audio/video 元素（挂载监听，抓取后补报）" +
+        "if(window.__sbplusSniffHooked__){} else {" +
+        "window.__sbplusSniffHooked__=true;" +
+        "document.addEventListener('loadedmetadata',function(ev){try{var m=ev.target;if(m&&(m.tagName==='AUDIO'||m.tagName==='VIDEO')){var s=m.currentSrc||m.src;if(s&&!seen[s]){seen[s]=1;out.push({url:s,type:(m.tagName==='VIDEO'?'video':'audio'),title:m.title||''});if(window.__sbplus__){window.__sbplus__.reportMedia(JSON.stringify(out));out=[];}}}}catch(e3){}},true);" +
+        "}" +
+        "if(window.__sbplus__){window.__sbplus__.reportMedia(JSON.stringify(out));}" +
+        "}catch(e){if(window.__sbplus__){window.__sbplus__.reportMedia(JSON.stringify([{url:'',type:'',title:''}]));}}" +
+        "})();";
+
+    /** 入口：嗅探当前页面媒体资源。返回 true 表示已触发。 */
+    private boolean sniffCurrentPage() {
+        try {
+            if (sCurrentRealTab == null) {
+                LogWriter.log("sniff", "no current tab");
+                return false;
+            }
+            // 确保 JS 桥已注册（嗅探独立于油猴开关）
+            registerJsBridgeForSniff(sCurrentRealTab);
+            synchronized (sSniffLock) { sSniffedMediaJson = null; }
+            injectJs(sCurrentRealTab, SNIFF_JS);
+            // 等待 JS 回调（最多 1.5s）
+            long t0 = System.currentTimeMillis();
+            while (sSniffedMediaJson == null && System.currentTimeMillis() - t0 < 1500) {
+                try { Thread.sleep(50); } catch (Throwable ignored) {}
+            }
+            String json = sSniffedMediaJson;
+            sSniffedMediaJson = null;
+            return showMediaDialog(json);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] sniffCurrentPage error: " + t);
+            return false;
+        }
+    }
+
+    /** 确保嗅探用 JS 桥已注入到 realTab（幂等）。 */
+    private void registerJsBridgeForSniff(Object realTab) {
+        try {
+            XposedHelpers.callMethod(realTab, "addJavaScriptInterface", new SbplusJsBridge(), "__sbplus__");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] registerJsBridgeForSniff error: " + t);
+        }
+    }
+
+    /** SbplusJsBridge.reportMedia 回调入口（静态）。 */
+    public static void onSniffedMedia(String jsons) {
+        try {
+            if (jsons != null) {
+                synchronized (sSniffLock) { sSniffedMediaJson = jsons; }
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] onSniffedMedia error: " + t);
+        }
+    }
+
+    /** 展示嗅探结果对话框；用户选择媒体后 dispatch 到第三方下载器。 */
+    private boolean showMediaDialog(String json) {
+        try {
+            if (json == null || json.isEmpty()) {
+                toastShort(T("没有发现可下载的媒体资源", "No downloadable media found on this page"));
+                return true;
+            }
+            org.json.JSONArray arr = new org.json.JSONArray(json);
+            if (arr.length() == 0) {
+                toastShort(T("没有发现可下载的媒体资源", "No downloadable media found on this page"));
+                return true;
+            }
+            final java.util.List<String> urls = new java.util.ArrayList<String>();
+            final java.util.List<String> titles = new java.util.ArrayList<String>();
+            final java.util.List<String> types = new java.util.ArrayList<String>();
+            int videoCount = 0, audioCount = 0;
+            for (int i = 0; i < arr.length(); i++) {
+                try {
+                    org.json.JSONObject o = arr.optJSONObject(i);
+                    if (o == null) continue;
+                    String u = o.optString("url");
+                    String tp = o.optString("type");
+                    String ti = o.optString("title");
+                    if (u.isEmpty()) continue;
+                    urls.add(u); types.add(tp); titles.add(ti);
+                    if ("audio".equals(tp)) audioCount++; else videoCount++;
+                } catch (Throwable ignored) {}
+            }
+            if (urls.isEmpty()) {
+                toastShort(T("没有发现可下载的媒体资源", "No downloadable media found on this page"));
+                return true;
+            }
+            final int n = urls.size();
+            final String[] items = new String[n];
+            for (int i = 0; i < n; i++) {
+                String type = types.get(i);
+                String label = (type == null || type.isEmpty()) ? "" : ("[" + ("video".equals(type) ? "▶" : "♪") + "] ");
+                String ti = titles.get(i);
+                items[i] = label + (ti == null || ti.isEmpty() ? shortUrl(urls.get(i)) : ti);
+            }
+            final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
+                    : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+            if (act == null) return false;
+            String typeSummary = T("音频 ", "Audio ") + audioCount + T(" / 视频 ", " / Video ") + videoCount;
+            new android.app.AlertDialog.Builder(act)
+                .setTitle(T("资源嗅探", "Media Sniffer") + " (" + n + ")")
+                .setItems(items, new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface dlg, int which) {
+                        if (which >= 0 && which < urls.size()) {
+                            sniffDownload(urls.get(which), types.get(which), titles.get(which));
+                        }
+                    }
+                })
+                .setNegativeButton(T("取消", "Cancel"), null)
+                .show();
+            return true;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showMediaDialog error: " + t);
+            return false;
+        }
+    }
+
+    private void sniffDownload(String url, String type, String title) {
+        try {
+            DownloadMeta meta = new DownloadMeta();
+            meta.url = url;
+            if (title != null) meta.fileName = title + "." + ("video".equals(type) ? "mp4" : "mp3");
+            meta.mimeType = "video".equals(type) ? "video/*" : "audio/*";
+            boolean ok = dispatchToDownloader(meta);
+            XposedBridge.log("[SBPlus] sniff download " + url + " -> " + ok);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] sniffDownload error: " + t);
+        }
+    }
+
+    private String shortUrl(String url) {
+        try {
+            String u = url;
+            if (u.length() > 60) u = u.substring(0, 57) + "...";
+            return u;
+        } catch (Throwable t) { return url; }
+    }
+
+    private void toastShort(final String msg) {
+        try {
+            final android.content.Context ctx = sAppContext;
+            if (ctx == null) return;
+            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+            main.post(new Runnable() { @Override public void run() {
+                try { android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show(); }
+                catch (Throwable ignored) {}
+            }});
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] toastShort error: " + t);
+        }
+    }
+
+
     /** 从 TabEventHandler 对象拿到真实 Tab，并注册 __sbplus__ JS 桥（幂等）。 */
     private void registerJsBridge(Object tabEventHandlerObj) {
         try {
@@ -6723,6 +6961,19 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             XposedBridge.log("[SBPlus] registerJsBridge error: " + t);
         }
     }
+
+    /** 无条件更新当前活动的 realTab（嗅探等不依赖油猴开关的功能使用）。 */
+    private void updateCurrentRealTab(Object tabEventHandlerObj) {
+        try {
+            Object tab = XposedHelpers.getObjectField(tabEventHandlerObj, "mTab");
+            if (tab == null) return;
+            Object realTab = XposedHelpers.callMethod(tab, "getTab");
+            if (realTab != null) sCurrentRealTab = realTab;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] updateCurrentRealTab error: " + t);
+        }
+    }
+
 
     /** 从缓存拼接脚本声明的 @require 外部库（主线程调用，只读缓存不做网络）。 */
     private String loadRequires(UserscriptMeta meta) {
