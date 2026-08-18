@@ -717,6 +717,24 @@ private static final String[] RANDOM_UAS = new String[]{
                 } else {
                     injectRadioDot(root, key);
                 }
+            } else if ("sbplus_userscript_detail_enable".equals(key)) {
+                // 详情页“启用脚本”开关：onBindViewHolder 渲染时强制同步存储状态，
+                // 修复 SwitchPreferenceCustom 在 addPreference 前 setChecked 不刷新 UI 的问题
+                try {
+                    Object itemView = XposedHelpers.getObjectField(holder, "itemView");
+                    if (itemView instanceof android.view.View) {
+                        android.widget.Switch sw = findChildSwitch((android.view.View) itemView);
+                        String fn = sDetailFileName;
+                        if (sw != null && fn != null) {
+                            sw.setChecked(isUserscriptFileEnabled(fn));
+                            sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                                @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean isChecked) {
+                                    try { setUserscriptFileEnabled(sDetailFileName, isChecked); } catch (Throwable ignored) {}
+                                }
+                            });
+                        }
+                    }
+                } catch (Throwable ignored) {}
             } else if (key.startsWith("sbplus_clean_")) {
                 Object itemView = XposedHelpers.getObjectField(holder, "itemView");
                 if (!(itemView instanceof android.view.View)) return;
@@ -2278,25 +2296,144 @@ private static final String[] RANDOM_UAS = new String[]{
     /** 随机挑选一个 UA（每次启动调用一次，模拟“每次启动随机刷新”）。 */
     private String randomUa() {
         try {
-            java.util.List<String> pool = new java.util.ArrayList<String>();
+            // BetterVia 式：按平台->浏览器分层随机，模板+随机成分动态合成真实 UA。
+            // 用户手动编辑过的分类仍优先使用其静态 UA 列表；未编辑分类动态生成。
             java.util.Set<Integer> en = loadEnabledUaGroups();
-            boolean any = false;
+            java.util.List<Integer> cand = new java.util.ArrayList<Integer>();
             for (int gi = 0; gi < UA_GROUPS.length; gi++) {
-                if (en.isEmpty() || en.contains(gi)) {
-                    java.util.List<String> gl = loadGroupUas(gi);
-                    if (gl != null && !gl.isEmpty()) { pool.addAll(gl); any = true; }
+                if (en.isEmpty() || en.contains(gi)) cand.add(gi);
+            }
+            if (cand.isEmpty()) cand.add(0);
+            java.util.Random rnd = new java.util.Random();
+            // 先按分类权重随机选平台（每类均匀，多类时更公平）
+            int gi = cand.get(rnd.nextInt(cand.size()));
+            // 用户编辑过该分类 -> 静态列表抽选
+            if (hasEditedGroup(gi)) {
+                java.util.List<String> gl = loadGroupUas(gi);
+                if (gl != null && !gl.isEmpty()) {
+                    return gl.get(rnd.nextInt(gl.size()));
                 }
             }
-            if (pool.isEmpty()) {
-                // 兜底：全部内置池
-                for (String s : RANDOM_UAS) pool.add(s);
-            }
-            if (pool.isEmpty()) return null;
-            return pool.get(new java.util.Random().nextInt(pool.size()));
+            // 动态合成
+            String ua = buildDynamicUa(gi, rnd);
+            if (ua != null && !ua.isEmpty()) return ua;
+            // 兜底：全内置池
+            return RANDOM_UAS[rnd.nextInt(RANDOM_UAS.length)];
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] randomUa error: " + t);
             try { return RANDOM_UAS[new java.util.Random().nextInt(RANDOM_UAS.length)]; } catch (Throwable t2) { return null; }
         }
+    }
+
+    /** 该分类是否有用户手动编辑过的 UA 列表（区别于内置 fallback 区间）。 */
+    private boolean hasEditedGroup(int gi) {
+        try {
+            if (sAppContext != null) {
+                String v = processPrefs(sAppContext).getString(KEY_UA_GROUP_PREFIX + gi, "");
+                return v != null && v.length() > 0;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    /** 按 BetterVia 思路动态合成 UA：平台->浏览器->模板填充随机成分。 */
+    private String buildDynamicUa(int gi, java.util.Random rnd) {
+        try {
+            if (gi == 0 || gi == 1) return buildAndroidUa(gi == 1, rnd);
+            if (gi == 2) return buildIosUa(rnd);
+            if (gi == 3) return buildDesktopUa("windows", rnd);
+            if (gi == 4) return buildDesktopUa("macos", rnd);
+            if (gi == 5) return buildDesktopUa("linux", rnd);
+            return buildAndroidUa(false, rnd);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] buildDynamicUa error: " + t);
+            return null;
+        }
+    }
+
+    /** Android UA：Chrome/Edge 模板随机版本号；Firefox 模板随机主版本。 */
+    private String buildAndroidUa(boolean otherBrowsers, java.util.Random rnd) {
+        try {
+            String[] models = {"SM-G9910","SM-S9080","SM-S9180","SM-G9960","SM-S9010","SM-A5360",
+                    "Pixel 7","Pixel 7 Pro","Pixel 8","Pixel 8 Pro","Pixel 9","Pixel 9 Pro","Pixel 6a",
+                    "M2012K11AC","M2007J3SC","23046PNC9C","23127PN0CC","2211133C","22081212C",
+                    "PGT-AN00","ALN-AL80","BRA-AL00","BKL-AL20","VOG-L29","ELS-AN00","LIO-AN00",
+                    "CPH2581","PHN110","PJV110","PJG110","RMX3850","RMX3706","RMX3888","OnePlus 12","OnePlus ACE 3",
+                    "LE2120","NE2210","PHB110","XQ-DQ72","XQ-CT72","V2357A","V2405A","V2429A",
+                    "24090RA29C","24094RAD4C","25010PN30C","Redmi K70","Redmi Note 13 Pro"};
+            String[] vers = {"13","14","14.5","15","15.1","15.2","15.3","16","16.1","16.2","17","17.1","18","18.1"};
+            String model = models[rnd.nextInt(models.length)];
+            String ver = vers[rnd.nextInt(vers.length)];
+            int major = 90 + rnd.nextInt(60);          // Chrome 90..149
+            int minor = 0 + rnd.nextInt(8);            // .0..7
+            int build = 3000 + rnd.nextInt(2000);      // 3000..4999
+            int patch = 100 + rnd.nextInt(200);        // 100..299
+            if (!otherBrowsers) {
+                // 分类0：Chrome
+                return "Mozilla/5.0 (Linux; Android " + ver + "; " + model +
+                        ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + "." + minor +
+                        "." + build + "." + patch + " Mobile Safari/537.36";
+            }
+            // 分类1：随机 Chrome/Edge/Firefox/Opera
+            int which = rnd.nextInt(4);
+            if (which == 0) {
+                return "Mozilla/5.0 (Linux; Android " + ver + "; " + model +
+                        ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + "." + minor +
+                        "." + build + "." + patch + " Mobile Safari/537.36";
+            }
+            if (which == 1) {
+                return "Mozilla/5.0 (Linux; Android " + ver + "; " + model +
+                        ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + "." + minor +
+                        "." + build + "." + patch + " Mobile Safari/537.36 EdgA/" + major + "." + minor + "." + build + "." + patch;
+            }
+            if (which == 2) {
+                return "Mozilla/5.0 (Android " + ver + "; " + model + "; rv:" + major +
+                        ".0) Gecko/20100101 Firefox/" + major + ".0";
+            }
+            return "Mozilla/5.0 (Linux; Android " + ver + "; " + model +
+                    ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + "." + minor +
+                    "." + build + "." + patch + " Mobile Safari/537.36 OPR/" + major + "." + minor + "." + build;
+        } catch (Throwable t) { return null; }
+    }
+
+    /** iOS UA：Safari 模板随机 iOS 版本与设备。 */
+    private String buildIosUa(java.util.Random rnd) {
+        try {
+            String[] vers = {"15.6.1","16.0","16.7.2","17.0","17.4","17.5","18.0","18.1","18.2","18.3","18.4"};
+            String ver = vers[rnd.nextInt(vers.length)];
+            String v2 = ver.replace('.', '_');
+            boolean ipad = rnd.nextBoolean();
+            String dev = ipad ? "iPad" : "iPhone";
+            String osName = ipad ? "CPU OS " : "CPU iPhone OS ";
+            int patch = 100 + rnd.nextInt(9000);
+            return "Mozilla/5.0 (" + dev + "; " + osName + v2 + " like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/" + ver + " Mobile/15E1" + (100 + rnd.nextInt(99)) + " Safari/604.1";
+        } catch (Throwable t) { return null; }
+    }
+
+    /** 桌面 UA：Windows/macOS/Linux 模板 + Chrome/Edge/Firefox 随机版本。 */
+    private String buildDesktopUa(String plat, java.util.Random rnd) {
+        try {
+            int major = 90 + rnd.nextInt(60);
+            int minor = 0 + rnd.nextInt(8);
+            int build = 3000 + rnd.nextInt(2000);
+            int patch = 100 + rnd.nextInt(200);
+            int which = rnd.nextInt(3);
+            String os = "";
+            if ("windows".equals(plat)) {
+                String[] wv = {"Windows NT 10.0; Win64; x64","Windows NT 10.0; WOW64","Windows NT 11.0; Win64; x64","Windows NT 6.1; Win64; x64"};
+                os = wv[rnd.nextInt(wv.length)];
+            } else if ("macos".equals(plat)) {
+                String[] mv = {"Macintosh; Intel Mac OS X 10_15_7","Macintosh; Intel Mac OS X 11_7_10","Macintosh; Intel Mac OS X 12_7_6","Macintosh; Intel Mac OS X 13_6_6","Macintosh; Intel Mac OS X 14_5"};
+                os = mv[rnd.nextInt(mv.length)];
+            } else {
+                String[] lv = {"X11; Linux x86_64","X11; Ubuntu; Linux x86_64","X11; Fedora; Linux x86_64","X11; Linux x86_64; rv:"+major+".0"};
+                os = lv[rnd.nextInt(lv.length)];
+            }
+            String base = "Mozilla/5.0 (" + os + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + "." + minor + "." + build + "." + patch + " Safari/537.36";
+            if (which == 1) return base + " Edg/" + major + "." + minor + "." + build;
+            if (which == 2) return "Mozilla/5.0 (" + os + "; rv:" + major + ".0) Gecko/20100101 Firefox/" + major + ".0";
+            return base;
+        } catch (Throwable t) { return null; }
     }
 
     /** 读取某分类最终生效的 UA 列表：用户编辑覆盖优先，否则用内置静态数组区间。 */
@@ -3280,7 +3417,15 @@ private static final String[] RANDOM_UAS = new String[]{
             XposedHelpers.callMethod(screen, "addPreference", pref);
         }
 
-
+        // 自定义 UA：点选后 inline 输入框可编辑固定 UA
+        boolean isCustomUa = !isPresetUa(current) && current.length() > 0;
+        Object custom = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
+        XposedHelpers.callMethod(custom, "setTitle", T("自定义 UA", "Custom UA"));
+        XposedHelpers.callMethod(custom, "setKey", "sbplus_ua_custom");
+        XposedHelpers.callMethod(custom, "setSummary", isCustomUa ? (T("当前: ", "Current: ") + current)
+                : T("输入 UA 并确认", "Enter UA and confirm"));
+        bindUaCustomClick(custom, cl, screen);
+        XposedHelpers.callMethod(screen, "addPreference", custom);
 
         XposedBridge.log("[SBPlus] ua picker injected (3 presets + custom)");
     }
