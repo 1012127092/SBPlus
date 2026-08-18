@@ -80,7 +80,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_VIDEO_BG_PATH = "video_bg_path";
     // 模块自身版本号（编译期确定，连 app/build.gradle 的 versionName）。
     // 浏览器进程无法加载 BuildConfig，这里作为 prefs 缺失时的兜底。
-    private static final String APP_VERSION = "2.2";
+    private static final String APP_VERSION = "2.3";
     private static final String KEY_ENABLE_HOME_CLEAR_TEXT = "enable_home_clear_text";
     private static final String KEY_ENABLE_HOME_MOVE_BTN = "enable_home_move_btn";
     private static final String KEY_ENABLE_USERSCRIPT = "enable_userscript";
@@ -1045,6 +1045,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     });
 
             // 离开地区页时复位 sRegionPageActive，避免返回后在其它页面误触发滚动补偿。
+            // 注：onDestroyView 在新版三星里可能被移到父类/改名，单独容错，失败不影响其余 hook。
+            try {
             XposedHelpers.findAndHookMethod(prefFrag, "onDestroyView",
                     new XC_MethodHook() {
                         @Override
@@ -1061,6 +1063,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                             }
                         }
                     });
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] onDestroyView hook failed(ignored): " + t);
+            }
 
             XposedBridge.log("[SBPlus] PreferenceFragmentCustom.onCreatePreferences hooked");
         } catch (Throwable t) {
@@ -1072,7 +1077,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         try {
             // onCreateLayoutManager 定义在父类 H2/A（PreferenceFragmentCompat 的混淆名），
             // 不在 PreferenceFragmentCustom 自身，必须 hook 父类。
-            Class<?> prefFragCls = XposedHelpers.findClass("H2.A", cl);
+            Class<?> prefFragCls = findPreferenceParent(cl);
+            if (prefFragCls == null) {
+                XposedBridge.log("[SBPlus] onCreateLayoutManager skipped: parent not found");
+                return;
+            }
             XposedHelpers.findAndHookMethod(prefFragCls, "onCreateLayoutManager",
                     new XC_MethodHook() {
                         @Override
@@ -1238,7 +1247,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         if (screen == null) {
             // PreferenceManager.createPreferenceScreen(Context) is obfuscated to H2/F#a(Context).
             Object pm = XposedHelpers.callMethod(frag, "getPreferenceManager");
-            Object newScreen = XposedHelpers.callMethod(pm, "a", ctx);
+            // createPreferenceScreen 被混淆成 a(Context) 等名，用多候选回退自适应
+            Object newScreen = callMethodByCandidates(pm,
+                    new String[]{"createPreferenceScreen", "a", "b", "c"},
+                    new Class<?>[]{Context.class}, new Object[]{ctx});
+            if (newScreen == null) {
+                XposedBridge.log("[SBPlus] submenu could not create PreferenceScreen (all candidates failed)");
+                return;
+            }
             XposedHelpers.callMethod(frag, "setPreferenceScreen", newScreen);
             screen = newScreen;
         }
@@ -3243,6 +3259,45 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             }
         }
         throw new RuntimeException("no method " + setterName + " on " + cls);
+    }
+
+    /**
+     * 自适应：取得三星 PreferenceFragmentCustom 的父类。
+     * PreferenceFragmentCustom 继承被混淆的 androidx PreferenceFragmentCompat（旧版本叫 H2.A），
+     * 不写死混淆名，通过明文类名动态取 superclass，随浏览器版本自动适配。
+     */
+    private Class<?> findPreferenceParent(ClassLoader cl) {
+        try {
+            Class<?> custom = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom", cl);
+            Class<?> parent = custom.getSuperclass();
+            if (parent != null) {
+                XposedBridge.log("[SBPlus] PreferenceFragmentCustom parent = " + parent.getName());
+            }
+            return parent;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] resolve preference parent failed: " + t);
+            return null;
+        }
+    }
+
+    /**
+     * 自适应：对目标对象按候选方法名列表调用，返回第一个成功结果。
+     * 替换像 PreferenceManager#a(Context) 这种被混淆的方法名，候选顺序标准名优先再试混淆名。
+     */
+    private Object callMethodByCandidates(Object target, String[] candidates,
+                                          Class<?>[] argTypes, Object[] args) {
+        if (target == null) return null;
+        for (String name : candidates) {
+            try {
+                Object res = XposedHelpers.callMethod(target, name, args);
+                XposedBridge.log("[SBPlus] callMethodByCandidates hit: " + name);
+                return res;
+            } catch (Throwable t) {
+                // 尝试下一个候选
+            }
+        }
+        return null;
     }
 
     private void navigateToDownloaderPicker(android.app.Activity act) {

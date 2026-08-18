@@ -128,8 +128,7 @@ hook `SBrowserCommandLine.initialize()`，通过 `TerraceCommandLine.appendSwitc
 ## 构建
 
 ```bat
-call D:\Android\env.bat
-cd C:\Users\16579\Desktop\SBPlus
+call <path-to-android-sdk>\env.bat
 gradle assembleDebug --no-daemon
 ```
 
@@ -139,10 +138,10 @@ gradle assembleDebug --no-daemon
 
 - Windows AMD64
 - Java 17（Temurin）
-- Gradle 8.7（`D:\Android\gradle\gradle-8.7`）
-- Android SDK 34+（`D:\Android\sdk`）
+- Gradle 8.7
+- Android SDK 34+
 - 依赖仓库：阿里云镜像（解决国内拉取 AGP 依赖超时问题）
-- 测试设备：三星 Galaxy，Android 16 (SDK 36)，屏宽 1440、密度 3.5
+- 测试设备：三星 Galaxy（Android 16 / SDK 36）
 
 ## 项目结构
 
