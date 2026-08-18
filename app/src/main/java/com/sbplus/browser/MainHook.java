@@ -6876,30 +6876,42 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String SNIFF_JS =
         "(function(){" +
         "try{" +
-        "var out=[];var seen={};" +
-        "function push(u,t,ti){if(!u||seen[u])return;if(u.indexOf('blob:')===0||u.indexOf('data:')===0)return;" +
-        "seen[u]=1;out.push({url:u,type:t||'',title:ti||''});}" +
-        "// 1) <audio>/<video> 当前媒体源" +
+        "var W=window;" +
+        "if(!W.__sbplusSniffStore__){W.__sbplusSniffStore__={list:[],seen:{}};}" +
+        "var st=W.__sbplusSniffStore__;" +
+        "function add(u,t,ti){if(!u)return;if(u.indexOf('blob:')===0||u.indexOf('data:')===0)return;" +
+        "try{var c=st.seen[u];if(c)return;st.seen[u]=1;st.list.push({url:u,type:t||'',title:ti||''});}catch(e){}" +
+        "}" +
+        "function typeOf(u){if(!u)return '';var x=u.split(/[?#]/)[0].toLowerCase();" +
+        "return (/video|\\.(mp4|m4v|webm|mkv|flv|mov|ts)$/.test(x)?'video':/\\.(mp3|m4a|aac|ogg|opus|wav|flac)$/.test(x)?'audio':/\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$/.test(x)?'image':'');}" +
+        "// 1) 持续监听（只安装一次）：新出现的 media 元素 + 网络资源" +
+        "if(!W.__sbplusSniffHooked__){" +
+        "W.__sbplusSniffHooked__=true;" +
+        "document.addEventListener('loadedmetadata',function(ev){try{var m=ev.target;if(m&&(m.tagName==='AUDIO'||m.tagName==='VIDEO')){var s=m.currentSrc||m.src;if(s)add(s,(m.tagName==='VIDEO'?'video':'audio'),m.title||'');}}catch(e){}},true);" +
+        "try{var obs=new PerformanceObserver(function(list){try{var es=list.getEntries();for(var i=0;i<es.length;i++){var r=es[i];if(!r||!r.name)continue;var t=typeOf(r.name);if(t||r.initiatorType==='media'||r.initiatorType==='video'||r.initiatorType==='audio'){add(r.name,t,'');}}}catch(e){}});obs.observe({entryTypes:['resource']});}catch(e){}" +
+        "// 拦截 fetch 响应中的媒体" +
+        "var of=window.fetch;if(of&&!W.__sbplusSniffFetch__){W.__sbplusSniffFetch__=true;window.fetch=function(){try{var a=arguments;var u=(typeof a[0]==='string')?a[0]:(a[0]&&a[0].url?a[0].url:'');var p=of.apply(this,a);if(u&&typeOf(u)){add(u,typeOf(u),'');}return p;}catch(e){try{return of.apply(this,arguments);}catch(e2){return Promise.reject(e2);}}};}" +
+        "// 拦截 XHR 响应中的媒体" +
+        "var ox=XMLHttpRequest.prototype.open;if(ox&&!W.__sbplusSniffXhr__){W.__sbplusSniffXhr__=true;" +
+        "XMLHttpRequest.prototype.open=function(m,u){try{var t=typeOf(u);if(t||/video|audio|media/i.test(u)){add(u,t,'');}}catch(e){}return ox.apply(this,arguments);};}" +
+        "}" +
+        "// 2) 即时扫描：DOM 中的 audio/video + performance 已加载资源" +
+        "var imgs=document.querySelectorAll('img');" +
+        "for(var mi=0;mi<imgs.length;mi++){var ig=imgs[mi];var isrc=ig.currentSrc||ig.src||(ig.getAttribute&&ig.getAttribute('data-src'));if(isrc)add(isrc,'image',(ig.alt||''));}" +
+        "var alinks=document.querySelectorAll('a[href]');" +
+        "for(var ai=0;ai<alinks.length;ai++){var ah=alinks[ai].getAttribute('href');if(ah&&typeOf(ah)==='image'){add(ah,'image','');}}" +
         "var els=document.querySelectorAll('video,audio');" +
         "for(var i=0;i<els.length;i++){var e=els[i];" +
-        "var s=e.currentSrc||e.src;if(s)push(s, (e.tagName==='VIDEO'?'video':'audio'), (e.title||document.title));" +
-        "var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)push(so,(e.tagName==='VIDEO'?'video':'audio'),'');}" +
+        "var s=e.currentSrc||e.src;if(s)add(s,(e.tagName==='VIDEO'?'video':'audio'),(e.title||document.title));" +
+        "var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)add(so,(e.tagName==='VIDEO'?'video':'audio'),'');}" +
         "}" +
-        "// 2) 已加载的媒体资源（performance entries）" +
-        "try{" +
-        "var rs=performance.getEntriesByType('resource');" +
-        "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;" +
-        "var ext=r.name.split(/[?#]/)[0].toLowerCase();" +
-        "if(/\\.(mp3|m4a|aac|ogg|opus|wav|flac|mp4|m4v|webm|mkv|flv|mov|ts|m3u8|aac)$/.test(ext)||" +
-        "  (r.initiatorType==='media')){push(r.name,(/video|\\.(mp4|m4v|webm|mkv|flv|mov|ts)$/.test(r.name)?'video':'audio'),'');}" +
+        "try{var rs=performance.getEntriesByType('resource');" +
+        "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;var t=typeOf(r.name);" +
+        "if(t||r.initiatorType==='media'||r.initiatorType==='video'||r.initiatorType==='audio'){add(r.name,t,'');}" +
         "}" +
         "}catch(e2){}" +
-        "// 3) 拦截未来新增的 audio/video 元素（挂载监听，抓取后补报）" +
-        "if(window.__sbplusSniffHooked__){} else {" +
-        "window.__sbplusSniffHooked__=true;" +
-        "document.addEventListener('loadedmetadata',function(ev){try{var m=ev.target;if(m&&(m.tagName==='AUDIO'||m.tagName==='VIDEO')){var s=m.currentSrc||m.src;if(s&&!seen[s]){seen[s]=1;out.push({url:s,type:(m.tagName==='VIDEO'?'video':'audio'),title:m.title||''});if(window.__sbplus__){window.__sbplus__.reportMedia(JSON.stringify(out));out=[];}}}}catch(e3){}},true);" +
-        "}" +
-        "if(window.__sbplus__){window.__sbplus__.reportMedia(JSON.stringify(out));}" +
+        "// 3) 上报（含持续监听累计）" +
+        "if(W.__sbplus__){W.__sbplus__.reportMedia(JSON.stringify(st.list));}" +
         "}catch(e){if(window.__sbplus__){window.__sbplus__.reportMedia(JSON.stringify([{url:'',type:'',title:''}]));}}" +
         "})();";
 
@@ -6952,18 +6964,18 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private boolean showMediaDialog(String json) {
         try {
             if (json == null || json.isEmpty()) {
-                toastShort(T("没有发现可下载的媒体资源", "No downloadable media found on this page"));
+                toastShort(T("没有发现可下载的资源", "No downloadable resources found on this page"));
                 return true;
             }
             org.json.JSONArray arr = new org.json.JSONArray(json);
             if (arr.length() == 0) {
-                toastShort(T("没有发现可下载的媒体资源", "No downloadable media found on this page"));
+                toastShort(T("没有发现可下载的资源", "No downloadable resources found on this page"));
                 return true;
             }
             final java.util.List<String> urls = new java.util.ArrayList<String>();
             final java.util.List<String> titles = new java.util.ArrayList<String>();
             final java.util.List<String> types = new java.util.ArrayList<String>();
-            int videoCount = 0, audioCount = 0;
+            int videoCount = 0, audioCount = 0, imageCount = 0;
             for (int i = 0; i < arr.length(); i++) {
                 try {
                     org.json.JSONObject o = arr.optJSONObject(i);
@@ -6973,32 +6985,51 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     String ti = o.optString("title");
                     if (u.isEmpty()) continue;
                     urls.add(u); types.add(tp); titles.add(ti);
-                    if ("audio".equals(tp)) audioCount++; else videoCount++;
+                    if ("audio".equals(tp)) audioCount++;
+                    else if ("image".equals(tp)) imageCount++;
+                    else videoCount++;
                 } catch (Throwable ignored) {}
             }
             if (urls.isEmpty()) {
-                toastShort(T("没有发现可下载的媒体资源", "No downloadable media found on this page"));
+                toastShort(T("没有发现可下载的资源", "No downloadable resources found on this page"));
                 return true;
             }
             final int n = urls.size();
+            final boolean[] checked = new boolean[n];
+            for (int i = 0; i < n; i++) checked[i] = true;   // 默认全选
             final String[] items = new String[n];
             for (int i = 0; i < n; i++) {
                 String type = types.get(i);
-                String label = (type == null || type.isEmpty()) ? "" : ("[" + ("video".equals(type) ? "▶" : "♪") + "] ");
+                String tag;
+                if ("image".equals(type)) tag = "\uD83D\uDDBC";
+                else if ("audio".equals(type)) tag = "\u266A";
+                else tag = "\u25B6";
                 String ti = titles.get(i);
-                items[i] = label + (ti == null || ti.isEmpty() ? shortUrl(urls.get(i)) : ti);
+                items[i] = tag + " " + (ti == null || ti.isEmpty() ? shortUrl(urls.get(i)) : ti);
             }
             final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
                     : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
             if (act == null) return false;
-            String typeSummary = T("音频 ", "Audio ") + audioCount + T(" / 视频 ", " / Video ") + videoCount;
+            String typeSummary = T("图片 ", "Images ") + imageCount + T(" / 音频 ", " / Audio ") + audioCount
+                    + T(" / 视频 ", " / Video ") + videoCount;
+            final String title = T("资源嗅探", "Media Sniffer") + " (" + n + ")\n" + typeSummary;
             new android.app.AlertDialog.Builder(act)
-                .setTitle(T("资源嗅探", "Media Sniffer") + " (" + n + ")")
-                .setItems(items, new android.content.DialogInterface.OnClickListener() {
+                .setTitle(title)
+                .setMultiChoiceItems(items, checked, new android.content.DialogInterface.OnMultiChoiceClickListener() {
+                    @Override public void onClick(android.content.DialogInterface dlg, int which, boolean isChecked) {
+                        if (which >= 0 && which < checked.length) checked[which] = isChecked;
+                    }
+                })
+                .setPositiveButton(T("全部下载", "Download All"), new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface dlg, int which) {
-                        if (which >= 0 && which < urls.size()) {
-                            sniffDownload(urls.get(which), types.get(which), titles.get(which));
-                        }
+                        for (int i = 0; i < n; i++) sniffDownload(urls.get(i), types.get(i), titles.get(i));
+                    }
+                })
+                .setNeutralButton(T("下载选中", "Download Selected"), new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface dlg, int which) {
+                        int c = 0;
+                        for (int i = 0; i < n; i++) if (checked[i]) { sniffDownload(urls.get(i), types.get(i), titles.get(i)); c++; }
+                        if (c == 0) toastShort(T("未选择任何资源", "No resource selected"));
                     }
                 })
                 .setNegativeButton(T("取消", "Cancel"), null)
@@ -7014,8 +7045,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         try {
             DownloadMeta meta = new DownloadMeta();
             meta.url = url;
-            if (title != null) meta.fileName = title + "." + ("video".equals(type) ? "mp4" : "mp3");
-            meta.mimeType = "video".equals(type) ? "video/*" : "audio/*";
+            String ext = "video".equals(type) ? "mp4" : ("audio".equals(type) ? "mp3" : "jpg");
+            if (title != null && !title.isEmpty()) meta.fileName = title + "." + ext;
+            meta.mimeType = "video".equals(type) ? "video/*" : ("audio".equals(type) ? "audio/*" : "image/*");
             boolean ok = dispatchToDownloader(meta);
             XposedBridge.log("[SBPlus] sniff download " + url + " -> " + ok);
         } catch (Throwable t) {
