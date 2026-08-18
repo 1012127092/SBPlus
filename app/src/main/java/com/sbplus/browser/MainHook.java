@@ -3794,7 +3794,8 @@ private void showUaGroupDialog(final Context ctx) {
             input.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
             int p = dp(ctx, 16);
             input.setPadding(p, p, p, p);
-            input.setTextColor(0xFF111111);
+            input.setHorizontallyScrolling(false);
+            input.setTextColor(0xFF333333);
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
             b.setTitle(UA_GROUPS[gi][0] + T(" - 编辑 UA（每行一条）", " - edit UAs (one per line)"));
             b.setView(input);
@@ -6985,7 +6986,7 @@ private void showUaGroupDialog(final Context ctx) {
                     iconSize, iconHeight);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
             lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.6f);
-            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.9f);
+            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.7f);
             btn.setLayoutParams(lp);
             btn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override
@@ -8248,7 +8249,8 @@ private boolean showMediaDialog(String json) {
                     // 选中遮罩层：半透明蓝覆盖在缩略图上，让选中状态一眼可见
                     final android.view.View selOverlay = new android.view.View(act);
                     selOverlay.setBackgroundColor(0x661E88E5);
-                    selOverlay.setClickable(false);  // 禁用点击，避免拦截 cell.onClick
+                    selOverlay.setClickable(false);
+                    selOverlay.setFocusable(false);  // 禁用点击，避免拦截 cell.onClick
                     selOverlay.setFocusable(false);
                     selOverlay.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                     cell.addView(selOverlay, new android.widget.FrameLayout.LayoutParams(-1, -1));
@@ -8286,7 +8288,8 @@ private boolean showMediaDialog(String json) {
                     chkBadge.setTextColor(0xFFFFFFFF);
                     chkBadge.setGravity(android.view.Gravity.CENTER);
                     chkBadge.setBackgroundColor(0xFF1E88E5);
-                    chkBadge.setClickable(false);  // 禁用点击，避免拦截 cell.onClick
+                    chkBadge.setClickable(false);
+                    chkBadge.setFocusable(false);  // 禁用点击，避免拦截 cell.onClick
                     chkBadge.setFocusable(false);
                     chkBadge.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                     android.widget.FrameLayout.LayoutParams chkP = new android.widget.FrameLayout.LayoutParams(dp(act,20), dp(act,20), android.view.Gravity.TOP | android.view.Gravity.RIGHT);
@@ -8302,6 +8305,8 @@ private boolean showMediaDialog(String json) {
                             updateSelCount.run();
                         } catch (Throwable ignored) {}
                     }};
+                    cell.setClickable(true);
+                    cell.setFocusable(true);
                     cell.setOnClickListener(new android.view.View.OnClickListener() {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx];
