@@ -3756,6 +3756,13 @@ private void showUaGroupDialog(final Context ctx) {
         final android.widget.EditText et = new android.widget.EditText(ctx);
         et.setText(value);
         et.setTextSize(12);
+        et.setTextColor(0xFF111111);  // 深色文字
+        et.setHintTextColor(0xFF999999);  // 灰色提示
+        et.setBackgroundColor(0xFFF5F5F5);  // 浅灰背景
+        et.setMinLines(2);  // 最少2行
+        et.setMaxLines(6);  // 最多6行
+        et.setVerticalScrollBarEnabled(true);  // 超过最大行数显示滚动条
+        et.setGravity(android.view.Gravity.TOP | android.view.Gravity.LEFT);  // 顶部对齐
         et.setPadding(dp(ctx, 8), dp(ctx, 6), dp(ctx, 8), dp(ctx, 6));
         et.setBackgroundColor(0xFFF5F5F5);
         et.setSingleLine(false);
