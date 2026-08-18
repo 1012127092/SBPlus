@@ -4993,27 +4993,34 @@ private static final String[] RANDOM_UAS = new String[]{
     /** 绑定脚本启用开关。 */
     private void bindUserscriptEnableChange(Object pref, ClassLoader cl, final String fileName) {
         try {
-            // 方案：hook SwitchPreferenceCustom.setChecked —— UI 任何变化都会走到这里，写回 prefs。
-            final Class<?> spCls = XposedHelpers.findClass(
-                    "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
-            XposedHelpers.findAndHookMethod(spCls, "setChecked", boolean.class,
-                    new XC_MethodHook() {
+            // 方案：实例级 onPreferenceChange 监听，仅在用户点击开关时写 prefs。
+            // 避免全局 setChecked hook：该 hook 会拦截所有 setChecked 调用（含初始化显示），
+            // 且每次进详情页都会重复安装，导致状态被反复覆盖（主页/设置状态不同步 bug）。
+            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+            Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{listenerType},
+                    new java.lang.reflect.InvocationHandler() {
                         @Override
-                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
                             try {
-                                Object p = param.thisObject;
-                                Object key = XposedHelpers.callMethod(p, "getKey");
-                                if (key == null || !("sbplus_userscript_detail_enable".equals(key.toString()))) return;
-                                boolean c = (Boolean) param.args[0];
-                                String fn = sDetailFileName != null ? sDetailFileName : fileName;
-                                setUserscriptFileEnabled(fn, c);
-                                XposedBridge.log("[SBPlus] userscript setChecked sync: " + fn + " -> " + c);
+                                if (m.getName().equals("onPreferenceChange")) {
+                                    if (args == null || args.length < 2) return Boolean.FALSE;
+                                    Object newVal = args[1];
+                                    if (!(newVal instanceof Boolean)) return Boolean.FALSE;
+                                    boolean c = (Boolean) newVal;
+                                    String fn = sDetailFileName != null ? sDetailFileName : fileName;
+                                    setUserscriptFileEnabled(fn, c);
+                                    XposedBridge.log("[SBPlus] userscript enable change: " + fn + " -> " + c);
+                                    return Boolean.TRUE;
+                                }
                             } catch (Throwable t) {
-                                XposedBridge.log("[SBPlus] userscript setChecked hook err: " + t);
+                                XposedBridge.log("[SBPlus] userscript enable change err: " + t);
                             }
+                            return Boolean.FALSE;
                         }
                     });
-            XposedBridge.log("[SBPlus] userscript setChecked hook installed: " + fileName);
+            XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", changeListener);
+            XposedBridge.log("[SBPlus] userscript enable listener bound: " + fileName);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] bindUserscriptEnableChange failed: " + t);
         }
@@ -6445,7 +6452,7 @@ private static final String[] RANDOM_UAS = new String[]{
         "  GM.openInTab=function(url,opt){try{window.open(url,'_blank');}catch(e){}};" +
         "  GM.setClipboard=function(t){try{if(store&&store.gmSetClipboard)store.gmSetClipboard(String(t));}catch(e){}};" +
         "  GM.setValues=function(obj){try{if(obj)for(var k in obj)GM.setValue(k,obj[k]);}catch(e){}};" +
-        "  GM.registerMenuCommand=function(name,fn,acc){try{window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REG:'+name+'@'+(window.__sbplus_current_tag__||'NULL'));window.__sbplus_menus__=window.__sbplus_menus__||{};var tag=window.__sbplus_current_tag__||'__default__';if(!window.__sbplus_menus__[tag])window.__sbplus_menus__[tag]=[];var id=window.__sbplus_menus__[tag].length;window.__sbplus_menus__[tag].push({n:name,f:fn});return id;}catch(e){window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REGERR:'+e);return 0;}};" +
+        "  GM.registerMenuCommand=function(name,fn,acc){try{window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REG:'+name+'@'+(window.__sbplus_current_tag__||'NULL'));window.__sbplus_menus__=window.__sbplus_menus__||{};var tag=window.__sbplus_current_tag__||'__default__';if(!window.__sbplus_menus__[tag])window.__sbplus_menus__[tag]=[];var arr=window.__sbplus_menus__[tag];var found=-1;for(var i=0;i<arr.length;i++){if(arr[i].n===name){found=i;break;}}if(found>=0){arr[found].f=fn;arr[found].id=found;return found;}var id=arr.length;arr.push({n:name,f:fn});return id;}catch(e){window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REGERR:'+e);return 0;}};" +
         "  GM.unregisterMenuCommand=function(id){return 0;};" +
         "  GM.addValueChangeListener=function(k,cb){try{_vcl[k]=_vcl[k]||[];var id=++_vcSeq;_vcl[k].push({id:id,cb:cb});return id;}catch(e){return 0;}};" +
         "  GM.removeValueChangeListener=function(id){try{for(var k in _vcl){var ls=_vcl[k];for(var i=ls.length-1;i>=0;i--){if(ls[i].id===id)ls.splice(i,1);}}}catch(e){}};" +
@@ -6621,7 +6628,7 @@ private static final String[] RANDOM_UAS = new String[]{
             }
             if (insertIndex < 0) insertIndex = parent.getChildCount();
 
-            int iconSize = (int)(getDimen(ctx, "location_bar_icon_size", 40) * 1.45f);
+            int iconSize = (int)(getDimen(ctx, "location_bar_icon_size", 40) * 1.15f);
             int iconHeight = getDimen(ctx, "location_bar_height", 48);
             int margin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.4f);
 
@@ -7697,7 +7704,7 @@ private boolean showMediaDialog(String json) {
             }
             final int n = urls.size();
             final boolean[] checked = new boolean[n];
-            for (int i = 0; i < n; i++) checked[i] = true;   // 默认全选
+            for (int i = 0; i < n; i++) checked[i] = false;  // 默认不全选，用户手动全选
             android.app.Activity act0 = sSniffActivity != null ? sSniffActivity
                     : (sCurrentActivity != null ? sCurrentActivity
                     : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null));
@@ -7834,15 +7841,33 @@ private boolean showMediaDialog(String json) {
                             } catch (Throwable ignored) {}
                         }
                     }).start();
-                    // 选中状态：点击切换
+                    // 选中状态：点击切换 （蓝色边框 + 右上角勾）
                     final android.widget.FrameLayout fcell = cell;
+                    final android.widget.TextView chkBadge = new android.widget.TextView(act);
+                    chkBadge.setText("✓");
+                    chkBadge.setTextSize(18);
+                    chkBadge.setTextColor(0xFFFFFFFF);
+                    chkBadge.setGravity(android.view.Gravity.CENTER);
+                    chkBadge.setBackgroundColor(0xFF1E88E5);
+                    chkBadge.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
+                    android.widget.FrameLayout.LayoutParams chkP = new android.widget.FrameLayout.LayoutParams(dp(act,20), dp(act,20), android.view.Gravity.TOP | android.view.Gravity.RIGHT);
+                    chkP.setMargins(0, dp(act,2), dp(act,2), 0);
+                    cell.addView(chkBadge, chkP);
+                    chkBadge.bringToFront();
+                    final Runnable refreshCell = new Runnable() { @Override public void run() {
+                        try {
+                            fcell.setBackgroundColor(checked[realIdx] ? 0xFF1E88E5 : 0x22000000);
+                            fcell.setPadding(dp(act,3), dp(act,3), dp(act,3), dp(act,3));
+                            chkBadge.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
+                        } catch (Throwable ignored) {}
+                    }};
                     cell.setOnClickListener(new android.view.View.OnClickListener() {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx];
-                            fcell.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                            refreshCell.run();
                         }
                     });
-                    cell.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                    refreshCell.run();
                     return cell;
                 }
             };
@@ -7925,14 +7950,14 @@ private boolean showMediaDialog(String json) {
                     }).start();
                     row.addView(col, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
 
-                    // 整行点击切换选中
+                    // 整行点击切换选中 （选中浅蓝背景 + 勾框）
                     row.setOnClickListener(new android.view.View.OnClickListener() {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx]; cb.setChecked(checked[realIdx]);
-                            row.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                            row.setBackgroundColor(checked[realIdx] ? 0x331E88E5 : 0x00000000);
                         }
                     });
-                    row.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                    row.setBackgroundColor(checked[realIdx] ? 0x331E88E5 : 0x00000000);
                     return row;
                 }
             };
@@ -8008,14 +8033,14 @@ private boolean showMediaDialog(String json) {
                         }
                     }).start();
                     row.addView(col, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
-                    // 整行点击切换选中
+                    // 整行点击切换选中 （选中浅蓝背景 + 勾框）
                     row.setOnClickListener(new android.view.View.OnClickListener() {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx]; cb.setChecked(checked[realIdx]);
-                            row.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                            row.setBackgroundColor(checked[realIdx] ? 0x331E88E5 : 0x00000000);
                         }
                     });
-                    row.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                    row.setBackgroundColor(checked[realIdx] ? 0x331E88E5 : 0x00000000);
                     return row;
                 }
             };
@@ -8091,7 +8116,7 @@ private boolean showMediaDialog(String json) {
             btnRow.addView(btnAll, b1p); btnRow.addView(btnDl, b2p); btnRow.addView(btnCancel, b3p);
             root.addView(btnRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
 
-            final boolean[] allSelected = new boolean[]{true};
+            final boolean[] allSelected = new boolean[]{false};
             btnAll.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) {
                     allSelected[0] = !allSelected[0];
@@ -8422,7 +8447,7 @@ private boolean showMediaDialog(String json) {
                 // 注册菜单时读到被后续脚本覆盖的全局 current_tag，导致菜单错记到别的脚本名下。
                 all.append("(function(){var __scoped_tag__=").append(jsonQuote(m.name)).append(";");
                 all.append("var __scoped_orig__=window.GM_registerMenuCommand;");
-                all.append("var __scoped_reg__=function(name,fn,acc){try{window.__sbplus_menus__=window.__sbplus_menus__||{};if(!window.__sbplus_menus__[__scoped_tag__])window.__sbplus_menus__[__scoped_tag__]=[];var id=window.__sbplus_menus__[__scoped_tag__].length;window.__sbplus_menus__[__scoped_tag__].push({n:name,f:fn});window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REG:'+name+'@'+__scoped_tag__);return id;}catch(e){return 0;}};");
+                all.append("var __scoped_reg__=function(name,fn,acc){try{window.__sbplus_menus__=window.__sbplus_menus__||{};if(!window.__sbplus_menus__[__scoped_tag__])window.__sbplus_menus__[__scoped_tag__]=[];var arr=window.__sbplus_menus__[__scoped_tag__];var found=-1;for(var i=0;i<arr.length;i++){if(arr[i].n===name){found=i;break;}}if(found>=0){arr[found].f=fn;arr[found].id=found;return found;}var id=arr.length;arr.push({n:name,f:fn});window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REG:'+name+'@'+__scoped_tag__);return id;}catch(e){return 0;}};");
                 all.append("window.GM_registerMenuCommand=__scoped_reg__;window.GM.registerMenuCommand=__scoped_reg__;window.GM_unregisterMenuCommand=function(){return 0;};window.GM.unregisterMenuCommand=function(){return 0;};").append("})();\n");
                 all.append("\ntry{\n(function(){\n").append(m.code).append("\n})();\n}catch(e){window.__sbplus_last_error__=('script:'+window.__sbplus_current_tag__+':'+e.message+' stack:'+(e.stack||''));}\n");
                 XposedBridge.log("[SBPlus] inject script '" + m.name + "' codeLen=" + (m.code == null ? 0 : m.code.length()));
