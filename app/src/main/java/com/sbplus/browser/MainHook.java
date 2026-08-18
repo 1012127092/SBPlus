@@ -6370,7 +6370,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             int margin = getDimen(ctx, "location_bar_icon_margin", 6);
 
             android.widget.TextView btn = new android.widget.TextView(ctx);
-            btn.setText("\uD83D\uDD0E");
+            btn.setText("\uD83D\uDCE1");
             btn.setTextSize(16);
             btn.setGravity(android.view.Gravity.CENTER);
             btn.setTag("sbplus_sniff_btn");
