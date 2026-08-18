@@ -42,6 +42,32 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
  */
 public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
+    // ================= 多语言（跟随系统语言） =================
+    // 浏览器进程读不到模块的 strings.xml 资源，因此用内置中英双语字典，
+    // 根据系统 Locale 返回对应语言。默认英文，中文返回中文。
+    private static String T(String zh, String en) {
+        try {
+            String lang = java.util.Locale.getDefault().getLanguage();
+            if ("zh".equals(lang)) return zh;
+        } catch (Throwable t) {
+            // ignore
+        }
+        return en;
+    }
+
+    // 三语言版本：zh/en/ja
+    private static String T3(String zh, String en, String ja) {
+        try {
+            String lang = java.util.Locale.getDefault().getLanguage();
+            if ("zh".equals(lang)) return zh;
+            if ("ja".equals(lang)) return ja;
+        } catch (Throwable t) {
+            // ignore
+        }
+        return en;
+    }
+
+
     // Global application Context (captured from SBrowserApplication.onCreate).
     private static volatile Context sAppContext;
     private static volatile android.app.Activity sCurrentActivity;
@@ -94,16 +120,16 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String DEFAULT_IDM_PLUS_PACKAGE = "idm.internet.download.manager.plus";
 
     private static final String[][] PRESET_DOWNLOADERS = new String[][]{
-            {"ADM（高级下载管理器）", DEFAULT_ADM_PACKAGE},
-            {"1DM（Internet Download Manager）", DEFAULT_1DM_PACKAGE},
-            {"IDM+（Internet Download Manager Plus）", DEFAULT_IDM_PLUS_PACKAGE},
+            {T("ADM（高级下载管理器）", "ADM (Advanced Download Manager)"), DEFAULT_ADM_PACKAGE},
+            {T("1DM（Internet Download Manager）", "1DM (Internet Download Manager)"), DEFAULT_1DM_PACKAGE},
+            {T("IDM+（Internet Download Manager Plus）", "IDM+ (Internet Download Manager Plus)"), DEFAULT_IDM_PLUS_PACKAGE},
     };
 
     // User-Agent presets for the "浏览器标识" (UA override) feature.
     // label -> full UA string.
     private static final String[][] PRESET_UAS = new String[][]{
-            {"桌面 Chrome（Windows）", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
-            {"Android Chrome（手机）", "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"},
+            {T("桌面 Chrome（Windows）", "Desktop Chrome (Windows)"), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+            {T("Android Chrome（手机）", "Android Chrome (Mobile)"), "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"},
             {"iPhone Safari", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"},
     };
 
@@ -176,51 +202,51 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     // 主设置页（settings_fragment.xml）的所有可屏蔽项目：preference key -> 中文标题。
     // key 以 "@" 开头的是特殊项（非 preference）：@search = 搜索框、@update_card = 更新提示卡片。
     private static final String[][] SETTINGS_ITEMS = new String[][]{
-            {"@search", "顶部的搜索"},
-            {"@update_card", "更新提示卡片"},
-            {"pref_parental_control_notice", "家庭组织者管理提示"},
-            {"cloud_sync", "与三星云同步"},
-            {"pref_browsing_assist", "浏览助手"},
-            {"pref_drawing_assist", "绘图助手"},
-            {"set_homepage", "主页"},
-            {"set_search_engine", "地址栏搜索"},
-            {"pref_auto_close_unused_tabs", "自动关闭未使用的页面"},
-            {"layout_and_menu", "布局和菜单"},
-            {"display", "网页查看和滚动"},
-            {"privacy", "安全与隐私"},
-            {"personal_data", "个人浏览数据"},
-            {"sites_and_contents", "网站和下载"},
-            {"pref_notifications", "通知"},
-            {"useful_features", "实用功能"},
-            {"pref_privacy_notice", "隐私声明"},
-            {"notice_board", "隐私声明历史记录"},
-            {"pref_permissions", "权限"},
-            {"pref_leave_internet", "停止使用三星浏览器"},
-            {"about", "关于三星浏览器"},
-            {"pref_contact_us", "联系我们"},
+            {"@search", T("顶部的搜索", "Top search bar")},
+            {"@update_card", T("更新提示卡片", "Update notice card")},
+            {"pref_parental_control_notice", T("家庭组织者管理提示", "Parental controls notice")},
+            {"cloud_sync", T("与三星云同步", "Sync with Samsung Cloud")},
+            {"pref_browsing_assist", T("浏览助手", "Browsing assist")},
+            {"pref_drawing_assist", T("绘图助手", "Drawing assist")},
+            {"set_homepage", T("主页", "Homepage")},
+            {"set_search_engine", T("地址栏搜索", "Address bar search")},
+            {"pref_auto_close_unused_tabs", T("自动关闭未使用的页面", "Auto-close unused tabs")},
+            {"layout_and_menu", T("布局和菜单", "Layout and menus")},
+            {"display", T("网页查看和滚动", "Pages and scrolling")},
+            {"privacy", T("安全与隐私", "Privacy and security")},
+            {"personal_data", T("个人浏览数据", "Personal browsing data")},
+            {"sites_and_contents", T("网站和下载", "Sites and downloads")},
+            {"pref_notifications", T("通知", "Notifications")},
+            {"useful_features", T("实用功能", "Useful features")},
+            {"pref_privacy_notice", T("隐私声明", "Privacy notice")},
+            {"notice_board", T("隐私声明历史记录", "Privacy notice history")},
+            {"pref_permissions", T("权限", "Permissions")},
+            {"pref_leave_internet", T("停止使用三星浏览器", "Stop using Samsung Internet")},
+            {"about", T("关于三星浏览器", "About Samsung Internet")},
+            {"pref_contact_us", T("联系我们", "Contact us")},
     };
 
     // Country/region ISO codes for the "锁定国家/地区" feature (region lock).
     // Mirrors Samsung Browser's own "Feature variation test > Country iso code" options
     // (res/values/arrays.xml pref_country_iso_code_values).
     private static final String[][] PRESET_REGIONS = new String[][]{
-            {"阿根廷", "AR"},
-            {"巴西", "BR"},
-            {"加拿大", "CA"},
-            {"中国大陆", "CN"},
-            {"德国", "DE"},
-            {"西班牙", "ES"},
-            {"法国", "FR"},
-            {"英国", "GB"},
-            {"印度", "IN"},
-            {"意大利", "IT"},
-            {"日本", "JP"},
-            {"韩国", "KR"},
-            {"俄罗斯", "RU"},
-            {"土耳其", "TR"},
-            {"美国", "US"},
-            {"越南", "VN"},
-            {"其他", "Other"},
+            {T("阿根廷", "Argentina"), "AR"},
+            {T("巴西", "Brazil"), "BR"},
+            {T("加拿大", "Canada"), "CA"},
+            {T("中国大陆", "Mainland China"), "CN"},
+            {T("德国", "Germany"), "DE"},
+            {T("西班牙", "Spain"), "ES"},
+            {T("法国", "France"), "FR"},
+            {T("英国", "United Kingdom"), "GB"},
+            {T("印度", "India"), "IN"},
+            {T("意大利", "Italy"), "IT"},
+            {T("日本", "Japan"), "JP"},
+            {T("韩国", "South Korea"), "KR"},
+            {T("俄罗斯", "Russia"), "RU"},
+            {T("土耳其", "Turkey"), "TR"},
+            {T("美国", "United States"), "US"},
+            {T("越南", "Vietnam"), "VN"},
+            {T("其他", "Other"), "Other"},
     };
 
     // ADM's browser-intent entry point (activity-alias). Verified by reverse
@@ -800,7 +826,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 wf.removeAllViews();
 
                 final android.widget.EditText edit = new android.widget.EditText(root.getContext());
-                edit.setHint("输入包名，如 com.dv.adm");
+                edit.setHint(T("输入包名，如 com.dv.adm", "Enter package name, e.g. com.dv.adm"));
                 edit.setSingleLine(true);
                 edit.setTextSize(14f);
                 edit.setPadding(dp(root.getContext(), 8), 0, dp(root.getContext(), 8), 0);
@@ -834,7 +860,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             // Typed a package → save and keep the custom dot selected.
             saveDownloaderPackage(v);
             refreshRadioDots("sbplus_dl_custom");
-            android.widget.Toast.makeText(edit.getContext(), "已启用: " + v,
+            android.widget.Toast.makeText(edit.getContext(), T("已启用: ", "Enabled: ") + v,
                     android.widget.Toast.LENGTH_SHORT).show();
             XposedBridge.log("[SBPlus] custom downloader enabled: " + v);
         } else {
@@ -859,7 +885,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 wf.removeAllViews();
 
                 final android.widget.EditText edit = new android.widget.EditText(root.getContext());
-                edit.setHint("输入 UA 字符串");
+                edit.setHint(T("输入 UA 字符串", "Enter UA string"));
                 edit.setSingleLine(true);
                 edit.setTextSize(12f);
                 edit.setPadding(dp(root.getContext(), 8), 0, dp(root.getContext(), 8), 0);
@@ -893,7 +919,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         if (!v.isEmpty()) {
             saveUserAgent(v);
             refreshRadioDots("sbplus_ua_custom");
-            android.widget.Toast.makeText(edit.getContext(), "已启用自定义 UA",
+            android.widget.Toast.makeText(edit.getContext(), T("已启用自定义 UA", "Custom UA enabled"),
                     android.widget.Toast.LENGTH_SHORT).show();
             XposedBridge.log("[SBPlus] custom UA enabled (len=" + v.length() + ")");
         } else {
@@ -1322,9 +1348,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 Class<?> homePrefCls = XposedHelpers.findClass(
                         "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
                 Object homePref = XposedHelpers.newInstance(homePrefCls, new Class[]{Context.class}, ctx);
-                XposedHelpers.callMethod(homePref, "setTitle", "主页美化");
+                XposedHelpers.callMethod(homePref, "setTitle", T("主页美化", "Homepage Beautify"));
                 XposedHelpers.callMethod(homePref, "setKey", "sbplus_home_beautify");
-                XposedHelpers.callMethod(homePref, "setSummary", "视频背景 / 搜索框文字 / 添加快捷方式按钮");
+                XposedHelpers.callMethod(homePref, "setSummary", T("视频背景 / 搜索框文字 / 添加快捷方式按钮", "Video background / search text / add shortcut button"));
                 try {
                     Class<?> listenerType = listenerParamType(homePref.getClass(), "setOnPreferenceClickListener");
                     Object onPreferenceClick = java.lang.reflect.Proxy.newProxyInstance(cl,
@@ -1379,9 +1405,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 Class<?> bmPrefCls = XposedHelpers.findClass(
                         "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
                 Object bmPref = XposedHelpers.newInstance(bmPrefCls, new Class[]{Context.class}, ctx);
-                XposedHelpers.callMethod(bmPref, "setTitle", "书签管理");
+                XposedHelpers.callMethod(bmPref, "setTitle", T("书签管理", "Bookmark Manager"));
                 XposedHelpers.callMethod(bmPref, "setKey", "sbplus_bookmark_manager");
-                XposedHelpers.callMethod(bmPref, "setSummary", "导入 / 导出书签（Chrome/Edge/Firefox 通用）");
+                XposedHelpers.callMethod(bmPref, "setSummary", T("导入 / 导出书签（Chrome/Edge/Firefox 通用）", "Import / export bookmarks (Chrome/Edge/Firefox)"));
                 bindPreferenceClick(bmPref, cl, new Runnable() { public void run() { showBookmarkManagerDialog(bmFinalCtx); } });
                 XposedHelpers.callMethod(screen, "addPreference", bmPref);
                 XposedBridge.log("[SBPlus] bookmark manager item injected");
@@ -1395,10 +1421,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 Class<?> verPrefCls = XposedHelpers.findClass(
                         "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
                 final Object verPref = XposedHelpers.newInstance(verPrefCls, new Class[]{Context.class}, ctx);
-                XposedHelpers.callMethod(verPref, "setTitle", "版本号");
+                XposedHelpers.callMethod(verPref, "setTitle", T("版本号", "Version"));
                 XposedHelpers.callMethod(verPref, "setKey", "sbplus_version");
                 String localVer = readModuleVersion();
-                XposedHelpers.callMethod(verPref, "setSummary", "当前 " + localVer + "（自动检测更新中…）");
+                XposedHelpers.callMethod(verPref, "setSummary", T("当前 ", "Current ") + localVer + T("（自动检测更新中…）", " (checking for updates…)"));
                 bindPreferenceClick(verPref, cl, new Runnable() { public void run() { checkUpdateInteractive(verFinalCtx); } });
                 XposedHelpers.callMethod(screen, "addPreference", verPref);
                 // 后台自动检测最新版本，有新版本则在 summary 提示
@@ -1408,13 +1434,13 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         String remote = checkLatestVersionOnline();
                         if (remote != null && versionNewer(remote, localVerF)) {
                             String disp = stripV(remote);
-                            final String msg = "当前 " + localVerF + "，有新版 " + disp + "，点击更新";
+                            final String msg = T("当前 ", "Current ") + localVerF + T("，有新版 ", ", new version ") + disp + T("，点击更新", ". Tap to update");
                             android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
                             main.post(new Runnable() { public void run() {
                                 try { XposedHelpers.callMethod(verPref, "setSummary", msg); } catch (Throwable ignored) {}
                             }});
                         } else {
-                            final String msg = "当前 " + localVerF + "（已是最新）";
+                            final String msg = T("当前 ", "Current ") + localVerF + T("（已是最新）", " (up to date)");
                             android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
                             main.post(new Runnable() { public void run() {
                                 try { XposedHelpers.callMethod(verPref, "setSummary", msg); } catch (Throwable ignored) {}
@@ -1433,7 +1459,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 Class<?> projPrefCls = XposedHelpers.findClass(
                         "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
                 Object projPref = XposedHelpers.newInstance(projPrefCls, new Class[]{Context.class}, ctx);
-                XposedHelpers.callMethod(projPref, "setTitle", "项目地址");
+                XposedHelpers.callMethod(projPref, "setTitle", T("项目地址", "Project URL"));
                 XposedHelpers.callMethod(projPref, "setKey", "sbplus_project_url");
                 XposedHelpers.callMethod(projPref, "setSummary", "github.com/1012127092/SBPlus");
                 bindPreferenceClick(projPref, cl, new Runnable() { public void run() { openProjectPage(projFinalCtx); } });
@@ -1541,14 +1567,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
                 main.post(new Runnable() { @Override public void run() {
                     if (fErr != null) {
-                        android.widget.Toast.makeText(ctx, "检测失败：" + fErr, android.widget.Toast.LENGTH_LONG).show();
+                        android.widget.Toast.makeText(ctx, T("检测失败：", "Check failed: ") + fErr, android.widget.Toast.LENGTH_LONG).show();
                         return;
                     }
                     boolean newer = versionNewer(fTag, fLocal);
                     if (newer) {
                         showUpdateDialog(ctx, fTag, fBody, fApk);
                     } else {
-                        android.widget.Toast.makeText(ctx, "已是最新版本（" + fTag + "）", android.widget.Toast.LENGTH_SHORT).show();
+                        android.widget.Toast.makeText(ctx, T("已是最新版本（", "Already up to date (") + fTag + T("）", ")"), android.widget.Toast.LENGTH_SHORT).show();
                     }
                 }});
             }
@@ -1559,12 +1585,12 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private void showUpdateDialog(final Context ctx, String tag, String body, final String apkUrl) {
         try {
             String note = body;
-            if (note == null || note.trim().isEmpty()) note = "（无更新说明）";
+            if (note == null || note.trim().isEmpty()) note = T("（无更新说明）", " (no release notes)");
             if (note.length() > 500) note = note.substring(0, 500) + "…";
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
-            b.setTitle("发现新版本：" + tag);
-            b.setMessage("当前版本：" + readModuleVersion() + "\n\n" + note);
-            b.setPositiveButton("下载更新", new android.content.DialogInterface.OnClickListener() {
+            b.setTitle(T("发现新版本：", "New version: ") + tag);
+            b.setMessage(T("当前版本：", "Current version: ") + readModuleVersion() + "\n\n" + note);
+            b.setPositiveButton(T("下载更新", "Download update"), new android.content.DialogInterface.OnClickListener() {
                 @Override public void onClick(android.content.DialogInterface d, int w) {
                     String url = (apkUrl != null && !apkUrl.isEmpty())
                             ? apkUrl : "https://github.com/1012127092/SBPlus";
@@ -1578,7 +1604,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     }
                 }
             });
-            b.setNegativeButton("取消", null);
+            b.setNegativeButton(T("取消", "Cancel"), null);
             b.show();
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] showUpdateDialog error: " + t);
@@ -1639,10 +1665,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         // Custom downloader row — inline EditText injected in onBindViewHolder.
         Object custom = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(custom, "setTitle", "自定义下载器");
+        XposedHelpers.callMethod(custom, "setTitle", T("自定义下载器", "Custom Downloader"));
         XposedHelpers.callMethod(custom, "setKey", "sbplus_dl_custom");
         boolean isCustom = !isPreset(current);
-        XposedHelpers.callMethod(custom, "setSummary", isCustom ? ("当前使用: " + current) : "输入包名并确认");
+        XposedHelpers.callMethod(custom, "setSummary", isCustom ? (T("当前使用: ", "Current: ") + current) : T("输入包名并确认", "Enter package name and confirm"));
         bindCustomClick(custom, cl, screen);
         XposedHelpers.callMethod(screen, "addPreference", custom);
 
@@ -1688,7 +1714,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 Object ctxObj = XposedHelpers.callMethod(clicked, "getContext");
                                 if (ctxObj instanceof Context) {
                                     android.widget.Toast.makeText((Context) ctxObj,
-                                            "已选择: " + label, android.widget.Toast.LENGTH_SHORT).show();
+                                            T("已选择: ", "Selected: ") + label, android.widget.Toast.LENGTH_SHORT).show();
                                 }
                                 refreshRadioDots("sbplus_region_" + code);
                                 XposedBridge.log("[SBPlus] region selected: " + code);
@@ -1768,7 +1794,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 Object ctxObj = XposedHelpers.callMethod(clicked, "getContext");
                                 if (ctxObj instanceof Context) {
                                     android.widget.Toast.makeText((Context) ctxObj,
-                                            "已选择: " + label, android.widget.Toast.LENGTH_SHORT).show();
+                                            T("已选择: ", "Selected: ") + label, android.widget.Toast.LENGTH_SHORT).show();
                                 }
                                 refreshRadioDots("sbplus_dl_" + pkg);
                                 XposedBridge.log("[SBPlus] downloader selected: " + pkg);
@@ -1801,33 +1827,33 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private void showCustomDownloaderDialog(final android.app.Activity act) {
         final Context ctx = act;
         final android.widget.EditText input = new android.widget.EditText(ctx);
-        input.setHint("输入包名，例如 com.dv.adm");
+        input.setHint(T("输入包名，例如 com.dv.adm", "Enter package name, e.g. com.dv.adm"));
         input.setSingleLine(true);
         input.setText(downloaderPackage());
         int pad = dp(ctx, 16);
         input.setPadding(pad, pad, pad, pad);
 
         android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
-        b.setTitle("自定义下载器");
-        b.setMessage("输入下载器应用包名");
+        b.setTitle(T("自定义下载器", "Custom Downloader"));
+        b.setMessage(T("输入下载器应用包名", "Enter the downloader app package name"));
         b.setView(input);
-        b.setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+        b.setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
             @Override
             public void onClick(android.content.DialogInterface d, int which) {
                 String p = input.getText().toString().trim();
                 if (p.isEmpty()) {
-                    android.widget.Toast.makeText(ctx, "包名不能为空",
+                    android.widget.Toast.makeText(ctx, T("包名不能为空", "Package name cannot be empty"),
                             android.widget.Toast.LENGTH_SHORT).show();
                     return;
                 }
                 saveDownloaderPackage(p);
-                android.widget.Toast.makeText(ctx, "已保存: " + p,
+                android.widget.Toast.makeText(ctx, T("已保存: ", "Saved: ") + p,
                         android.widget.Toast.LENGTH_SHORT).show();
                 XposedBridge.log("[SBPlus] custom downloader saved: " + p);
                 LogWriter.log("picker", "custom downloader saved: " + p);
             }
         });
-        b.setNegativeButton("取消", null);
+        b.setNegativeButton(T("取消", "Cancel"), null);
         b.show();
     }
 
@@ -1916,7 +1942,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         XposedHelpers.callMethod(pref, "setTitle", "SBPlus");
         XposedHelpers.callMethod(pref, "setKey", "sbplus_main");
-        XposedHelpers.callMethod(pref, "setSummary", "下载桥与增强功能");
+        XposedHelpers.callMethod(pref, "setSummary", T("下载桥与增强功能", "Download bridge & enhancements"));
 
         // Point the row at Samsung's own PreferenceFragmentCustom (a concrete, empty
         // PreferenceFragmentCompat subclass). Samsung loads it natively; we inject our
@@ -1940,9 +1966,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
 
-        XposedHelpers.callMethod(pref, "setTitle", "启用外部下载器");
+        XposedHelpers.callMethod(pref, "setTitle", T("启用外部下载器", "Enable external downloader"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_external_downloader");
-        XposedHelpers.callMethod(pref, "setSummary", "下载转交给第三方下载器（ADM/1DM/IDM+）");
+        XposedHelpers.callMethod(pref, "setSummary", T("下载转交给第三方下载器（ADM/1DM/IDM+）", "Forward downloads to a third-party manager (ADM/1DM/IDM+)"));
         XposedHelpers.callMethod(pref, "setChecked", isBridgeEnabled());
 
         // Must be selectable so performClick() routes into onClick() + onPreferenceTreeClick
@@ -2028,9 +2054,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
 
-        XposedHelpers.callMethod(pref, "setTitle", "启用网格菜单");
+        XposedHelpers.callMethod(pref, "setTitle", T("启用网格菜单", "Enable grid menu"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_grid_menu");
-        XposedHelpers.callMethod(pref, "setSummary", "更多菜单改为两行×5列网格，左右翻页");
+        XposedHelpers.callMethod(pref, "setSummary", T("更多菜单改为两行×5列网格，左右翻页", "More menu as a 2-row x 5-col grid, swipe to switch pages"));
         XposedHelpers.callMethod(pref, "setChecked", isGridMenuEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
 
@@ -2074,10 +2100,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
 
-        XposedHelpers.callMethod(pref, "setTitle", "锁定国家/地区");
+        XposedHelpers.callMethod(pref, "setTitle", T("锁定国家/地区", "Lock country/region"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_region_lock");
         String code = regionCode();
-        XposedHelpers.callMethod(pref, "setSummary", code.isEmpty() ? "点击选择要锁定的国家/地区" : ("当前: " + code));
+        XposedHelpers.callMethod(pref, "setSummary", code.isEmpty() ? T("点击选择要锁定的国家/地区", "Tap to choose a country/region to lock") : (T("当前: ", "Current: ") + code));
         XposedHelpers.callMethod(pref, "setChecked", isRegionLockEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
 
@@ -2351,9 +2377,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
 
-        XposedHelpers.callMethod(pref, "setTitle", "精简设置页");
+        XposedHelpers.callMethod(pref, "setTitle", T("精简设置页", "Streamlined settings"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_clean_settings");
-        XposedHelpers.callMethod(pref, "setSummary", "屏蔽设置页里不需要的项目");
+        XposedHelpers.callMethod(pref, "setSummary", T("屏蔽设置页里不需要的项目", "Hide unneeded items in the settings page"));
         XposedHelpers.callMethod(pref, "setChecked", isCleanSettingsEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try {
@@ -2422,9 +2448,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
 
-        XposedHelpers.callMethod(pref, "setTitle", "屏蔽更新和小红点");
+        XposedHelpers.callMethod(pref, "setTitle", T("屏蔽更新和小红点", "Block updates & red dots"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_block_update");
-        XposedHelpers.callMethod(pref, "setSummary", "彻底屏蔽浏览器的更新检查、更新弹窗与升级组件");
+        XposedHelpers.callMethod(pref, "setSummary", T("彻底屏蔽浏览器的更新检查、更新弹窗与升级组件", "Block update checks, update dialogs and upgrade components"));
         XposedHelpers.callMethod(pref, "setChecked", isBlockUpdateEnabled());
 
         try {
@@ -2572,11 +2598,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
 
-        XposedHelpers.callMethod(pref, "setTitle", "主页视频背景");
+        XposedHelpers.callMethod(pref, "setTitle", T("主页视频背景", "Homepage video background"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_video_bg");
         String path = videoBgPath();
         XposedHelpers.callMethod(pref, "setSummary",
-                path.isEmpty() ? "点击选择视频文件作为主页背景" : ("已设置视频背景"));
+                path.isEmpty() ? T("点击选择视频文件作为主页背景", "Tap to choose a video as homepage background") : (T("已设置视频背景", "Video background set")));
         XposedHelpers.callMethod(pref, "setChecked", isVideoBgEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try {
@@ -2658,9 +2684,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(pref, "setTitle", "去除搜索框内文字");
+        XposedHelpers.callMethod(pref, "setTitle", T("去除搜索框内文字", "Remove search box text"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_home_clear_text");
-        XposedHelpers.callMethod(pref, "setSummary", "隐藏主页搜索框里的“搜索或输入网址”提示文字");
+        XposedHelpers.callMethod(pref, "setSummary", T("隐藏主页搜索框里的“搜索或输入网址”提示文字", "Hide the \"Search or type URL\" hint in the search box"));
         XposedHelpers.callMethod(pref, "setChecked", isHomeClearTextEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
 
@@ -2692,9 +2718,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(pref, "setTitle", "移动添加快捷方式按钮");
+        XposedHelpers.callMethod(pref, "setTitle", T("移动添加快捷方式按钮", "Move \"add shortcut\" button"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_home_move_btn");
-        XposedHelpers.callMethod(pref, "setSummary", "把“添加快捷方式”按钮移到主页设置左边并统一大小");
+        XposedHelpers.callMethod(pref, "setSummary", T("把“添加快捷方式”按钮移到主页设置左边并统一大小", "Move the add-shortcut button next to homepage settings and unify its size"));
         XposedHelpers.callMethod(pref, "setChecked", isHomeMoveBtnEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
 
@@ -2730,32 +2756,32 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         // 当前视频路径展示行。
         Object status = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(status, "setTitle", "当前视频");
+        XposedHelpers.callMethod(status, "setTitle", T("当前视频", "Current video"));
         XposedHelpers.callMethod(status, "setKey", "sbplus_videobg_status");
-        XposedHelpers.callMethod(status, "setSummary", cur.isEmpty() ? "尚未选择视频" : cur);
+        XposedHelpers.callMethod(status, "setSummary", cur.isEmpty() ? T("尚未选择视频", "No video selected yet") : cur);
         XposedHelpers.callMethod(screen, "addPreference", status);
 
         // 选择视频文件行（跳转到文件管理器）。
         Object choose = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(choose, "setTitle", "选择视频文件");
+        XposedHelpers.callMethod(choose, "setTitle", T("选择视频文件", "Choose video file"));
         XposedHelpers.callMethod(choose, "setKey", "sbplus_videobg_choose");
-        XposedHelpers.callMethod(choose, "setSummary", "通过系统文件管理器选择（建议 mp4）");
+        XposedHelpers.callMethod(choose, "setSummary", T("通过系统文件管理器选择（建议 mp4）", "Pick via the system file picker (mp4 recommended)"));
         bindVideoBgChooseClick(choose, cl);
         XposedHelpers.callMethod(screen, "addPreference", choose);
 
         // 清除已选视频行。
         Object clear = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(clear, "setTitle", "清除视频");
+        XposedHelpers.callMethod(clear, "setTitle", T("清除视频", "Clear video"));
         XposedHelpers.callMethod(clear, "setKey", "sbplus_videobg_clear");
-        XposedHelpers.callMethod(clear, "setSummary", "只清设置，保留视频文件");
+        XposedHelpers.callMethod(clear, "setSummary", T("只清设置，保留视频文件", "Only clear the setting, keep the video file"));
         bindVideoBgClearClick(clear, cl);
         XposedHelpers.callMethod(screen, "addPreference", clear);
 
         // 删除视频文件行。
         Object del = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(del, "setTitle", "删除视频");
+        XposedHelpers.callMethod(del, "setTitle", T("删除视频", "Delete video"));
         XposedHelpers.callMethod(del, "setKey", "sbplus_videobg_delete");
-        XposedHelpers.callMethod(del, "setSummary", "删除已复制到 Movies/SBPlus 的视频文件");
+        XposedHelpers.callMethod(del, "setSummary", T("删除已复制到 Movies/SBPlus 的视频文件", "Delete the video copied to Movies/SBPlus"));
         bindVideoBgDeleteClick(del, cl);
         XposedHelpers.callMethod(screen, "addPreference", del);
 
@@ -2784,7 +2810,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                         try {
                                             act.startActivityForResult(i, 61001);
                                         } catch (Throwable t) {
-                                            android.widget.Toast.makeText(act, "无法打开文件选择器: " + t.getMessage(),
+                                            android.widget.Toast.makeText(act, T("无法打开文件选择器: ", "Cannot open file picker: ") + t.getMessage(),
                                                     android.widget.Toast.LENGTH_SHORT).show();
                                         }
                                     }
@@ -2817,7 +2843,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     saveVideoBgPath("");
                                     Object ctxObj = XposedHelpers.callMethod(clicked, "getContext");
                                     if (ctxObj instanceof Context) {
-                                        android.widget.Toast.makeText((Context) ctxObj, "已清除视频背景",
+                                        android.widget.Toast.makeText((Context) ctxObj, T(T("已清除视频背景", "Video background cleared"), "Video background cleared"),
                                                 android.widget.Toast.LENGTH_SHORT).show();
                                     }
                                     XposedBridge.log("[SBPlus] video bg cleared");
@@ -2852,7 +2878,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     saveVideoBgPath("");
                                     saveVideoBgEnabled(false);
                                     android.widget.Toast.makeText(ctx,
-                                            deleted > 0 ? ("已删除 " + deleted + " 个视频文件") : "没有可删除的视频",
+                                            deleted > 0 ? (T("已删除 ", "Deleted ") + deleted + T(" 个视频文件", " video files")) : T("没有可删除的视频", "No videos to delete"),
                                             android.widget.Toast.LENGTH_SHORT).show();
                                     XposedBridge.log("[SBPlus] video files deleted: " + deleted);
                                     return Boolean.TRUE;
@@ -2947,7 +2973,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     android.widget.CheckBox cb = sCleanCheckBoxes.get("sbplus_clean_" + key);
                                     if (cb != null) cb.setChecked(nowHidden);
                                     android.widget.Toast.makeText((Context) XposedHelpers.callMethod(clicked, "getContext"),
-                                            nowHidden ? ("已屏蔽: " + title) : ("已取消屏蔽: " + title),
+                                            nowHidden ? (T("已屏蔽: ", "Hidden: ") + title) : (T("已取消屏蔽: ", "Unhidden: ") + title),
                                             android.widget.Toast.LENGTH_SHORT).show();
                                     XposedBridge.log("[SBPlus] clean setting toggled: " + key + " -> " + nowHidden);
                                     return Boolean.TRUE;
@@ -3026,9 +3052,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
 
-        XposedHelpers.callMethod(pref, "setTitle", "浏览器标识");
+        XposedHelpers.callMethod(pref, "setTitle", T("浏览器标识", "Browser identity (UA)"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_ua_override");
-        XposedHelpers.callMethod(pref, "setSummary", "伪装 User-Agent（桌面 Chrome / 手机 / iPhone / 自定义）");
+        XposedHelpers.callMethod(pref, "setSummary", T("伪装 User-Agent（桌面 Chrome / 手机 / iPhone / 自定义）", "Spoof User-Agent (Desktop Chrome / Mobile / iPhone / Custom)"));
         XposedHelpers.callMethod(pref, "setChecked", isUaEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try {
@@ -3099,9 +3125,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         // 随机浏览器标识（单选行，与下方 preset 互斥）
         Object randomRow = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(randomRow, "setTitle", "随机浏览器标识");
+        XposedHelpers.callMethod(randomRow, "setTitle", T("随机浏览器标识", "Random UA"));
         XposedHelpers.callMethod(randomRow, "setKey", "sbplus_ua_random");
-        XposedHelpers.callMethod(randomRow, "setSummary", "每次启动随机刷新 UA（覆盖多平台/多系统/多浏览器）");
+        XposedHelpers.callMethod(randomRow, "setSummary", T("每次启动随机刷新 UA（覆盖多平台/多系统/多浏览器）", "Randomize UA on each start (multi-platform)"));
         bindUaRandomClick(randomRow, cl, screen);
         XposedHelpers.callMethod(screen, "addPreference", randomRow);
 
@@ -3118,9 +3144,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         boolean isCustom = !isPresetUa(current) && current.length() > 0;
         Object custom = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(custom, "setTitle", "自定义 UA");
+        XposedHelpers.callMethod(custom, "setTitle", T("自定义 UA", "Custom UA"));
         XposedHelpers.callMethod(custom, "setKey", "sbplus_ua_custom");
-        XposedHelpers.callMethod(custom, "setSummary", isCustom ? ("当前: " + current) : "输入 UA 并确认");
+        XposedHelpers.callMethod(custom, "setSummary", isCustom ? ("当前: " + current) : T("输入 UA 并确认", "Enter UA and confirm"));
         bindUaCustomClick(custom, cl, screen);
         XposedHelpers.callMethod(screen, "addPreference", custom);
 
@@ -3144,7 +3170,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     Object ctxObj = XposedHelpers.callMethod(clicked, "getContext");
                                     if (ctxObj instanceof Context) {
                                         android.widget.Toast.makeText((Context) ctxObj,
-                                                "已选择: " + label, android.widget.Toast.LENGTH_SHORT).show();
+                                                T("已选择: ", "Selected: ") + label, android.widget.Toast.LENGTH_SHORT).show();
                                     }
                                     refreshRadioDots("sbplus_ua_" + ua);
                                     XposedBridge.log("[SBPlus] UA selected: " + label);
@@ -3178,7 +3204,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     Object ctxObj = XposedHelpers.callMethod(clicked, "getContext");
                                     if (ctxObj instanceof Context) {
                                         android.widget.Toast.makeText((Context) ctxObj,
-                                                "已启用随机浏览器标识（重启后随机刷新）", android.widget.Toast.LENGTH_SHORT).show();
+                                                T("已启用随机浏览器标识（重启后随机刷新）", "Random UA enabled (randomized on restart)"), android.widget.Toast.LENGTH_SHORT).show();
                                     }
                                     refreshRadioDots("sbplus_ua_random");
                                     XposedBridge.log("[SBPlus] random UA selected");
@@ -3759,14 +3785,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     String content = readUriText((android.content.Context) param.thisObject, uri);
                                     if (content != null && !content.isEmpty()) {
                                         String fn = saveUserscriptContent(content);
-                                        if (fn != null) saveSource(fn, "本地导入");
+                                        if (fn != null) saveSource(fn, T("本地导入", "Local import"));
                                         android.widget.Toast.makeText((android.content.Context) param.thisObject,
-                                                fn == null ? "导入失败" : ("已导入脚本: " + fn),
+                                                fn == null ? T("导入失败", "Import failed") : (T("已导入脚本: ", "Imported script: ") + fn),
                                                 android.widget.Toast.LENGTH_SHORT).show();
                                         XposedBridge.log("[SBPlus] userscript imported: " + fn);
                                     } else {
                                         android.widget.Toast.makeText((android.content.Context) param.thisObject,
-                                                "读取文件失败", android.widget.Toast.LENGTH_SHORT).show();
+                                                T("读取文件失败", "Failed to read file"), android.widget.Toast.LENGTH_SHORT).show();
                                     }
                                     return;
                                 }
@@ -3783,14 +3809,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                                 : (param.thisObject instanceof android.app.Activity
                                                         ? (android.app.Activity) param.thisObject : null);
                                         if (act != null) {
-                                            showBookmarkTreeDialog(act, "选择要导入的书签", tree, false);
+                                            showBookmarkTreeDialog(act, T("选择要导入的书签", "Select bookmarks to import"), tree, false);
                                         } else {
                                             android.widget.Toast.makeText((android.content.Context) param.thisObject,
-                                                    "无法获取界面环境", android.widget.Toast.LENGTH_SHORT).show();
+                                                    T("无法获取界面环境", "Cannot get UI context"), android.widget.Toast.LENGTH_SHORT).show();
                                         }
                                     } else {
                                         android.widget.Toast.makeText((android.content.Context) param.thisObject,
-                                                "读取文件失败", android.widget.Toast.LENGTH_SHORT).show();
+                                                T("读取文件失败", "Failed to read file"), android.widget.Toast.LENGTH_SHORT).show();
                                     }
                                     return;
                                 }
@@ -3805,11 +3831,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     saveVideoBgPath(saved);
                                     saveVideoBgEnabled(true);
                                     android.widget.Toast.makeText((android.content.Context) param.thisObject,
-                                            "视频背景已设置", android.widget.Toast.LENGTH_SHORT).show();
+                                            T("视频背景已设置", "Video background set"), android.widget.Toast.LENGTH_SHORT).show();
                                     XposedBridge.log("[SBPlus] video bg saved: " + saved);
                                 } else {
                                     android.widget.Toast.makeText((android.content.Context) param.thisObject,
-                                            "视频复制失败", android.widget.Toast.LENGTH_SHORT).show();
+                                            T("视频复制失败", "Failed to copy video"), android.widget.Toast.LENGTH_SHORT).show();
                                     XposedBridge.log("[SBPlus] video bg copy failed");
                                 }
                             } catch (Throwable t) {
@@ -3847,7 +3873,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             XposedBridge.log("[SBPlus] video bg view hook failed: " + t);
         }
 
-        // (3) 主页 UI 改造：移动"添加快捷方式"按钮 + 搜索框透明化。
+        // (3) 主页 UI 改造：移动T("添加快捷方式", "Add shortcut")按钮 + 搜索框透明化。
         try {
             applyQuickAccessUiTweaks(cl);
             XposedBridge.log("[SBPlus] quickaccess ui tweaks applied");
@@ -3925,7 +3951,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
-    /** 主页 UI 改造：需求1——把"添加快捷方式"按钮移到"主页设置"左边并统一大小；需求2——"搜索或输入网址"横线透明化。 */
+    /** 主页 UI 改造：需求1——把T("添加快捷方式", "Add shortcut")按钮移到"主页设置"左边并统一大小；需求2——"搜索或输入网址"横线透明化。 */
     private void applyQuickAccessUiTweaks(ClassLoader cl) {
         // ---- 需求2：搜索框（假地址栏）透明化 ----
         try {
@@ -3956,7 +3982,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             XposedBridge.log("[SBPlus] dummy url bar hook failed: " + t);
         }
 
-        // ---- 需求1：在"主页设置"按钮左边插入等大的"添加快捷方式"按钮，并隐藏网格里的原添加格子 ----
+        // ---- 需求1：在"主页设置"按钮左边插入等大的T("添加快捷方式", "Add shortcut")按钮，并隐藏网格里的原添加格子 ----
         try {
             Class<?> mainLayout = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.quickaccess.ui.page.QuickAccessMainLayout", cl);
@@ -3983,7 +4009,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
-    /** 在主页根 View 上：把"添加快捷方式"按钮插到"主页设置"按钮左边，隐藏原网格添加格子。 */
+    /** 在主页根 View 上：把T("添加快捷方式", "Add shortcut")按钮插到"主页设置"按钮左边，隐藏原网格添加格子。 */
     private void rearrangeQuickAccessButtons(android.view.View root) {
         int mgmtId = resId("general_management", "id");
         int addContainerId = resId("add_view_container", "id");
@@ -4041,7 +4067,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         // 用 mgmt 的 context 创建（保留 Activity 主题，避免图标/ripple 无 tint），并复制其图标与尺寸。
         android.content.Context mgmtCtx = mgmt.getContext();
         android.widget.ImageButton addBtn = new android.widget.ImageButton(mgmtCtx);
-        addBtn.setContentDescription("添加快捷方式");
+        addBtn.setContentDescription(T("添加快捷方式", "Add shortcut"));
         addBtn.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
         addBtn.setBackground(mgmt.getBackground());
         // 尺寸与主页设置按钮一致
@@ -4122,7 +4148,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
-    /** 触发"添加快捷方式"：反射调用 QuickAccessIconRecyclerAdapter.showAddShortcutDialog()（真正入口）。 */
+    /** 触发T("添加快捷方式", "Add shortcut")：反射调用 QuickAccessIconRecyclerAdapter.showAddShortcutDialog()（真正入口）。 */
     private void triggerAddShortcut(android.view.View root) {
         try {
             Object adapter = findIconRecyclerAdapter(root);
@@ -4263,9 +4289,41 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private void saveUserscriptEnabled(boolean enabled) {
         try {
             if (sAppContext != null) processPrefs(sAppContext).edit().putBoolean(KEY_ENABLE_USERSCRIPT, enabled).commit();
+            // 关闭总开关时，立即尝试移除已注入的地址栏油猴图标（若当前 Activity 可用）
+            if (!enabled) removeUserscriptToolbarButtonFromCurrent();
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] save userscript enabled error: " + t);
         }
+    }
+
+    /** 从当前可见 Activity 的 view 树中移除地址栏油猴图标（幂等）。 */
+    private void removeUserscriptToolbarButtonFromCurrent() {
+        try {
+            android.app.Activity act = sCurrentActivity;
+            if (act == null) return;
+            android.view.View root = act.findViewById(android.R.id.content);
+            if (root == null) return;
+            removeViewByTagRecursive(root, "sbplus_monkey_btn");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] remove userscript btn error: " + t);
+        }
+    }
+
+    private void removeViewByTagRecursive(android.view.View v, String tag) {
+        try {
+            if (v == null) return;
+            if (tag.equals(v.getTag())) {
+                android.view.View p = (android.view.View) v.getParent();
+                if (p instanceof android.view.ViewGroup) ((android.view.ViewGroup) p).removeView(v);
+                return;
+            }
+            if (v instanceof android.view.ViewGroup) {
+                android.view.ViewGroup vg = (android.view.ViewGroup) v;
+                for (int i = 0; i < vg.getChildCount(); i++) {
+                    removeViewByTagRecursive(vg.getChildAt(i), tag);
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     /** 被禁用的脚本文件名集合（按 fileName 区分，不影响脚本文件本身）。 */
@@ -4323,11 +4381,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(pref, "setTitle", "油猴脚本");
+        XposedHelpers.callMethod(pref, "setTitle", T("油猴脚本", "Userscripts"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_userscript");
         java.io.File dir = userscriptDir();
         int count = countUserscripts(dir);
-        XposedHelpers.callMethod(pref, "setSummary", count > 0 ? ("已加载 " + count + " 个脚本，目录: " + (dir == null ? "?" : dir.getAbsolutePath())) : "脚本目录: " + (dir == null ? "未初始化" : dir.getAbsolutePath()));
+        XposedHelpers.callMethod(pref, "setSummary", count > 0 ? (T("已加载 ", "Loaded ") + count + T(" 个脚本，目录: ", " scripts, dir: ") + (dir == null ? "?" : dir.getAbsolutePath())) : "脚本目录: " + (dir == null ? "未初始化" : dir.getAbsolutePath()));
         XposedHelpers.callMethod(pref, "setChecked", isUserscriptEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
@@ -4404,45 +4462,45 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         // —— 操作区 ——
         Object addPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(addPref, "setTitle", "添加脚本");
+        XposedHelpers.callMethod(addPref, "setTitle", T("添加脚本", "Add script"));
         XposedHelpers.callMethod(addPref, "setKey", "sbplus_userscript_add");
-        XposedHelpers.callMethod(addPref, "setSummary", "粘贴脚本内容");
+        XposedHelpers.callMethod(addPref, "setSummary", T("粘贴脚本内容", "Paste script content"));
         bindPreferenceClick(addPref, cl, new Runnable() { public void run() { launchAddUserscript(); } });
         XposedHelpers.callMethod(screen, "addPreference", addPref);
 
         Object importPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(importPref, "setTitle", "导入脚本");
+        XposedHelpers.callMethod(importPref, "setTitle", T("导入脚本", "Import script"));
         XposedHelpers.callMethod(importPref, "setKey", "sbplus_userscript_import");
-        XposedHelpers.callMethod(importPref, "setSummary", "从本地选择 .user.js 文件导入");
+        XposedHelpers.callMethod(importPref, "setSummary", T("从本地选择 .user.js 文件导入", "Import a .user.js file from local storage"));
         bindPreferenceClick(importPref, cl, new Runnable() { public void run() { launchUserscriptFilePicker(); } });
         XposedHelpers.callMethod(screen, "addPreference", importPref);
 
         Object updatePref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(updatePref, "setTitle", "更新所有脚本");
+        XposedHelpers.callMethod(updatePref, "setTitle", T("更新所有脚本", "Update all scripts"));
         XposedHelpers.callMethod(updatePref, "setKey", "sbplus_userscript_update");
-        XposedHelpers.callMethod(updatePref, "setSummary", "检测所有脚本的更新（需脚本声明 @updateURL/@downloadURL）");
+        XposedHelpers.callMethod(updatePref, "setSummary", T("检测所有脚本的更新（需脚本声明 @updateURL/@downloadURL）", "Check for updates of all scripts (requires @updateURL/@downloadURL)"));
         bindPreferenceClick(updatePref, cl, new Runnable() { public void run() { updateAllUserscripts(); } });
         XposedHelpers.callMethod(screen, "addPreference", updatePref);
 
         Object dlPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(dlPref, "setTitle", "下载脚本");
+        XposedHelpers.callMethod(dlPref, "setTitle", T("下载脚本", "Download script"));
         XposedHelpers.callMethod(dlPref, "setKey", "sbplus_userscript_dl");
-        XposedHelpers.callMethod(dlPref, "setSummary", "打开脚本源列表，选择网站后安装的 .user.js 会自动保存");
+        XposedHelpers.callMethod(dlPref, "setSummary", T("打开脚本源列表，选择网站后安装的 .user.js 会自动保存", "Open the source list; .user.js installed from the site is saved automatically"));
         bindPreferenceClick(dlPref, cl, new Runnable() { public void run() { openGreasyFork(); } });
         XposedHelpers.callMethod(screen, "addPreference", dlPref);
 
         // 目录路径展示行。
         Object dirPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(dirPref, "setTitle", "脚本目录");
+        XposedHelpers.callMethod(dirPref, "setTitle", T("脚本目录", "Script directory"));
         XposedHelpers.callMethod(dirPref, "setKey", "sbplus_userscript_dir");
-        XposedHelpers.callMethod(dirPref, "setSummary", dir == null ? "目录未初始化" : dir.getAbsolutePath());
+        XposedHelpers.callMethod(dirPref, "setSummary", dir == null ? T("目录未初始化", "Directory not initialized") : dir.getAbsolutePath());
         XposedHelpers.callMethod(screen, "addPreference", dirPref);
 
                 // —— 脚本列表入口 ——
         Object listPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(listPref, "setTitle", "脚本列表 (" + metas.size() + ")");
+        XposedHelpers.callMethod(listPref, "setTitle", T("脚本列表 (", "Script list (") + metas.size() + ")");
         XposedHelpers.callMethod(listPref, "setKey", "sbplus_userscript_list");
-        XposedHelpers.callMethod(listPref, "setSummary", "点击管理已安装的脚本");
+        XposedHelpers.callMethod(listPref, "setSummary", T("点击管理已安装的脚本", "Tap to manage installed scripts"));
         bindPreferenceClick(listPref, cl, new Runnable() {
             public void run() {
                 android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
@@ -4463,15 +4521,15 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         if (metas.isEmpty()) {
             Object emptyPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-            XposedHelpers.callMethod(emptyPref, "setTitle", "暂无脚本");
+            XposedHelpers.callMethod(emptyPref, "setTitle", T("暂无脚本", "No scripts"));
             XposedHelpers.callMethod(emptyPref, "setKey", "sbplus_userscript_list_empty");
-            XposedHelpers.callMethod(emptyPref, "setSummary", "返回后点「添加脚本」或「下载脚本」");
+            XposedHelpers.callMethod(emptyPref, "setSummary", T("返回后点「添加脚本」或「下载脚本」", "Go back and tap \"Add script\" or \"Download script\""));
             XposedHelpers.callMethod(screen, "addPreference", emptyPref);
         } else {
             for (int i = 0; i < metas.size(); i++) {
                 final UserscriptMeta meta = metas.get(i);
                 Object row = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-                String enabledTag = isUserscriptFileEnabled(meta.fileName) ? "" : " [已停用]";
+                String enabledTag = isUserscriptFileEnabled(meta.fileName) ? "" : T(" [已停用]", " [disabled]");
                 XposedHelpers.callMethod(row, "setTitle", meta.name + (meta.version.isEmpty() ? "" : "  v" + meta.version) + enabledTag);
                 XposedHelpers.callMethod(row, "setKey", "sbplus_userscript_row_" + i);
                 XposedHelpers.callMethod(row, "setSummary", buildUserscriptSummary(meta));
@@ -4502,9 +4560,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
         if (target == null) {
             Object emptyPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-            XposedHelpers.callMethod(emptyPref, "setTitle", "脚本不存在");
+            XposedHelpers.callMethod(emptyPref, "setTitle", T("脚本不存在", "Script not found"));
             XposedHelpers.callMethod(emptyPref, "setKey", "sbplus_userscript_detail_empty");
-            XposedHelpers.callMethod(emptyPref, "setSummary", "文件可能已被删除");
+            XposedHelpers.callMethod(emptyPref, "setSummary", T("文件可能已被删除", "The file may have been deleted"));
             XposedHelpers.callMethod(screen, "addPreference", emptyPref);
             return;
         }
@@ -4516,33 +4574,33 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         XposedHelpers.callMethod(titlePref, "setTitle", meta.name);
         XposedHelpers.callMethod(titlePref, "setKey", "sbplus_userscript_detail_title");
         StringBuilder tsum = new StringBuilder();
-        if (!meta.version.isEmpty()) tsum.append("版本 ").append(meta.version);
+        if (!meta.version.isEmpty()) tsum.append(T("版本 ", "Version ")).append(meta.version);
         if (!meta.description.isEmpty()) { if (tsum.length() > 0) tsum.append(" · "); tsum.append(meta.description); }
         XposedHelpers.callMethod(titlePref, "setSummary", tsum.toString());
         XposedHelpers.callMethod(screen, "addPreference", titlePref);
 
         // 启用开关。
         Object enPref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(enPref, "setTitle", "启用脚本");
+        XposedHelpers.callMethod(enPref, "setTitle", T("启用脚本", "Enable script"));
         XposedHelpers.callMethod(enPref, "setKey", "sbplus_userscript_detail_enable");
-        XposedHelpers.callMethod(enPref, "setSummary", "关闭后脚本不会注入页面");
+        XposedHelpers.callMethod(enPref, "setSummary", T("关闭后脚本不会注入页面", "Script is not injected into pages when off"));
         XposedHelpers.callMethod(enPref, "setChecked", isUserscriptFileEnabled(meta.fileName));
         bindUserscriptEnableChange(enPref, cl, meta.fileName);
         XposedHelpers.callMethod(screen, "addPreference", enPref);
 
         // 编辑。
         Object editPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(editPref, "setTitle", "编辑源码");
+        XposedHelpers.callMethod(editPref, "setTitle", T("编辑源码", "Edit source"));
         XposedHelpers.callMethod(editPref, "setKey", "sbplus_userscript_detail_edit");
-        XposedHelpers.callMethod(editPref, "setSummary", "修改后保存覆盖原文件");
+        XposedHelpers.callMethod(editPref, "setSummary", T("修改后保存覆盖原文件", "Saves and overwrites the original file after editing"));
         bindPreferenceClick(editPref, cl, new Runnable() { public void run() { editUserscript(meta.fileName); } });
         XposedHelpers.callMethod(screen, "addPreference", editPref);
 
         // 导出。
         Object exportPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(exportPref, "setTitle", "导出脚本");
+        XposedHelpers.callMethod(exportPref, "setTitle", T("导出脚本", "Export script"));
         XposedHelpers.callMethod(exportPref, "setKey", "sbplus_userscript_detail_export");
-        XposedHelpers.callMethod(exportPref, "setSummary", "复制到 Download/SBPlus/ 目录");
+        XposedHelpers.callMethod(exportPref, "setSummary", T("复制到 Download/SBPlus/ 目录", "Copies to Download/SBPlus/ folder"));
         bindPreferenceClick(exportPref, cl, new Runnable() { public void run() { exportUserscript(meta.fileName, meta.name); } });
         XposedHelpers.callMethod(screen, "addPreference", exportPref);
 
@@ -4557,7 +4615,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             srcText = meta.homepageURL;
             srcUrl = meta.homepageURL;
         } else if (srcText == null || srcText.isEmpty()) {
-            srcText = "本地导入";
+            srcText = T("本地导入", "Local import");
         }
         if (srcUrl == null && srcText != null && (srcText.startsWith("http://") || srcText.startsWith("https://"))) {
             srcUrl = srcText;
@@ -4565,7 +4623,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         final String srcUrlFinal = srcUrl;
         {
             Object homePref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-            XposedHelpers.callMethod(homePref, "setTitle", "来源");
+            XposedHelpers.callMethod(homePref, "setTitle", T("来源", "Source"));
             XposedHelpers.callMethod(homePref, "setKey", "sbplus_userscript_detail_home");
             XposedHelpers.callMethod(homePref, "setSummary", srcText);
             if (srcUrlFinal != null && !srcUrlFinal.isEmpty()) {
@@ -4576,20 +4634,20 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         // 匹配规则展示。
         Object matchPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(matchPref, "setTitle", "匹配规则");
+        XposedHelpers.callMethod(matchPref, "setTitle", T("匹配规则", "Match rules"));
         XposedHelpers.callMethod(matchPref, "setKey", "sbplus_userscript_detail_match");
         StringBuilder ms = new StringBuilder();
         for (String s : meta.match) ms.append("match: ").append(s).append(" · ");
         for (String s : meta.include) ms.append("include: ").append(s).append(" · ");
-        if (ms.length() == 0) ms.append("无匹配规则");
+        if (ms.length() == 0) ms.append(T(T("无匹配规则", "No match rules"), "No match rules"));
         XposedHelpers.callMethod(matchPref, "setSummary", ms.toString());
         XposedHelpers.callMethod(screen, "addPreference", matchPref);
 
         // 删除。
         Object delPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(delPref, "setTitle", "删除脚本");
+        XposedHelpers.callMethod(delPref, "setTitle", T("删除脚本", "Delete script"));
         XposedHelpers.callMethod(delPref, "setKey", "sbplus_userscript_detail_del");
-        XposedHelpers.callMethod(delPref, "setSummary", "从目录删除此脚本文件");
+        XposedHelpers.callMethod(delPref, "setSummary", T("从目录删除此脚本文件", "Deletes this script file from the directory"));
         bindPreferenceClick(delPref, cl, new Runnable() { public void run() { deleteUserscript(meta.fileName, meta.name); } });
         XposedHelpers.callMethod(screen, "addPreference", delPref);
 
@@ -4668,7 +4726,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             java.util.Set<String> set = disabledUserscripts();
             if (fileName != null) set.remove(fileName);
             saveDisabledUserscripts(set);
-            toastOnMain("已删除脚本: " + name);
+            toastOnMain(T("已删除脚本: ", "Script deleted: ") + name);
             // 刷新当前子页。
             refreshCurrentUserscriptPicker();
         } catch (Throwable t) {
@@ -4681,12 +4739,12 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         try {
             java.io.File dir = userscriptDir();
             if (dir == null || fileName == null || fileName.isEmpty()) {
-                toastOnMain("导出失败：脚本目录未初始化");
+                toastOnMain(T("导出失败：脚本目录未初始化", "Export failed: script directory not initialized"));
                 return;
             }
             java.io.File src = new java.io.File(dir, fileName);
             if (!src.exists()) {
-                toastOnMain("导出失败：源文件不存在");
+                toastOnMain(T("导出失败：源文件不存在", "Export failed: source file not found"));
                 return;
             }
             java.io.File outDir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
@@ -4703,10 +4761,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             out.flush();
             out.close();
             in.close();
-            toastOnMain("已导出到:\n" + dst.getAbsolutePath());
+            toastOnMain(T("已导出到:\n", "Exported to:\n") + dst.getAbsolutePath());
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] exportUserscript error: " + t);
-            toastOnMain("导出失败: " + t.getMessage());
+            toastOnMain(T("导出失败: ", "Export failed: ") + t.getMessage());
         }
     }
 
@@ -4718,7 +4776,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             sum.append(meta.description);
             sum.append("  ·  ");
         }
-        sum.append("匹配规则 ").append(rules).append(" 条");
+        sum.append(T("匹配规则 ", "Match rules: ")).append(rules).append(T(" 条", ""));
         return sum.toString();
     }
 
@@ -4726,9 +4784,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private void editUserscript(final String fileName) {
         try {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
-            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            if (act == null) { toastOnMain(T("无法获取界面环境", "Cannot get UI context")); return; }
             java.io.File dir = userscriptDir();
-            if (dir == null) { toastOnMain("脚本目录未初始化"); return; }
+            if (dir == null) { toastOnMain(T("脚本目录未初始化", "Script directory not initialized")); return; }
             java.io.File f = new java.io.File(dir, fileName);
             String content;
             try {
@@ -4746,7 +4804,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private void openGreasyFork() {
         try {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
-            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            if (act == null) { toastOnMain(T("无法获取界面环境", "Cannot get UI context")); return; }
             showSourcePickerDialog(act);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] openGreasyFork error: " + t);
@@ -4819,9 +4877,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             final java.util.List<ScriptSource> sources = allSources();
             final String[] names = new String[sources.size() + 1];
             for (int i = 0; i < sources.size(); i++) names[i] = sources.get(i).name;
-            names[sources.size()] = "＋ 添加网址";
+            names[sources.size()] = T("＋ 添加网址", "＋ Add URL");
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
-            b.setTitle("选择脚本源");
+            b.setTitle(T("选择脚本源", "Choose script source"));
             b.setItems(names, new android.content.DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(android.content.DialogInterface d, int which) {
@@ -4845,29 +4903,29 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             ll.setOrientation(android.widget.LinearLayout.VERTICAL);
             ll.setPadding(48, 24, 48, 8);
             final android.widget.EditText nameEt = new android.widget.EditText(act);
-            nameEt.setHint("名称（如：我的源）");
+            nameEt.setHint(T("名称（如：我的源）", "Name (e.g. My source)"));
             final android.widget.EditText urlEt = new android.widget.EditText(act);
-            urlEt.setHint("网址（如：https://example.com/）");
+            urlEt.setHint(T("网址（如：https://example.com/）", "URL (e.g. https://example.com/)"));
             urlEt.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_URI);
             ll.addView(nameEt);
             ll.addView(urlEt);
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
-            b.setTitle("添加脚本源");
+            b.setTitle(T("添加脚本源", "Add script source"));
             b.setView(ll);
-            b.setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+            b.setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(android.content.DialogInterface d, int w) {
                     String n = nameEt.getText().toString().trim();
                     String u = urlEt.getText().toString().trim();
-                    if (n.isEmpty() || u.isEmpty()) { toastOnMain("名称和网址不能为空"); return; }
+                    if (n.isEmpty() || u.isEmpty()) { toastOnMain(T("名称和网址不能为空", "Name and URL cannot be empty")); return; }
                     if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
                     java.util.List<ScriptSource> list = customSources();
                     list.add(new ScriptSource(n, u));
                     saveCustomSources(list);
-                    toastOnMain("已添加脚本源: " + n);
+                    toastOnMain(T("已添加脚本源: ", "Script source added: ") + n);
                 }
             });
-            b.setNegativeButton("取消", null);
+            b.setNegativeButton(T("取消", "Cancel"), null);
             b.show();
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] showAddSourceDialog error: " + t);
@@ -4892,7 +4950,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private void launchAddUserscript() {
         try {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
-            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            if (act == null) { toastOnMain(T("无法获取界面环境", "Cannot get UI context")); return; }
             showUserscriptEditorDialog(act);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] launchAddUserscript error: " + t);
@@ -4925,7 +4983,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
             // 顶部标题栏。
             android.widget.TextView tv = new android.widget.TextView(act);
-            tv.setText(fileName == null ? "编写脚本" : "编辑脚本");
+            tv.setText(fileName == null ? T("编写脚本", "New script") : T("编辑脚本", "Edit script"));
             tv.setTextSize(18);
             tv.setGravity(android.view.Gravity.CENTER);
             tv.setPadding(0, 24, 0, 24);
@@ -4944,13 +5002,13 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             btns.setPadding(16, 16, 16, 16);
 
             android.widget.Button cancelBtn = new android.widget.Button(act);
-            cancelBtn.setText("取消");
+            cancelBtn.setText(T("取消", "Cancel"));
             cancelBtn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) { /* dialog 由下方引用关闭 */ }
             });
 
             android.widget.Button saveBtn = new android.widget.Button(act);
-            saveBtn.setText("保存");
+            saveBtn.setText(T("保存", "Save"));
             saveBtn.setTextColor(0xFF000000);
 
             android.widget.LinearLayout.LayoutParams bp = new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
@@ -4977,18 +5035,18 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     String content = et.getText().toString();
                     String err = validateUserscript(content);
                     if (err != null) {
-                        toastOnMain("脚本无效，未保存：" + err);
+                        toastOnMain(T("脚本无效，未保存：", "Invalid script, not saved: ") + err);
                         return;
                     }
                     String fn;
                     if (fileName != null && !fileName.isEmpty()) {
                         fn = overwriteUserscriptContent(fileName, content);
-                        saveSource(fileName, getSource(fileName) != null ? getSource(fileName) : "手动添加");
+                        saveSource(fileName, getSource(fileName) != null ? getSource(fileName) : T("手动添加", "Manual add"));
                     } else {
                         fn = saveUserscriptContent(content);
-                        if (fn != null) saveSource(fn, "手动添加");
+                        if (fn != null) saveSource(fn, T("手动添加", "Manual add"));
                     }
-                    toastOnMain(fn == null ? "保存失败" : ("已保存: " + fn));
+                    toastOnMain(fn == null ? T("保存失败", "Save failed") : ("已保存: " + fn));
                     refreshCurrentUserscriptPicker();
                     dialog.dismiss();
                 }
@@ -5020,17 +5078,17 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     /** 校验脚本：返回 null 表示合法，否则返回错误信息。 */
     private String validateUserscript(String content) {
-        if (content == null || content.trim().isEmpty()) return "内容为空";
+        if (content == null || content.trim().isEmpty()) return T("内容为空", "Content is empty");
         // 必须以 ==UserScript== 开头（允许前导空白/注释）。
-        if (!content.contains("==UserScript==")) return "缺少 ==UserScript== 声明头";
-        if (!content.contains("==/UserScript==")) return "缺少 ==/UserScript== 结束标记";
+        if (!content.contains("==UserScript==")) return T("缺少 ==UserScript== 声明头", "Missing ==UserScript== header");
+        if (!content.contains("==/UserScript==")) return T("缺少 ==/UserScript== 结束标记", "Missing ==/UserScript== end marker");
         UserscriptMeta meta = UserscriptMeta.parse(content);
-        if (meta == null || meta.name.isEmpty()) return "缺少 @name";
+        if (meta == null || meta.name.isEmpty()) return T("缺少 @name", "Missing @name");
         // 必须有至少一条匹配规则，否则邮箱般全站注入风险太高，强制要求。
-        if (meta.match.isEmpty() && meta.include.isEmpty()) return "缺少 @match 或 @include 匹配规则";
+        if (meta.match.isEmpty() && meta.include.isEmpty()) return T("缺少 @match 或 @include 匹配规则", "Missing @match or @include rule");
         // 至少有可执行代码（metadata 之后非空）。
         String after = meta.code;
-        if (after == null || after.trim().isEmpty()) return "没有可执行的脚本代码";
+        if (after == null || after.trim().isEmpty()) return T("没有可执行的脚本代码", "No executable script code");
         return null;
     }
 
@@ -5038,26 +5096,26 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private void showPasteUserscriptDialog() {
         try {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
-            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            if (act == null) { toastOnMain(T("无法获取界面环境", "Cannot get UI context")); return; }
             final android.widget.EditText et = new android.widget.EditText(act);
-            et.setHint("粘贴完整 .user.js 脚本内容（含 ==UserScript== 头）");
+            et.setHint(T("粘贴完整 .user.js 脚本内容（含 ==UserScript== 头）", "Paste the full .user.js content (with ==UserScript== header)"));
             et.setMinLines(8);
             et.setMaxLines(16);
             et.setGravity(android.view.Gravity.TOP);
             new android.app.AlertDialog.Builder(act)
-                    .setTitle("粘贴脚本内容")
+                    .setTitle(T("粘贴脚本内容", "Paste script content"))
                     .setView(et)
-                    .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
+                    .setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
                         @Override
                         public void onClick(android.content.DialogInterface d, int w) {
                             String content = et.getText().toString();
-                            if (content.trim().isEmpty()) { toastOnMain("内容为空"); return; }
+                            if (content.trim().isEmpty()) { toastOnMain(T("内容为空", "Content is empty")); return; }
                             String fn = saveUserscriptContent(content);
-                            toastOnMain(fn == null ? "保存失败" : ("已保存: " + fn));
+                            toastOnMain(fn == null ? T("保存失败", "Save failed") : ("已保存: " + fn));
                             refreshCurrentUserscriptPicker();
                         }
                     })
-                    .setNegativeButton("取消", null)
+                    .setNegativeButton(T("取消", "Cancel"), null)
                     .show();
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] showPasteUserscriptDialog error: " + t);
@@ -5068,7 +5126,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private void launchUserscriptFilePicker() {
         try {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
-            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            if (act == null) { toastOnMain(T("无法获取界面环境", "Cannot get UI context")); return; }
             android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
             i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
             i.setType("*/*");
@@ -5188,10 +5246,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
         final int total = updatable;
         if (total == 0) {
-            toastOnMain("没有可检测更新的脚本（需声明 @updateURL 或 @downloadURL）");
+            toastOnMain(T("没有可检测更新的脚本（需声明 @updateURL 或 @downloadURL）", "No scripts to check (need @updateURL or @downloadURL)"));
             return;
         }
-        toastOnMain("开始检测 " + total + " 个脚本更新...");
+        toastOnMain(T("开始检测 ", "Checking ") + total + T(" 个脚本更新...", " scripts for updates..."));
         new Thread(new Runnable() {
             @Override public void run() {
                 int updated = 0;
@@ -5218,7 +5276,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     }
                 }
                 final int u = updated;
-                toastOnMain("更新完成：更新了 " + u + " 个脚本");
+                toastOnMain(T("更新完成：更新了 ", "Updated ") + u + T(" 个脚本", " scripts"));
                 refreshCurrentUserscriptPicker();
             }
         }).start();
@@ -5231,10 +5289,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 @Override public void run() {
                     try {
                         String content = httpGet(url);
-                        if (content == null || !isUserscriptContentValid(content)) { toastOnMain("下载不完整，请重试: " + url); return; }
+                        if (content == null || !isUserscriptContentValid(content)) { toastOnMain(T("下载不完整，请重试: ", "Download incomplete, please retry: ") + url); return; }
                         String fn = saveUserscriptContent(content);
                         if (fn != null) saveSource(fn, url);
-                        toastOnMain(fn == null ? "保存失败" : ("已安装脚本: " + fn));
+                        toastOnMain(fn == null ? T("保存失败", "Save failed") : ("已安装脚本: " + fn));
                         refreshCurrentUserscriptPicker();
                     } catch (Throwable t) {
                         XposedBridge.log("[SBPlus] downloadUserscriptToDir error: " + t);
@@ -5342,7 +5400,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         try {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
                     : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
-            if (act == null) { toastOnMain("无法获取界面环境"); return; }
+            if (act == null) { toastOnMain(T("无法获取界面环境", "Cannot get UI context")); return; }
             android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
             i.addCategory(android.content.Intent.CATEGORY_OPENABLE);
             i.setType("text/html");
@@ -5359,10 +5417,10 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         try {
             final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
                     : (ctx instanceof android.app.Activity ? (android.app.Activity) ctx : null);
-            if (act == null) { toastOnMain("无法获取界面环境"); return; }
-            final String[] items = new String[]{ "导入书签", "导出书签" };
+            if (act == null) { toastOnMain(T("无法获取界面环境", "Cannot get UI context")); return; }
+            final String[] items = new String[]{ T("导入书签", "Import bookmarks"), T("导出书签", "Export bookmarks") };
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
-            b.setTitle("书签管理");
+            b.setTitle(T("书签管理", "Bookmark Manager"));
             b.setItems(items, new android.content.DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(android.content.DialogInterface dlg, int which) {
@@ -5370,7 +5428,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         launchBookmarkFilePicker();
                     } else {
                         final BookmarkNode tree = buildBookmarkTree(readBookmarkNodes());
-                        showBookmarkTreeDialog(act, "选择要导出的书签", tree, true);
+                        showBookmarkTreeDialog(act, T("选择要导出的书签", "Select bookmarks to export"), tree, true);
                     }
                 }
             });
@@ -5396,9 +5454,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             btnRow.setPadding(0, 0, 0, 8);
 
             android.widget.Button allBtn = new android.widget.Button(act);
-            allBtn.setText("全选");
+            allBtn.setText(T("全选", "Select all"));
             android.widget.Button noneBtn = new android.widget.Button(act);
-            noneBtn.setText("全不选");
+            noneBtn.setText(T("全不选", "Select none"));
             btnRow.addView(allBtn, new android.widget.LinearLayout.LayoutParams(0,
                     android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
             btnRow.addView(noneBtn, new android.widget.LinearLayout.LayoutParams(0,
@@ -5449,8 +5507,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
             b.setTitle(title);
             b.setView(body);
-            b.setNegativeButton("取消", null);
-            b.setPositiveButton(isExport ? "导出所选" : "导入所选",
+            b.setNegativeButton(T("取消", "Cancel"), null);
+            b.setPositiveButton(isExport ? T("导出所选", "Export selected") : T("导入所选", "Import selected"),
                     new android.content.DialogInterface.OnClickListener() {
                 @Override public void onClick(android.content.DialogInterface dlg, int which) {
                     if (isExport) {
@@ -5521,7 +5579,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
                 // 文件夹名（点名字也展开）
                 android.widget.TextView label = new android.widget.TextView(act);
-                label.setText(child.title == null ? "(文件夹)" : child.title);
+                label.setText(child.title == null ? T("(文件夹)", "(folder)") : child.title);
                 label.setTextSize(16);
                 label.setSingleLine(false);
                 label.setOnClickListener(new android.view.View.OnClickListener() {
@@ -5555,7 +5613,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 row.addView(cb);
 
                 android.widget.TextView label = new android.widget.TextView(act);
-                label.setText(child.title == null ? "(无标题)" : child.title);
+                label.setText(child.title == null ? T("(无标题)", "(untitled)") : child.title);
                 label.setTextSize(15);
                 label.setSingleLine(false);
                 row.addView(label, new android.widget.LinearLayout.LayoutParams(
@@ -5582,11 +5640,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
             fos.write(sb.toString().getBytes("UTF-8"));
             fos.close();
-            toastOnMain("已导出 " + cnt + " 个书签：" + out.getAbsolutePath());
+            toastOnMain(T("已导出 ", "Exported ") + cnt + T(" 个书签：", " bookmarks: ") + out.getAbsolutePath());
             XposedBridge.log("[SBPlus] export selected: " + cnt + " -> " + out.getAbsolutePath());
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] doExportSelected error: " + t);
-            toastOnMain("导出失败");
+            toastOnMain(T("导出失败", "Export failed"));
         }
     }
 
@@ -5622,11 +5680,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             db.beginTransaction();
             int cnt = insertCheckedTree(db, root, 0);
             db.setTransactionSuccessful();
-            toastOnMain("已导入 " + cnt + " 个书签，请重启浏览器生效");
+            toastOnMain(T("已导入 ", "Imported ") + cnt + T(" 个书签，请重启浏览器生效", " bookmarks. Restart the browser to apply"));
             XposedBridge.log("[SBPlus] import selected: " + cnt);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] doImportSelected error: " + t);
-            toastOnMain("导入失败");
+            toastOnMain(T("导入失败", "Import failed"));
         } finally {
             if (db != null) {
                 try { if (db.inTransaction()) db.endTransaction(); } catch (Throwable ignored) {}
@@ -5847,7 +5905,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         try {
             // 简单起见：记录一个标记，下次进入时 reload；这里不做内存级刷新，
             // 改用 toast 提示用户返回重进。
-            toastOnMain("返回后重新进入即可看到更新");
+            toastOnMain(T("返回后重新进入即可看到更新", "Re-enter to see the update"));
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] refresh error: " + t);
         }
@@ -5868,9 +5926,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     Context ctx = (Context) XposedHelpers.callMethod(clicked, "getContext");
                                     java.io.File dir = userscriptDir();
                                     if (dir == null) {
-                                        android.widget.Toast.makeText(ctx, "目录未初始化", android.widget.Toast.LENGTH_SHORT).show();
+                                        android.widget.Toast.makeText(ctx, T("目录未初始化", "Directory not initialized"), android.widget.Toast.LENGTH_SHORT).show();
                                     } else {
-                                        android.widget.Toast.makeText(ctx, "脚本目录：\n" + dir.getAbsolutePath(), android.widget.Toast.LENGTH_LONG).show();
+                                        android.widget.Toast.makeText(ctx, T("脚本目录：\n", "Script directory:\n") + dir.getAbsolutePath(), android.widget.Toast.LENGTH_LONG).show();
                                     }
                                     return Boolean.TRUE;
                                 }
@@ -6123,6 +6181,13 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             if (!(urlBarParent instanceof android.view.ViewGroup)) return;
             android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
             android.view.View already = parent.findViewWithTag("sbplus_monkey_btn");
+            // 总开关关闭时：不注入，并移除已存在的图标（用户切回浏览器后图标消失）
+            if (!isUserscriptEnabled()) {
+                if (already != null) {
+                    try { ((android.view.ViewGroup) already.getParent()).removeView(already); } catch (Throwable ignored) {}
+                }
+                return;
+            }
             if (already != null) return;
 
             final Context ctx = parent.getContext();
@@ -6149,7 +6214,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             btn.setTextSize(16);
             btn.setGravity(android.view.Gravity.CENTER);
             btn.setTag("sbplus_monkey_btn");
-            btn.setContentDescription("[SBPlus] 油猴脚本");
+            btn.setContentDescription(T("[SBPlus] 油猴脚本", "[SBPlus] Userscripts"));
             btn.setPadding(margin, 0, margin, 0);
             android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
                     iconSize, iconHeight);
@@ -6372,11 +6437,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             final Object fTerrace = terrace;
             if (matched.isEmpty()) {
                 java.util.List<String> emptyHint = new java.util.ArrayList<String>();
-                emptyHint.add("本页面没有生效的油猴脚本");
-                showAnchoredList(anchor, "油猴脚本", emptyHint, null);
+                emptyHint.add(T("本页面没有生效的油猴脚本", "No active userscripts on this page"));
+                showAnchoredList(anchor, T("油猴脚本", "Userscripts"), emptyHint, null);
                 return;
             }
-            showScriptSwitchList(anchor, "当前页面脚本", matched, new com.sbplus.browser.MainHook.ItemClickListener() {
+            showScriptSwitchList(anchor, T("当前页面脚本", "Page scripts"), matched, new com.sbplus.browser.MainHook.ItemClickListener() {
                 @Override
                 public void onItem(int index) {
                     try {
@@ -6528,11 +6593,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                         final java.util.List<String> items = cmdNames;
                         if (items.isEmpty()) {
                             java.util.List<String> emptyHint = new java.util.ArrayList<String>();
-                            emptyHint.add("此脚本没有可配置的菜单命令");
+                            emptyHint.add(T("此脚本没有可配置的菜单命令", "This script has no configurable menu commands"));
                             showAnchoredList(anchor, scriptName, emptyHint, null);
                             return;
                         }
-                        showAnchoredList(anchor, scriptName + " · 菜单", items, new com.sbplus.browser.MainHook.ItemClickListener() {
+                        showAnchoredList(anchor, scriptName + T(" · 菜单", " · Menu"), items, new com.sbplus.browser.MainHook.ItemClickListener() {
                             @Override
                             public void onItem(int which) {
                                 try {
@@ -7858,7 +7923,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 XposedBridge.log("[SBPlus] pre-download check: enabled=" + isUs + " isUserJs=" + isUjs + " url=" + meta.url);
                                 if (isUs && isUjs) {
                                     XposedBridge.log("[SBPlus] .user.js detected (pre-download): " + meta.url);
-                                    android.widget.Toast.makeText(sAppContext, "正在安装脚本...", android.widget.Toast.LENGTH_SHORT).show();
+                                    android.widget.Toast.makeText(sAppContext, T("正在安装脚本...", "Installing script..."), android.widget.Toast.LENGTH_SHORT).show();
                                     downloadUserscriptToDir(meta.url);
                                     // 关闭空白 tab / 告知 native 拒绝下载，避免回退导航。
                                     try {
@@ -7917,7 +7982,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                 // 油猴脚本：拦截 .user.js 下载，自动保存到脚本目录。
                                 if (isUserscriptEnabled() && isUserScriptUrl(meta.url, meta.fileName)) {
                                     XposedBridge.log("[SBPlus] .user.js detected, intercept: " + meta.url);
-                                    android.widget.Toast.makeText(sAppContext, "正在安装脚本...", android.widget.Toast.LENGTH_SHORT).show();
+                                    android.widget.Toast.makeText(sAppContext, T("正在安装脚本...", "Installing script..."), android.widget.Toast.LENGTH_SHORT).show();
                                     downloadUserscriptToDir(meta.url);
                                     param.setResult(null);
                                     return;
