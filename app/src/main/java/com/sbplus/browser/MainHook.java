@@ -6977,8 +6977,8 @@ private void showUaGroupDialog(final Context ctx) {
             android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
                     iconSize, iconHeight);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
-            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.8f);
-            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.2f);
+            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.6f);
+            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.9f);
             btn.setLayoutParams(lp);
             btn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override
@@ -7049,8 +7049,8 @@ private void showUaGroupDialog(final Context ctx) {
             android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
                     iconSize, iconHeight);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
-            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.8f);
-            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.8f);
+            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.6f);
+            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.6f);
             btn.setLayoutParams(lp);
             btn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override
@@ -8241,6 +8241,8 @@ private boolean showMediaDialog(String json) {
                     // 选中遮罩层：半透明蓝覆盖在缩略图上，让选中状态一眼可见
                     final android.view.View selOverlay = new android.view.View(act);
                     selOverlay.setBackgroundColor(0x661E88E5);
+                    selOverlay.setClickable(false);  // 禁用点击，避免拦截 cell.onClick
+                    selOverlay.setFocusable(false);
                     selOverlay.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                     cell.addView(selOverlay, new android.widget.FrameLayout.LayoutParams(-1, -1));
                     // 底部信息条：WxH + 大小 + 格式
@@ -8277,6 +8279,8 @@ private boolean showMediaDialog(String json) {
                     chkBadge.setTextColor(0xFFFFFFFF);
                     chkBadge.setGravity(android.view.Gravity.CENTER);
                     chkBadge.setBackgroundColor(0xFF1E88E5);
+                    chkBadge.setClickable(false);  // 禁用点击，避免拦截 cell.onClick
+                    chkBadge.setFocusable(false);
                     chkBadge.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                     android.widget.FrameLayout.LayoutParams chkP = new android.widget.FrameLayout.LayoutParams(dp(act,20), dp(act,20), android.view.Gravity.TOP | android.view.Gravity.RIGHT);
                     chkP.setMargins(0, dp(act,2), dp(act,2), 0);
