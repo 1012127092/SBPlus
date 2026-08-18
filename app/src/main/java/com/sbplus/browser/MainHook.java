@@ -6782,8 +6782,8 @@ private static final String[] RANDOM_UAS = new String[]{
             android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
                     iconSize, iconHeight);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
-            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.0f);
-            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 2.6f);
+            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.8f);
+            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.2f);
             btn.setLayoutParams(lp);
             btn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override
@@ -6854,8 +6854,8 @@ private static final String[] RANDOM_UAS = new String[]{
             android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
                     iconSize, iconHeight);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
-            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.0f);
-            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.0f);
+            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.8f);
+            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 0.8f);
             btn.setLayoutParams(lp);
             btn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override
@@ -8029,6 +8029,11 @@ private boolean showMediaDialog(String json) {
                         }
                     }).start();
                     cell.addView(iv, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                    // 选中遮罩层：半透明蓝覆盖在缩略图上，让选中状态一眼可见
+                    final android.view.View selOverlay = new android.view.View(act);
+                    selOverlay.setBackgroundColor(0x661E88E5);
+                    selOverlay.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
+                    cell.addView(selOverlay, new android.widget.FrameLayout.LayoutParams(-1, -1));
                     // 底部信息条：WxH + 大小 + 格式
                     final android.widget.TextView info = new android.widget.TextView(act);
                     info.setTextColor(0xFFFFFFFF);
@@ -8070,8 +8075,9 @@ private boolean showMediaDialog(String json) {
                     chkBadge.bringToFront();
                     final Runnable refreshCell = new Runnable() { @Override public void run() {
                         try {
-                            fcell.setBackgroundColor(checked[realIdx] ? 0xFF1E88E5 : 0x22000000);
+                            fcell.setBackgroundColor(checked[realIdx] ? 0xFF1565C0 : 0x22000000);
                             fcell.setPadding(dp(act,3), dp(act,3), dp(act,3), dp(act,3));
+                            selOverlay.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                             chkBadge.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                         } catch (Throwable ignored) {}
                     }};
@@ -8362,11 +8368,9 @@ private boolean showMediaDialog(String json) {
             btnRefresh.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) {
                     try { dlg.dismiss(); } catch (Throwable ignored) {}
-                    // 重新嗅探：SNIFF_JS 会返回已累积(含新捕获)的全部资源，handleSniffResult 自动开新面板
-                    Thread t = new Thread(new Runnable() { @Override public void run() {
-                        try { injectSniffJs(sCurrentRealTab); } catch (Throwable ignored) {}
-                    }});
-                    t.start();
+                    // 重新嗅探：必须在主线程执行 evaluateJavaScript，且走 sniffCurrentPage 完整流程
+                    // （注册 JS 桥 + 置 pending + 超时兜底），SNIFF_JS 返回累积全量自动开新面板
+                    try { sniffCurrentPage(); } catch (Throwable ignored) {}
                 }
             });
             dlg.show();
