@@ -5104,6 +5104,17 @@ private static final String[] RANDOM_UAS = new String[]{
         XposedHelpers.callMethod(enPref, "setChecked", isUserscriptFileEnabled(meta.fileName));
         bindUserscriptEnableChange(enPref, cl, meta.fileName);
         XposedHelpers.callMethod(screen, "addPreference", enPref);
+        // 三星 SwitchPreferenceCustom 的 setChecked 在 RecyclerView 渲染前调用不刷新 UI，
+        // 延迟到渲染完成后强制重设一次，确保开关显示与存储状态一致
+        final Object fEn = enPref;
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override public void run() {
+                try {
+                    XposedHelpers.callMethod(fEn, "setChecked", isUserscriptFileEnabled(fileName));
+                    try { XposedHelpers.callMethod(fEn, "notifyChanged"); } catch (Throwable ignored) {}
+                } catch (Throwable ignored) {}
+            }
+        }, 350);
 
         // 编辑。
         Object editPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
@@ -7961,6 +7972,20 @@ private boolean showMediaDialog(String json) {
             tabRow.addView(tvTab1, t1p); tabRow.addView(tvTab2, t2p); tabRow.addView(tvTab3, t3p);
             root.addView(tabRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
 
+            // 已选数量状态条（每次勾选/取消/全选时刷新）
+            final android.widget.TextView tvSelCount = new android.widget.TextView(act);
+            tvSelCount.setTextColor(0xFF1E88E5);
+            tvSelCount.setTextSize(13);
+            tvSelCount.setPadding(12, 4, 12, 4);
+            final Runnable updateSelCount = new Runnable() { @Override public void run() {
+                try {
+                    int cc = 0; for (int i = 0; i < n; i++) if (checked[i]) cc++;
+                    tvSelCount.setText(T("已选 ", "Selected ") + cc + " / " + n + T(" 个文件", " files"));
+                } catch (Throwable ignored) {}
+            }};
+            root.addView(tvSelCount, new android.widget.LinearLayout.LayoutParams(-1, -2));
+            updateSelCount.run();
+
             // 内容容器（用 FrameLayout 承载可见页）
             final android.widget.FrameLayout content = new android.widget.FrameLayout(act);
             final int contentH = (int)(380 * act.getResources().getDisplayMetrics().density);
@@ -8079,6 +8104,7 @@ private boolean showMediaDialog(String json) {
                             fcell.setPadding(dp(act,3), dp(act,3), dp(act,3), dp(act,3));
                             selOverlay.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                             chkBadge.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
+                            updateSelCount.run();
                         } catch (Throwable ignored) {}
                     }};
                     cell.setOnClickListener(new android.view.View.OnClickListener() {
@@ -8175,6 +8201,7 @@ private boolean showMediaDialog(String json) {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx]; cb.setChecked(checked[realIdx]);
                             row.setBackgroundColor(checked[realIdx] ? 0x331E88E5 : 0x00000000);
+                            updateSelCount.run();
                         }
                     });
                     row.setBackgroundColor(checked[realIdx] ? 0x331E88E5 : 0x00000000);
@@ -8258,6 +8285,7 @@ private boolean showMediaDialog(String json) {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx]; cb.setChecked(checked[realIdx]);
                             row.setBackgroundColor(checked[realIdx] ? 0x331E88E5 : 0x00000000);
+                            updateSelCount.run();
                         }
                     });
                     row.setBackgroundColor(checked[realIdx] ? 0x331E88E5 : 0x00000000);
@@ -8347,6 +8375,7 @@ private boolean showMediaDialog(String json) {
                     btnAll.setText(allSelected[0] ? T("取消全选", "Deselect All") : T("全选", "Select All"));
                     gridAdp.notifyDataSetChanged();
                     listVideo.invalidateViews(); listAudio.invalidateViews();
+                    updateSelCount.run();
                 }
             });
             btnDl.setOnClickListener(new android.view.View.OnClickListener() {
