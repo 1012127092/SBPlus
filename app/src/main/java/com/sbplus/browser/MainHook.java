@@ -2296,34 +2296,131 @@ private static final String[] RANDOM_UAS = new String[]{
     /** 随机挑选一个 UA（每次启动调用一次，模拟“每次启动随机刷新”）。 */
     private String randomUa() {
         try {
-            // BetterVia 式：按平台->浏览器分层随机，模板+随机成分动态合成真实 UA。
-            // 用户手动编辑过的分类仍优先使用其静态 UA 列表；未编辑分类动态生成。
-            java.util.Set<Integer> en = loadEnabledUaGroups();
-            java.util.List<Integer> cand = new java.util.ArrayList<Integer>();
-            for (int gi = 0; gi < UA_GROUPS.length; gi++) {
-                if (en.isEmpty() || en.contains(gi)) cand.add(gi);
-            }
-            if (cand.isEmpty()) cand.add(0);
             java.util.Random rnd = new java.util.Random();
-            // 先按分类权重随机选平台（每类均匀，多类时更公平）
-            int gi = cand.get(rnd.nextInt(cand.size()));
-            // 用户编辑过该分类 -> 静态列表抽选
-            if (hasEditedGroup(gi)) {
-                java.util.List<String> gl = loadGroupUas(gi);
-                if (gl != null && !gl.isEmpty()) {
-                    return gl.get(rnd.nextInt(gl.size()));
+            java.util.List<String> plats = new java.util.ArrayList<>();
+            if (getUaPlatEnabled("android")) plats.add("android");
+            if (getUaPlatEnabled("ios")) plats.add("ios");
+            if (getUaPlatEnabled("windows")) plats.add("windows");
+            if (getUaPlatEnabled("macos")) plats.add("macos");
+            if (getUaPlatEnabled("linux")) plats.add("linux");
+            if (plats.isEmpty()) plats.add("android"); // fallback
+
+            java.util.List<String> brws = new java.util.ArrayList<>();
+            if (getUaBrwEnabled("chrome")) brws.add("chrome");
+            if (getUaBrwEnabled("safari")) brws.add("safari");
+            if (getUaBrwEnabled("edge")) brws.add("edge");
+            if (getUaBrwEnabled("firefox")) brws.add("firefox");
+            if (brws.isEmpty()) brws.add("chrome");
+
+            String plat = plats.get(rnd.nextInt(plats.size()));
+            // 过滤浏览器（iOS 只 Safari，Android 无 Safari）
+            java.util.List<String> validBrw = new java.util.ArrayList<>();
+            for (String b : brws) {
+                if ("ios".equals(plat)) {
+                    if ("safari".equals(b)) validBrw.add(b);
+                } else if ("android".equals(plat)) {
+                    if (!"safari".equals(b)) validBrw.add(b);
+                } else {
+                    validBrw.add(b);
                 }
             }
-            // 动态合成
-            String ua = buildDynamicUa(gi, rnd);
-            if (ua != null && !ua.isEmpty()) return ua;
-            // 兜底：全内置池
-            return RANDOM_UAS[rnd.nextInt(RANDOM_UAS.length)];
+            if (validBrw.isEmpty()) validBrw.add("chrome");
+            String brw = validBrw.get(rnd.nextInt(validBrw.size()));
+
+            return buildDynamicUaBv(plat, brw, rnd);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] randomUa error: " + t);
-            try { return RANDOM_UAS[new java.util.Random().nextInt(RANDOM_UAS.length)]; } catch (Throwable t2) { return null; }
+            return null;
         }
     }
+
+    private String buildDynamicUaBv(String plat, String brw, java.util.Random rnd) {
+        if ("android".equals(plat)) return buildAndroidUaBv(brw, rnd);
+        if ("ios".equals(plat)) return buildIosUaBv(rnd);
+        if ("windows".equals(plat)) return buildDesktopUaBv("windows", brw, rnd);
+        if ("macos".equals(plat)) return buildDesktopUaBv("macos", brw, rnd);
+        if ("linux".equals(plat)) return buildDesktopUaBv("linux", brw, rnd);
+        return null;
+    }
+
+    private String buildAndroidUaBv(String brw, java.util.Random rnd) {
+        String[] vers = splitComma(getUaParam("android_vers", "13,14,15,16,17,18"));
+        String[] devs = splitComma(getUaParam("android_devs", "SM-G9910,Pixel 8,Pixel 9,M2012K11AC"));
+        if (vers.length == 0) vers = new String[]{"15", "16", "17"};
+        if (devs.length == 0) devs = new String[]{"SM-G9910", "Pixel 8"};
+        String ver = vers[rnd.nextInt(vers.length)];
+        String dev = devs[rnd.nextInt(devs.length)];
+        String range = getUaParam("chrome_range", "90-150");
+        int[] cr = parseRange(range, 90, 150);
+        int major = cr[0] + rnd.nextInt(cr[1] - cr[0] + 1);
+        int minor = rnd.nextInt(8);
+        int build = 3000 + rnd.nextInt(2000);
+        int patch = 100 + rnd.nextInt(200);
+
+        if ("chrome".equals(brw)) {
+            return "Mozilla/5.0 (Linux; Android " + ver + "; " + dev +
+                ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + "." + minor +
+                "." + build + "." + patch + " Mobile Safari/537.36";
+        } else if ("edge".equals(brw)) {
+            return "Mozilla/5.0 (Linux; Android " + ver + "; " + dev +
+                ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + "." + minor +
+                "." + build + "." + patch + " Mobile Safari/537.36 EdgA/" + major + "." + minor + "." + build;
+        } else if ("firefox".equals(brw)) {
+            return "Mozilla/5.0 (Android " + ver + "; Mobile; rv:" + major + ".0) Gecko/" + major + ".0 Firefox/" + major + ".0";
+        }
+        return null;
+    }
+
+    private String buildIosUaBv(java.util.Random rnd) {
+        String[] vers = splitComma(getUaParam("ios_vers", "15.0,16.0,17.0,18.0"));
+        if (vers.length == 0) vers = new String[]{"17.0", "18.0"};
+        String ver = vers[rnd.nextInt(vers.length)];
+        String v2 = ver.replace('.', '_');
+        boolean ipad = rnd.nextBoolean();
+        String dev = ipad ? "iPad" : "iPhone";
+        String osName = ipad ? "CPU OS " : "CPU iPhone OS ";
+        return "Mozilla/5.0 (" + dev + "; " + osName + v2 +
+            " like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/" + ver +
+            " Mobile/15E148 Safari/604.1";
+    }
+
+    private String buildDesktopUaBv(String plat, String brw, java.util.Random rnd) {
+        String[] tokens = splitComma(getUaParam("desktop_tokens",
+            "Windows NT 10.0; Win64; x64,Macintosh; Intel Mac OS X 10_15_7,X11; Linux x86_64"));
+        if (tokens.length == 0) tokens = new String[]{"Windows NT 10.0; Win64; x64"};
+        String os = tokens[rnd.nextInt(tokens.length)];
+        String range = getUaParam("chrome_range", "90-150");
+        int[] cr = parseRange(range, 90, 150);
+        int major = cr[0] + rnd.nextInt(cr[1] - cr[0] + 1);
+        int minor = rnd.nextInt(8);
+        int build = 3000 + rnd.nextInt(2000);
+        int patch = 100 + rnd.nextInt(200);
+
+        if ("firefox".equals(brw)) {
+            return "Mozilla/5.0 (" + os + "; rv:" + major + ".0) Gecko/20100101 Firefox/" + major + ".0";
+        } else if ("edge".equals(brw)) {
+            return "Mozilla/5.0 (" + os + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" +
+                major + "." + minor + "." + build + "." + patch + " Safari/537.36 Edg/" + major + "." + minor + "." + build;
+        } else if ("safari".equals(brw) && plat.equals("macos")) {
+            return "Mozilla/5.0 (" + os + ") AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+        }
+        // chrome fallback
+        return "Mozilla/5.0 (" + os + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" +
+            major + "." + minor + "." + build + "." + patch + " Safari/537.36";
+    }
+
+    private int[] parseRange(String s, int defMin, int defMax) {
+        try {
+            String[] p = s.split("-");
+            if (p.length == 2) {
+                int a = Integer.parseInt(p[0].trim());
+                int b = Integer.parseInt(p[1].trim());
+                return new int[]{a, b};
+            }
+        } catch (Throwable ignored) {}
+        return new int[]{defMin, defMax};
+    }
+
 
     /** 该分类是否有用户手动编辑过的 UA 列表（区别于内置 fallback 区间）。 */
     private boolean hasEditedGroup(int gi) {
@@ -3498,96 +3595,183 @@ private static final String[] RANDOM_UAS = new String[]{
     }
 
     /** 弹出“随机浏览器标识”选项对话框：勾选参与随机的分类 + 管理自定义 UA。 */
-    private void showUaGroupDialog(final Context ctx) {
+    
+    // ========== BetterVia-style Random UA helpers ==========
+    private boolean getUaPlatEnabled(String plat) {
+        return processPrefs(sAppContext).getBoolean("sbplus_ua_plat_" + plat, 
+            "android".equals(plat) || "ios".equals(plat));
+    }
+    private void setUaPlatEnabled(String plat, boolean v) {
+        processPrefs(sAppContext).edit().putBoolean("sbplus_ua_plat_" + plat, v).apply();
+    }
+    private boolean getUaBrwEnabled(String brw) {
+        return processPrefs(sAppContext).getBoolean("sbplus_ua_brw_" + brw,
+            "chrome".equals(brw) || "safari".equals(brw));
+    }
+    private void setUaBrwEnabled(String brw, boolean v) {
+        processPrefs(sAppContext).edit().putBoolean("sbplus_ua_brw_" + brw, v).apply();
+    }
+    private String getUaParam(String key, String def) {
+        return processPrefs(sAppContext).getString("sbplus_ua_p_" + key, def);
+    }
+    private void setUaParam(String key, String val) {
+        processPrefs(sAppContext).edit().putString("sbplus_ua_p_" + key, val).apply();
+    }
+    private String[] splitComma(String s) {
+        if (s == null || s.trim().isEmpty()) return new String[0];
+        String[] arr = s.split(",");
+        java.util.List<String> out = new java.util.ArrayList<String>();
+        for (String x : arr) {
+            String t = x.trim();
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out.toArray(new String[0]);
+    }
+
+private void showUaGroupDialog(final Context ctx) {
+        // BetterVia 风格：平台checkbox + 浏览器checkbox + 参数编辑框
         try {
-            final java.util.Set<Integer> en = loadEnabledUaGroups();
-            final java.util.Map<Integer, android.widget.CheckBox> cbs = new java.util.LinkedHashMap<Integer, android.widget.CheckBox>();
             final android.widget.LinearLayout ll = new android.widget.LinearLayout(ctx);
             ll.setOrientation(android.widget.LinearLayout.VERTICAL);
             int pad = dp(ctx, 16);
-            ll.setPadding(pad, pad, pad, 0);
-            for (int g = 0; g < UA_GROUPS.length; g++) {
-                final int gi = g;
-                android.widget.LinearLayout row = new android.widget.LinearLayout(ctx);
-                row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-                row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-                row.setPadding(0, 0, 0, 0);
-                android.widget.LinearLayout.LayoutParams rowLp = new android.widget.LinearLayout.LayoutParams(
-                        android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp(ctx, 54));
-                row.setLayoutParams(rowLp);
-                // 参与随机勾选框
+            ll.setPadding(pad, pad, pad, pad);
+
+            // === 平台区 ===
+            android.widget.TextView tvPlat = new android.widget.TextView(ctx);
+            tvPlat.setText(T("平台 Platform", "Platform"));
+            tvPlat.setTextSize(14);
+            tvPlat.setTextColor(0xFF666666);
+            tvPlat.setPadding(0, 0, 0, dp(ctx, 6));
+            ll.addView(tvPlat);
+
+            final String[] plats = {"android", "ios", "windows", "macos", "linux"};
+            final String[] platNames = {
+                T("Android", "Android"),
+                T("iOS", "iOS"),
+                T("Windows", "Windows"),
+                T("macOS", "macOS"),
+                T("Linux", "Linux")
+            };
+            final java.util.Map<String, android.widget.CheckBox> cbPlat = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < plats.length; i++) {
                 android.widget.CheckBox cb = new android.widget.CheckBox(ctx);
-                cb.setChecked(en.contains(gi) || en.isEmpty());
-                android.widget.LinearLayout.LayoutParams cbLp = new android.widget.LinearLayout.LayoutParams(
-                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, android.widget.LinearLayout.LayoutParams.MATCH_PARENT);
-                cb.setLayoutParams(cbLp);
-                row.addView(cb);
-                cbs.put(gi, cb);
-                // 分类名 + 提示点开编辑
-                android.widget.LinearLayout txtCol = new android.widget.LinearLayout(ctx);
-                txtCol.setOrientation(android.widget.LinearLayout.VERTICAL);
-                txtCol.setPadding(dp(ctx, 8), 0, 0, 0);
-                android.widget.LinearLayout.LayoutParams tcLp = new android.widget.LinearLayout.LayoutParams(
-                        0, android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 1f);
-                txtCol.setLayoutParams(tcLp);
-                android.widget.TextView tvName = new android.widget.TextView(ctx);
-                tvName.setText(UA_GROUPS[gi][0]);
-                tvName.setTextSize(15);
-                tvName.setTextColor(0xFF111111);
-                txtCol.addView(tvName);
-                int glen = loadGroupUas(gi).size();
-                android.widget.TextView tvSub = new android.widget.TextView(ctx);
-                tvSub.setText(T(glen + " 条 UA · 点按编辑", glen + " UAs · tap to edit"));
-                tvSub.setTextSize(12);
-                tvSub.setTextColor(0xFF888888);
-                txtCol.addView(tvSub);
-                row.addView(txtCol);
-                // 行点击 -> 打开该分类 UA 编辑框
-                row.setOnClickListener(new android.view.View.OnClickListener() {
-                    @Override public void onClick(android.view.View v) {
-                        showGroupUaEditor(ctx, gi);
-                    }
-                });
-                ll.addView(row);
+                cb.setText(platNames[i]);
+                cb.setChecked(getUaPlatEnabled(plats[i]));
+                cb.setPadding(0, dp(ctx, 2), 0, dp(ctx, 2));
+                cbPlat.put(plats[i], cb);
+                ll.addView(cb);
             }
-            // 说明
-            android.widget.TextView hint = new android.widget.TextView(ctx);
-            hint.setText(T("勾选 = 参与随机；点按分类名编辑该分类的 UA", "Check = participate; tap a category to edit its UAs"));
-            hint.setPadding(0, dp(ctx, 6), 0, 0);
-            hint.setTextSize(12);
-            hint.setTextColor(0xFF888888);
-            ll.addView(hint);
+
+            // === 浏览器区 ===
+            android.widget.TextView tvBrw = new android.widget.TextView(ctx);
+            tvBrw.setText(T("浏览器 Browser", "Browser"));
+            tvBrw.setTextSize(14);
+            tvBrw.setTextColor(0xFF666666);
+            tvBrw.setPadding(0, dp(ctx, 12), 0, dp(ctx, 6));
+            ll.addView(tvBrw);
+
+            final String[] brws = {"chrome", "safari", "edge", "firefox"};
+            final String[] brwNames = {
+                T("Chrome", "Chrome"),
+                T("Safari", "Safari"),
+                T("Edge", "Edge"),
+                T("Firefox", "Firefox")
+            };
+            final java.util.Map<String, android.widget.CheckBox> cbBrw = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < brws.length; i++) {
+                android.widget.CheckBox cb = new android.widget.CheckBox(ctx);
+                cb.setText(brwNames[i]);
+                cb.setChecked(getUaBrwEnabled(brws[i]));
+                cb.setPadding(0, dp(ctx, 2), 0, dp(ctx, 2));
+                cbBrw.put(brws[i], cb);
+                ll.addView(cb);
+            }
+
+            // === 参数编辑区 ===
+            android.widget.TextView tvParam = new android.widget.TextView(ctx);
+            tvParam.setText(T("参数配置（逗号分隔）", "Parameters (comma-separated)"));
+            tvParam.setTextSize(14);
+            tvParam.setTextColor(0xFF666666);
+            tvParam.setPadding(0, dp(ctx, 12), 0, dp(ctx, 6));
+            ll.addView(tvParam);
+
+            // Android 版本
+            addEditRow(ctx, ll, T("Android 版本", "Android Versions"),
+                getUaParam("android_vers", "13,14,15,16,17,18"), "android_vers");
+            // Android 设备
+            addEditRow(ctx, ll, T("Android 设备", "Android Devices"),
+                getUaParam("android_devs", "SM-G9910,Pixel 8,Pixel 9,M2012K11AC,CPH2581,OnePlus 12"), "android_devs");
+            // iOS 版本
+            addEditRow(ctx, ll, T("iOS 版本", "iOS Versions"),
+                getUaParam("ios_vers", "15.0,16.0,17.0,17.4,18.0,18.3"), "ios_vers");
+            // 桌面 OS tokens
+            addEditRow(ctx, ll, T("桌面 OS", "Desktop OS"),
+                getUaParam("desktop_tokens", "Windows NT 10.0; Win64; x64,Macintosh; Intel Mac OS X 10_15_7,X11; Linux x86_64"), "desktop_tokens");
+            // Chrome 版本范围（主版本号）
+            addEditRow(ctx, ll, T("Chrome 版本范围", "Chrome Version Range"),
+                getUaParam("chrome_range", "90-150"), "chrome_range");
+
             android.widget.ScrollView sv = new android.widget.ScrollView(ctx);
             sv.addView(ll);
             sv.setOverScrollMode(android.view.View.OVER_SCROLL_NEVER);
-            int maxH = dp(ctx, 460);
-            sv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT, maxH));
+
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
-            b.setTitle(T("随机浏览器标识 - 分类", "Random UA - categories"));
+            b.setTitle(T("随机浏览器标识 - 高级配置", "Random UA - Advanced"));
             b.setView(sv);
             b.setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(android.content.DialogInterface dlg, int which) {
-                    java.util.Set<Integer> sel = new java.util.LinkedHashSet<Integer>();
-                    for (java.util.Map.Entry<Integer, android.widget.CheckBox> e : cbs.entrySet()) {
-                        if (e.getValue().isChecked()) sel.add(e.getKey());
+                    // 保存平台
+                    for (java.util.Map.Entry<String, android.widget.CheckBox> e : cbPlat.entrySet()) {
+                        setUaPlatEnabled(e.getKey(), e.getValue().isChecked());
                     }
-                    saveEnabledUaGroups(sel);
+                    // 保存浏览器
+                    for (java.util.Map.Entry<String, android.widget.CheckBox> e : cbBrw.entrySet()) {
+                        setUaBrwEnabled(e.getKey(), e.getValue().isChecked());
+                    }
+                    // 参数已在 addEditRow 的 TextWatcher 中实时保存
                     saveRandomUaEnabled(true);
                     try {
                         android.widget.Toast.makeText(ctx, T("已保存：下次启动随机生效", "Saved: takes effect on next start"),
                                 android.widget.Toast.LENGTH_SHORT).show();
                     } catch (Throwable ignored) {}
-                    XposedBridge.log("[SBPlus] UA groups saved: " + sel);
+                    XposedBridge.log("[SBPlus] BetterVia-style UA config saved");
                 }
             });
             b.setNegativeButton(T("取消", "Cancel"), null);
             b.show();
         } catch (Throwable t) {
-            XposedBridge.log("[SBPlus] show UA group dialog error: " + t);
+            XposedBridge.log("[SBPlus] show UA advanced dialog error: " + t);
         }
     }
+
+    private void addEditRow(Context ctx, android.widget.LinearLayout parent, String label, String value, final String key) {
+        android.widget.TextView tv = new android.widget.TextView(ctx);
+        tv.setText(label);
+        tv.setTextSize(13);
+        tv.setTextColor(0xFF333333);
+        tv.setPadding(0, dp(ctx, 8), 0, dp(ctx, 4));
+        parent.addView(tv);
+
+        final android.widget.EditText et = new android.widget.EditText(ctx);
+        et.setText(value);
+        et.setTextSize(12);
+        et.setPadding(dp(ctx, 8), dp(ctx, 6), dp(ctx, 8), dp(ctx, 6));
+        et.setBackgroundColor(0xFFF5F5F5);
+        et.setSingleLine(false);
+        et.setMaxLines(3);
+        parent.addView(et);
+
+        // 实时保存
+        et.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(android.text.Editable s) {
+                setUaParam(key, s.toString().trim());
+            }
+        });
+    }
+
 
     /** 弹出某分类的多行 UA 编辑框：每行一条，可增删改，保存后记住。 */
     private void showGroupUaEditor(final Context ctx, final int gi) {
