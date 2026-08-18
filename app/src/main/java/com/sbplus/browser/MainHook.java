@@ -4485,7 +4485,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，点击识别当前页面的音频/视频并下载", "Show a sniffer icon in the address bar to detect audio/video on the current page and download"));
         XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
-        try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+        try { XposedHelpers.callMethod(pref, "setDividerVisible", false); } catch (Throwable ignored) {}
 
         try {
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
@@ -6883,7 +6883,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         "try{var c=st.seen[u];if(c)return;st.seen[u]=1;st.list.push({url:u,type:t||'',title:ti||''});}catch(e){}" +
         "}" +
         "function typeOf(u){if(!u)return '';var x=u.split(/[?#]/)[0].toLowerCase();" +
-        "return (/video|\\.(mp4|m4v|webm|mkv|flv|mov|ts)$/.test(x)?'video':/\\.(mp3|m4a|aac|ogg|opus|wav|flac)$/.test(x)?'audio':/\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$/.test(x)?'image':'');}" +
+        "return (/video|\\.(mp4|m4v|webm|mkv|flv|mov|ts|m4s|mpd)$/.test(x)?'video':/\\.(mp3|m4a|aac|ogg|opus|wav|flac)$/.test(x)?'audio':/\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$/.test(x)?'image':'');}" +
         "// 1) 持续监听（只安装一次）：新出现的 media 元素 + 网络资源" +
         "if(!W.__sbplusSniffHooked__){" +
         "W.__sbplusSniffHooked__=true;" +
