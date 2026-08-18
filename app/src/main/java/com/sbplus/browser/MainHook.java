@@ -42,6 +42,10 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
  */
 public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
+    /** 当前 hook 实例（供静态 JS 桥回调调用实例方法）。 */
+    public static volatile MainHook sInstance;
+
+
     // ================= 多语言（跟随系统语言） =================
     // 浏览器进程读不到模块的 strings.xml 资源，因此用内置中英双语字典，
     // 根据系统 Locale 返回对应语言。默认英文，中文返回中文。
@@ -112,6 +116,9 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_ENABLE_USERSCRIPT = "enable_userscript";
     private static final String KEY_ENABLE_SNIFF = "enable_sniff";
     private static final String KEY_DISABLED_USERSCRIPTS = "disabled_userscripts";
+
+    /** 当前详情页绑定的脚本文件名（供 setChecked hook 写回 prefs）。 */
+    private static String sDetailFileName = null;
     private static final int REQUEST_USERSCRIPT_PICK = 61002;
     private static final String KEY_USERSCRIPT_SOURCES = "userscript_sources";
 
@@ -302,6 +309,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static volatile boolean sRegionPageActive;
     // 资源嗅探状态：JS 回调写入，主线程等待读取
     private static volatile String sSniffedMediaJson = null;
+    private static volatile boolean sSniffPending = false;
+    private static volatile android.app.Activity sSniffActivity = null;
     private static final Object sSniffLock = new Object();
     @Override
     public void initZygote(StartupParam startupParam) {
@@ -310,6 +319,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     @Override
     public void handleLoadPackage(final LoadPackageParam lpparam) {
+        sInstance = this;
+
         if (!SBROWSER_PACKAGE.equals(lpparam.packageName)
                 && !SBROWSER_BETA_PACKAGE.equals(lpparam.packageName)) {
             return;
@@ -4482,8 +4493,14 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(pref, "setTitle", T("资源嗅探", "Media Sniffer"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_sniff");
-        XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，点击识别当前页面的音频/视频并下载", "Show a sniffer icon in the address bar to detect audio/video on the current page and download"));
+        XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，点击识别当前页面的音频/视频/图片并下载（可预览、多选、打包）", "Show a sniffer icon in the address bar. Detect audio/video/images on the current page, preview, multi-select and download"));
         XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
+        try {
+            android.graphics.Bitmap bm = emojiBitmap(ctx, "\uD83D\uDC3D", 48);
+            if (bm != null) {
+                XposedHelpers.callMethod(pref, "setIcon", new android.graphics.drawable.BitmapDrawable(ctx.getResources(), bm));
+            }
+        } catch (Throwable ignored) {}
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try { XposedHelpers.callMethod(pref, "setDividerVisible", false); } catch (Throwable ignored) {}
 
@@ -4636,6 +4653,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     /** 脚本详情子页：启用开关 + 编辑 + 配置页 + 匹配规则 + 删除。 */
     private void injectUserscriptDetailPicker(Context ctx, ClassLoader cl, Object screen, String fileName) {
+        sDetailFileName = fileName;
         Class<?> prefCustomCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
         Class<?> switchPrefCls = XposedHelpers.findClass(
@@ -4776,29 +4794,42 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     /** 绑定脚本启用开关。 */
     private void bindUserscriptEnableChange(Object pref, ClassLoader cl, final String fileName) {
         try {
-            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
-            Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
-                    new Class[]{listenerType},
-                    new java.lang.reflect.InvocationHandler() {
+            // 方案：hook SwitchPreferenceCustom.setChecked —— UI 任何变化都会走到这里，写回 prefs。
+            final Class<?> spCls = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+            XposedHelpers.findAndHookMethod(spCls, "setChecked", boolean.class,
+                    new XC_MethodHook() {
                         @Override
-                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
-                                if (m.getName().equals("onPreferenceChange")) {
-                                    boolean enabled = args[1] instanceof Boolean && (Boolean) args[1];
-                                    setUserscriptFileEnabled(fileName, enabled);
-                                    XposedBridge.log("[SBPlus] userscript " + fileName + " enabled=" + enabled);
-                                    return Boolean.TRUE;
-                                }
+                                Object p = param.thisObject;
+                                Object key = XposedHelpers.callMethod(p, "getKey");
+                                if (key == null || !("sbplus_userscript_detail_enable".equals(key.toString()))) return;
+                                boolean c = (Boolean) param.args[0];
+                                String fn = sDetailFileName != null ? sDetailFileName : fileName;
+                                setUserscriptFileEnabled(fn, c);
+                                XposedBridge.log("[SBPlus] userscript setChecked sync: " + fn + " -> " + c);
                             } catch (Throwable t) {
-                                XposedBridge.log("[SBPlus] userscript enable error: " + t);
+                                XposedBridge.log("[SBPlus] userscript setChecked hook err: " + t);
                             }
-                            return Boolean.FALSE;
                         }
                     });
-            XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", changeListener);
+            XposedBridge.log("[SBPlus] userscript setChecked hook installed: " + fileName);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] bindUserscriptEnableChange failed: " + t);
         }
+    }
+
+    private android.widget.Switch findChildSwitch(android.view.View root) {
+        if (root instanceof android.widget.Switch) return (android.widget.Switch) root;
+        if (root instanceof android.view.ViewGroup) {
+            android.view.ViewGroup vg = (android.view.ViewGroup) root;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                android.widget.Switch s = findChildSwitch(vg.getChildAt(i));
+                if (s != null) return s;
+            }
+        }
+        return null;
     }
 
     /** 删除脚本文件。 */
@@ -5279,6 +5310,22 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         if (r.isEmpty()) r = "script";
         if (r.length() > 60) r = r.substring(0, 60);
         return r;
+    }
+
+    /** 用 emoji 字符生成位图（用于设置项图标）。 */
+    private android.graphics.Bitmap emojiBitmap(android.content.Context ctx, String emoji, int sizePx) {
+        try {
+            android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(sizePx, sizePx, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas cv = new android.graphics.Canvas(bm);
+            android.graphics.Paint pt = new android.graphics.Paint();
+            pt.setAntiAlias(true);
+            pt.setTextSize(sizePx * 0.8f);
+            pt.setTextAlign(android.graphics.Paint.Align.CENTER);
+            android.graphics.Paint.FontMetrics fm = pt.getFontMetrics();
+            float y = (sizePx - fm.ascent - fm.descent) / 2f;
+            cv.drawText(emoji, sizePx / 2f, y, pt);
+            return bm;
+        } catch (Throwable ignored) { return null; }
     }
 
     /** 记录脚本来源（下载地址 / 本地导入 / 手动添加）。 */
@@ -6040,6 +6087,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             if (dir == null || !dir.exists()) return list;
             java.io.File[] files = dir.listFiles();
             if (files == null) return list;
+            java.util.Map<String, UserscriptMeta> byName = new java.util.LinkedHashMap<String, UserscriptMeta>();
             for (java.io.File f : files) {
                 if (!f.isFile() || !f.getName().endsWith(".user.js")) continue;
                 try {
@@ -6047,12 +6095,20 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                     UserscriptMeta meta = UserscriptMeta.parse(content);
                     if (meta != null && !meta.name.isEmpty()) {
                         meta.fileName = f.getName();
-                        list.add(meta);
+                        UserscriptMeta prev = byName.get(meta.name);
+                        if (prev == null) {
+                            byName.put(meta.name, meta);
+                        } else {
+                            // 同名重复副本：若当前文件名更短（更可能是干净主文件），则保留当前并记录。
+                            XposedBridge.log("[SBPlus] userscript duplicate ignored (keep=" + prev.fileName
+                                    + ", drop=" + f.getName() + ") name=" + meta.name);
+                        }
                     }
                 } catch (Throwable t) {
                     XposedBridge.log("[SBPlus] parse userscript " + f.getName() + " error: " + t);
                 }
             }
+            list.addAll(byName.values());
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] loadUserscripts error: " + t);
         }
@@ -6108,9 +6164,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                 metaBlock = content.substring(ms, me);
                 m.code = content.substring(me + "==/UserScript==".length());
             } else {
-                // 无 metadata block，整体当脚本，无匹配规则（默认全站）
-                m.code = content;
-                m.name = "anonymous";
+                // 无 metadata block：视为损坏/非标准脚本，直接丢弃，避免 "anonymous" 幽灵项刷屏菜单。
+                return null;
             }
             String[] lines = metaBlock.split("\n");
             for (String ln : lines) {
@@ -6295,13 +6350,13 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             }
             if (insertIndex < 0) insertIndex = parent.getChildCount();
 
-            int iconSize = getDimen(ctx, "location_bar_icon_size", 40);
+            int iconSize = (int)(getDimen(ctx, "location_bar_icon_size", 40) * 1.45f);
             int iconHeight = getDimen(ctx, "location_bar_height", 48);
-            int margin = getDimen(ctx, "location_bar_icon_margin", 6);
+            int margin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.4f);
 
             android.widget.TextView btn = new android.widget.TextView(ctx);
             btn.setText("\uD83D\uDC35");
-            btn.setTextSize(16);
+            btn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, Math.max(28, iconSize * 0.68f));
             btn.setGravity(android.view.Gravity.CENTER);
             btn.setTag("sbplus_monkey_btn");
             btn.setContentDescription(T("[SBPlus] 油猴脚本", "[SBPlus] Userscripts"));
@@ -6309,6 +6364,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
                     iconSize, iconHeight);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
+            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.0f);
+            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 2.6f);
             btn.setLayoutParams(lp);
             btn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override
@@ -6365,13 +6422,13 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             }
             if (insertIndex < 0) insertIndex = parent.getChildCount();
 
-            int iconSize = getDimen(ctx, "location_bar_icon_size", 40);
+            int iconSize = (int)(getDimen(ctx, "location_bar_icon_size", 40) * 1.45f);
             int iconHeight = getDimen(ctx, "location_bar_height", 48);
-            int margin = getDimen(ctx, "location_bar_icon_margin", 6);
+            int margin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.4f);
 
             android.widget.TextView btn = new android.widget.TextView(ctx);
             btn.setText("\uD83D\uDC3D");
-            btn.setTextSize(16);
+            btn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, Math.max(27, iconSize * 0.66f));
             btn.setGravity(android.view.Gravity.CENTER);
             btn.setTag("sbplus_sniff_btn");
             btn.setContentDescription(T("资源嗅探", "Media Sniffer"));
@@ -6379,11 +6436,15 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
                     iconSize, iconHeight);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
+            lp.leftMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.0f);
+            lp.rightMargin = (int)(getDimen(ctx, "location_bar_icon_margin", 6) * 1.0f);
             btn.setLayoutParams(lp);
             btn.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override
                 public void onClick(android.view.View v) {
                     try {
+                        android.app.Activity act = resolveActivityFromView(v);
+                        if (act != null) { sCurrentActivity = act; sSniffActivity = act; }
                         sniffCurrentPage();
                     } catch (Throwable t) {
                         XposedBridge.log("[SBPlus] sniff button onclick error: " + t);
@@ -6873,67 +6934,105 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     // ================= 资源嗅探（音频/视频下载） =================
 
     /** 页面嗅探 JS：扫描 <audio>/<video> 元素 + 已加载媒体资源，上报给 __sbplus__.reportMedia。 */
-    private static final String SNIFF_JS =
-        "(function(){" +
-        "try{" +
-        "var W=window;" +
-        "if(!W.__sbplusSniffStore__){W.__sbplusSniffStore__={list:[],seen:{}};}" +
-        "var st=W.__sbplusSniffStore__;" +
-        "function add(u,t,ti){if(!u)return;if(u.indexOf('blob:')===0||u.indexOf('data:')===0)return;" +
-        "try{var c=st.seen[u];if(c)return;st.seen[u]=1;st.list.push({url:u,type:t||'',title:ti||''});}catch(e){}" +
-        "}" +
-        "function typeOf(u){if(!u)return '';var x=u.split(/[?#]/)[0].toLowerCase();" +
-        "return (/video|\\.(mp4|m4v|webm|mkv|flv|mov|ts|m4s|mpd)$/.test(x)?'video':/\\.(mp3|m4a|aac|ogg|opus|wav|flac)$/.test(x)?'audio':/\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$/.test(x)?'image':'');}" +
-        "// 1) 持续监听（只安装一次）：新出现的 media 元素 + 网络资源" +
-        "if(!W.__sbplusSniffHooked__){" +
-        "W.__sbplusSniffHooked__=true;" +
-        "document.addEventListener('loadedmetadata',function(ev){try{var m=ev.target;if(m&&(m.tagName==='AUDIO'||m.tagName==='VIDEO')){var s=m.currentSrc||m.src;if(s)add(s,(m.tagName==='VIDEO'?'video':'audio'),m.title||'');}}catch(e){}},true);" +
-        "try{var obs=new PerformanceObserver(function(list){try{var es=list.getEntries();for(var i=0;i<es.length;i++){var r=es[i];if(!r||!r.name)continue;var t=typeOf(r.name);if(t||r.initiatorType==='media'||r.initiatorType==='video'||r.initiatorType==='audio'){add(r.name,t,'');}}}catch(e){}});obs.observe({entryTypes:['resource']});}catch(e){}" +
-        "// 拦截 fetch 响应中的媒体" +
-        "var of=window.fetch;if(of&&!W.__sbplusSniffFetch__){W.__sbplusSniffFetch__=true;window.fetch=function(){try{var a=arguments;var u=(typeof a[0]==='string')?a[0]:(a[0]&&a[0].url?a[0].url:'');var p=of.apply(this,a);if(u&&typeOf(u)){add(u,typeOf(u),'');}return p;}catch(e){try{return of.apply(this,arguments);}catch(e2){return Promise.reject(e2);}}};}" +
-        "// 拦截 XHR 响应中的媒体" +
-        "var ox=XMLHttpRequest.prototype.open;if(ox&&!W.__sbplusSniffXhr__){W.__sbplusSniffXhr__=true;" +
-        "XMLHttpRequest.prototype.open=function(m,u){try{var t=typeOf(u);if(t||/video|audio|media/i.test(u)){add(u,t,'');}}catch(e){}return ox.apply(this,arguments);};}" +
-        "}" +
-        "// 2) 即时扫描：DOM 中的 audio/video + performance 已加载资源" +
+        private static final String SNIFF_JS =
+        "(function(){var W=window;var st;var out=[];" +
+        "try{st=W.__sbplusSniffStore__;}catch(e){st=null;}" +
+        "if(!st){st={list:[],seen:{}};W.__sbplusSniffStore__=st;}" +
+        "function add(u,t,ti,w,h,du){try{" +
+        "if(!u)return;if(u.indexOf('blob:')===0||u.indexOf('data:')===0)return;" +
+        "if(st.seen[u])return;st.seen[u]=1;st.list.push({url:u,type:t||'',title:ti||'',w:w||0,h:h||0,dur:du||0});" +
+        "}catch(e){}}" +
+        "function typeOf(u){" +
+        "try{var x=u.split(/[?#]/)[0].toLowerCase();" +
+        "if(/video|\\.(mp4|m4v|webm|mkv|flv|mov|ts|m4s|mpd)$/.test(x))return 'video';" +
+        "if(/audio|\\.(mp3|m4a|aac|ogg|opus|wav|flac)$/.test(x))return 'audio';" +
+        "if(/\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$/.test(x))return 'image';" +
+        "return '';}catch(e){return '';}}" +
+        "function scanNow(){try{" +
         "var imgs=document.querySelectorAll('img');" +
         "for(var mi=0;mi<imgs.length;mi++){var ig=imgs[mi];var isrc=ig.currentSrc||ig.src||(ig.getAttribute&&ig.getAttribute('data-src'));if(isrc)add(isrc,'image',(ig.alt||''));}" +
         "var alinks=document.querySelectorAll('a[href]');" +
         "for(var ai=0;ai<alinks.length;ai++){var ah=alinks[ai].getAttribute('href');if(ah&&typeOf(ah)==='image'){add(ah,'image','');}}" +
         "var els=document.querySelectorAll('video,audio');" +
-        "for(var i=0;i<els.length;i++){var e=els[i];" +
-        "var s=e.currentSrc||e.src;if(s)add(s,(e.tagName==='VIDEO'?'video':'audio'),(e.title||document.title));" +
-        "var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)add(so,(e.tagName==='VIDEO'?'video':'audio'),'');}" +
+        "for(var i=0;i<els.length;i++){var e=els[i];var s=e.currentSrc||e.src;if(s)add(s,(e.tagName==='VIDEO'?'video':'audio'),(e.title||document.title),(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)add(so,(e.tagName==='VIDEO'?'video':'audio'),'',(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));}}" +
+        "var rs=performance.getEntriesByType('resource');" +
+        "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;var t=typeOf(r.name);if(t){add(r.name,t,'');}}" +
+        "}catch(e){}}" +
+        "if(!W.__sbplusSniffHooked__){W.__sbplusSniffHooked__=true;" +
+        "try{document.addEventListener('loadedmetadata',function(ev){try{var m=ev.target;if(m&&(m.tagName==='AUDIO'||m.tagName==='VIDEO')){var s=m.currentSrc||m.src;if(s)add(s,(m.tagName==='VIDEO'?'video':'audio'),m.title||'',(m.videoWidth||0),(m.videoHeight||0),(m.duration||0));}}catch(e){}},true);}catch(e){}" +
+        "try{var obs=new PerformanceObserver(function(list){try{var es=list.getEntries();for(var i=0;i<es.length;i++){var r=es[i];if(!r||!r.name)continue;var t=typeOf(r.name);if(t){add(r.name,t,'');}}}catch(e){}});obs.observe({entryTypes:['resource']});}catch(e){}" +
+        "var of=window.fetch;" +
+        "if(of&&!W.__sbplusSniffFetch__){W.__sbplusSniffFetch__=true;window.fetch=function(){try{var a=arguments;var u=(typeof a[0]==='string')?a[0]:(a[0]&&a[0].url?a[0].url:'');var p=of.apply(this,a);if(u){var t=typeOf(u);if(t)add(u,t,'');}return p;}catch(e){try{return of.apply(this,arguments);}catch(e2){return Promise.reject(e2);}}};}" +
+        "var ox=XMLHttpRequest.prototype.open;" +
+        "if(ox&&!W.__sbplusSniffXhr__){W.__sbplusSniffXhr__=true;XMLHttpRequest.prototype.open=function(m,u){try{var t=typeOf(u);if(t)add(u,t,'');}catch(e){}return ox.apply(this,arguments);};}" +
         "}" +
-        "try{var rs=performance.getEntriesByType('resource');" +
-        "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;var t=typeOf(r.name);" +
-        "if(t||r.initiatorType==='media'||r.initiatorType==='video'||r.initiatorType==='audio'){add(r.name,t,'');}" +
-        "}" +
-        "}catch(e2){}" +
-        "// 3) 上报（含持续监听累计）" +
-        "if(W.__sbplus__){W.__sbplus__.reportMedia(JSON.stringify(st.list));}" +
-        "}catch(e){if(window.__sbplus__){window.__sbplus__.reportMedia(JSON.stringify([{url:'',type:'',title:''}]));}}" +
+        "scanNow();" +
+        "var r=JSON.stringify(st.list);if(W.__sbplus__){try{W.__sbplus__.reportMedia(r);}catch(e){}}return r;" +
         "})();";
 
     /** 入口：嗅探当前页面媒体资源。返回 true 表示已触发。 */
+    /** 从 View 的 context 链向上找 Activity（ContextWrapper 递归）。 */
+    private android.app.Activity resolveActivityFromView(android.view.View v) {
+        try {
+            if (v == null) return null;
+            // 1) 沿 view 的 context 链（可能含 ContextThemeWrapper/ContextWrapper）
+            android.content.Context c = v.getContext();
+            java.util.Set<android.content.Context> seen = new java.util.HashSet<android.content.Context>();
+            while (c instanceof android.content.Context) {
+                if (seen.contains(c)) break; seen.add(c);
+                if (c instanceof android.app.Activity) return (android.app.Activity) c;
+                if (c instanceof android.content.ContextWrapper) {
+                    c = ((android.content.ContextWrapper) c).getBaseContext();
+                } else break;
+            }
+            // 2) 沿 view 的父链找 Window/Activity 宿主
+            android.view.View w = (android.view.View) v;
+            while (w != null) {
+                android.content.Context wc = w.getContext();
+                int guard = 0;
+                while (wc instanceof android.content.Context) {
+                    if (wc instanceof android.app.Activity) return (android.app.Activity) wc;
+                    if (wc instanceof android.content.ContextWrapper) {
+                        wc = ((android.content.ContextWrapper) wc).getBaseContext();
+                    } else break;
+                    if (++guard > 20) break;
+                }
+                if (w.getParent() instanceof android.view.View) w = (android.view.View) w.getParent();
+                else break;
+            }
+        } catch (Throwable ignored) {}
+        return sCurrentActivity;
+    }
+
     private boolean sniffCurrentPage() {
         try {
             if (sCurrentRealTab == null) {
                 LogWriter.log("sniff", "no current tab");
+                toastShort(T("没有找到当前页面", "No active page found"));
                 return false;
             }
             // 确保 JS 桥已注册（嗅探独立于油猴开关）
             registerJsBridgeForSniff(sCurrentRealTab);
-            synchronized (sSniffLock) { sSniffedMediaJson = null; }
-            injectJs(sCurrentRealTab, SNIFF_JS);
-            // 等待 JS 回调（最多 1.5s）
-            long t0 = System.currentTimeMillis();
-            while (sSniffedMediaJson == null && System.currentTimeMillis() - t0 < 1500) {
-                try { Thread.sleep(50); } catch (Throwable ignored) {}
+            // 标记"等待中"，设置 2s 超时
+            synchronized (sSniffLock) {
+                sSniffedMediaJson = null;
+                sSniffPending = true;
             }
-            String json = sSniffedMediaJson;
-            sSniffedMediaJson = null;
-            return showMediaDialog(json);
+            final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+            h.postDelayed(new Runnable() {
+                @Override public void run() {
+                    synchronized (sSniffLock) {
+                        if (sSniffPending) {
+                            sSniffPending = false;
+                            sSniffedMediaJson = null;
+                            toastShort(T("没有发现可下载的资源", "No downloadable resources found"));
+                        }
+                    }
+                }
+            }, 2500);
+            injectSniffJs(sCurrentRealTab);
+            XposedBridge.log("[SBPlus] sniff JS injected, waiting callback...");
+            return true;
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] sniffCurrentPage error: " + t);
             return false;
@@ -6949,47 +7048,264 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         }
     }
 
+    /** 注入嗅探 JS 并用 evaluateJavascript 返回值回调拿结果（不依赖 JS 桥）。 */
+    private void injectSniffJs(final Object realTab) {
+        try {
+            // Tab 类没有 Android 的 evaluateJavascript(ValueCallback<String>)，
+            // 用三星自己的 evaluateJavaScript(String, TerraceJavaScriptCallback)（与油猴注入同一机制）。
+            final java.util.concurrent.atomic.AtomicBoolean delivered = new java.util.concurrent.atomic.AtomicBoolean(false);
+            final MainHook self = this;
+            com.sbplus.browser.MainHook.JsResultListener lsn = new com.sbplus.browser.MainHook.JsResultListener() {
+                @Override public void onResult(final String r) {
+                    if (r == null) return;
+                    if (!delivered.compareAndSet(false, true)) return;  // 去重
+                    self.handleSniffResult(r);
+                }
+            };
+            evaluateJsWithResult(realTab, SNIFF_JS, lsn);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] injectSniffJs error: " + t);
+            synchronized (sSniffLock) { sSniffPending = false; }
+        }
+    }
+
+    /** 处理嗅探 JS 返回值（可能来自 TerraceJavaScriptCallback 或 reportMedia 桥）。 */
+    private void handleSniffResult(final String raw) {
+        try {
+            XposedBridge.log("[SBPlus] sniff result RAW head: " + (raw == null ? "null" : raw.substring(0, Math.min(120, raw.length()))));
+            synchronized (sSniffLock) { sSniffPending = false; }
+            if (raw == null || raw.isEmpty()) {
+                toastShort(T("没有发现可下载的资源", "No downloadable resources found"));
+                XposedBridge.log("[SBPlus] sniff result empty");
+                return;
+            }
+            String v = raw.trim();
+            if (v.length() >= 2 && v.startsWith("\"") && v.endsWith("\"")) {
+                v = v.substring(1, v.length() - 1);
+            }
+            XposedBridge.log("[SBPlus] sniff result JSON head: " + (v == null ? "null" : v.substring(0, Math.min(120, v.length()))));
+            final String data = v;
+            final MainHook self = this;
+            android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+            h.post(new Runnable() { @Override public void run() {
+                try {
+                    XposedBridge.log("[SBPlus] sniff SHOW begin");
+                    self.showMediaDialog(data);
+                    XposedBridge.log("[SBPlus] sniff SHOW end");
+                } catch (Throwable t) { XposedBridge.log("[SBPlus] sniff result handler error: " + t); }
+            }});
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] handleSniffResult error: " + t);
+        }
+    }
+
+
     /** SbplusJsBridge.reportMedia 回调入口（静态）。 */
     public static void onSniffedMedia(String jsons) {
         try {
-            if (jsons != null) {
-                synchronized (sSniffLock) { sSniffedMediaJson = jsons; }
+            XposedBridge.log("[SBPlus] onSniffedMedia got: " + (jsons == null ? "null" : jsons.length() + " chars"));
+            if (jsons == null) return;
+            synchronized (sSniffLock) {
+                if (!sSniffPending) return;   // 已被另一通道或超时处理，去重
+            }
+            final String data = jsons;
+            final MainHook inst = sInstance;
+            if (inst != null) {
+                android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                h.post(new Runnable() { @Override public void run() {
+                    try { inst.handleSniffResult(data); } catch (Throwable t) { XposedBridge.log("[SBPlus] onSniffedMedia post error: " + t); }
+                }});
             }
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] onSniffedMedia error: " + t);
         }
     }
 
+    /** 从 URL 提取扩展名（小写，带点），取不到返回 type 默认。 */
+    private String parseExt(String url, String type) {
+        try {
+            String path = url.split("[?#]")[0];
+            int dot = path.lastIndexOf('.');
+            if (dot >= 0 && dot < path.length() - 1) {
+                String ext = path.substring(dot + 1).toLowerCase();
+                if (ext.length() <= 6 && ext.matches("[a-z0-9]+")) return "." + ext;
+            }
+        } catch (Throwable ignored) {}
+        return "video".equals(type) ? ".mp4" : ("audio".equals(type) ? ".mp3" : ".jpg");
+    }
+
+    /** 秒数格式化为 mm:ss / h:mm:ss。 */
+    private String fmtDuration(double sec) {
+        try {
+            if (sec <= 0 || Double.isNaN(sec) || Double.isInfinite(sec)) return "?";
+            int s = (int) Math.round(sec);
+            int hh = s / 3600, mm = (s % 3600) / 60, ss = s % 60;
+            if (hh > 0) return hh + ":" + (mm < 10 ? "0" : "") + mm + ":" + (ss < 10 ? "0" : "") + ss;
+            return mm + ":" + (ss < 10 ? "0" : "") + ss;
+        } catch (Throwable ignored) { return "?"; }
+    }
+
+    /** 从 URL 提取扩展名+清晰度标签（如 720P），用于标题后缀。 */
+    private String videoQuality(String url, int vW, int vH) {
+        try {
+            String u = url.toLowerCase();
+            if (u.contains("2160") || u.contains("4k")) return "4K";
+            if (u.contains("1440") || u.contains("2k")) return "2K";
+            if (u.contains("1080") || vH >= 1000) return "1080P";
+            if (u.contains("720") || (vH >= 600 && vH < 1000)) return "720P";
+            if (u.contains("480") || (vH >= 400 && vH < 600)) return "480P";
+            if (vH > 0) return vH + "P";
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    /** 批量下载：选中项 <= 10 逐个加入；> 10 打包成 zip 后加入。 */
+    private void downloadMany(final java.util.List<Integer> idxList,
+                              final java.util.List<String> urls,
+                              final java.util.List<String> types,
+                              final java.util.List<String> titles) {
+        try {
+            int c = idxList.size();
+            if (c <= 10) {
+                for (int i : idxList) {
+                    try { sniffDownload(urls.get(i), types.get(i), titles.get(i)); } catch (Throwable ignored) {}
+                }
+                toastShort(T("已加入下载: " + c, "Added to downloads: " + c));
+                return;
+            }
+            toastShort(T("正在打包 " + c + " 个文件...", "Packaging " + c + " files..."));
+            final int total = c;
+            final java.util.List<Integer> fIdx = new java.util.ArrayList<Integer>(idxList);
+            final java.util.List<String> fUrls = urls, fTypes = types, fTitles = titles;
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    final int[] done = new int[]{0};
+                    final int[] failed = new int[]{0};
+                    try {
+                        java.io.File zipFile = null;
+                        try {
+                            java.io.File tmp = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
+                                    android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus_zips");
+                            if (!tmp.exists()) tmp.mkdirs();
+                            zipFile = new java.io.File(tmp, "sbplus_" + System.currentTimeMillis() + ".zip");
+                            java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(
+                                    new java.io.BufferedOutputStream(new java.io.FileOutputStream(zipFile)));
+                            for (int realIdx : fIdx) {
+                                try {
+                                    String url = fUrls.get(realIdx);
+                                    String type = fTypes.get(realIdx);
+                                    String ti = fTitles.get(realIdx);
+                                    byte[] bytes = httpGetBytes(url);
+                                    if (bytes == null || bytes.length == 0) { failed[0]++; continue; }
+                                    String ext = parseExt(url, type);
+                                    String name;
+                                    if (ti != null && !ti.isEmpty()) name = sanitizeFileName(ti) + ext;
+                                    else name = "media_" + realIdx + ext;
+                                    zos.putNextEntry(new java.util.zip.ZipEntry(name));
+                                    zos.write(bytes);
+                                    zos.closeEntry();
+                                    done[0]++;
+                                } catch (Throwable t) { failed[0]++; }
+                            }
+                            zos.close();
+                            if (done[0] == 0) { zipFile.delete(); zipFile = null; }
+                        } catch (Throwable t) {
+                            XposedBridge.log("[SBPlus] zip packaging error: " + t);
+                            zipFile = null;
+                        }
+                        final java.io.File zf = zipFile;
+                        final int dOk = done[0], dFail = failed[0];
+                        android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                        h.post(new Runnable() { @Override public void run() {
+                            try {
+                                if (zf != null && zf.exists() && sAppContext != null) {
+                                    android.content.Intent it = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+                                    it.setDataAndType(android.net.Uri.fromFile(zf), "application/zip");
+                                    it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                                    try { sAppContext.startActivity(it); }
+                                    catch (Throwable te) {
+                                        toastShort(T("打包完成: 成功 " + dOk + " 失败 " + dFail + "，文件在 " + zf.getAbsolutePath(),
+                                                "ZIP done: ok " + dOk + " fail " + dFail + " at " + zf.getAbsolutePath()));
+                                    }
+                                    toastShort(T("打包完成: 成功 " + dOk + " 失败 " + dFail, "ZIP done: ok " + dOk + " fail " + dFail));
+                                } else {
+                                    toastShort(T("打包失败", "Packaging failed"));
+                                }
+                            } catch (Throwable ignored) {}
+                        }});
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] downloadMany thread error: " + t);
+                    }
+                }
+            }).start();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] downloadMany error: " + t);
+        }
+    }
+
+    
     /** 展示嗅探结果对话框；用户选择媒体后 dispatch 到第三方下载器。 */
     private boolean showMediaDialog(String json) {
         try {
-            if (json == null || json.isEmpty()) {
-                toastShort(T("没有发现可下载的资源", "No downloadable resources found on this page"));
-                return true;
-            }
-            org.json.JSONArray arr = new org.json.JSONArray(json);
-            if (arr.length() == 0) {
-                toastShort(T("没有发现可下载的资源", "No downloadable resources found on this page"));
-                return true;
-            }
+            XposedBridge.log("[SBPlus] DIALOG enter len=" + (json == null ? -1 : json.length()));
             final java.util.List<String> urls = new java.util.ArrayList<String>();
             final java.util.List<String> titles = new java.util.ArrayList<String>();
             final java.util.List<String> types = new java.util.ArrayList<String>();
+            final java.util.List<Integer> vW = new java.util.ArrayList<Integer>();
+            final java.util.List<Integer> vH = new java.util.ArrayList<Integer>();
+            final java.util.List<Double> vDur = new java.util.ArrayList<Double>();
             int videoCount = 0, audioCount = 0, imageCount = 0;
-            for (int i = 0; i < arr.length(); i++) {
-                try {
-                    org.json.JSONObject o = arr.optJSONObject(i);
-                    if (o == null) continue;
-                    String u = o.optString("url");
-                    String tp = o.optString("type");
-                    String ti = o.optString("title");
-                    if (u.isEmpty()) continue;
-                    urls.add(u); types.add(tp); titles.add(ti);
-                    if ("audio".equals(tp)) audioCount++;
-                    else if ("image".equals(tp)) imageCount++;
-                    else videoCount++;
-                } catch (Throwable ignored) {}
+            try {
+                String s = json;
+                try { s = s.replace("\\\"", "\""); } catch (Throwable ignored) {}
+                int bp = 0;
+                while (true) {
+                    int oi = s.indexOf("\"url\"", bp);
+                    if (oi < 0) break;
+                    int c1 = s.indexOf(':', oi);
+                    if (c1 < 0) break;
+                    int q1 = s.indexOf('"', c1 + 1);
+                    if (q1 < 0) break;
+                    int q2 = q1 + 1;
+                    while (q2 < s.length()) {
+                        if (s.charAt(q2) == '"' && s.charAt(q2 - 1) != '\\') break;
+                        q2++;
+                    }
+                    String u = s.substring(q1 + 1, q2);
+                    int t1 = s.indexOf("\"type\"", q2);
+                    int c2 = t1 > 0 ? s.indexOf(':', t1) : -1;
+                    String tp = "";
+                    if (c2 > 0) {
+                        int r1 = s.indexOf('"', c2 + 1);
+                        if (r1 > 0) { int r2 = r1 + 1; while (r2 < s.length()) { if (s.charAt(r2) == '"' && s.charAt(r2 - 1) != '\\') break; r2++; } tp = s.substring(r1 + 1, r2); }
+                    }
+                    int ti1 = s.indexOf("\"title\"", t1 > 0 ? t1 : q2);
+                    int c3 = ti1 > 0 ? s.indexOf(':', ti1) : -1;
+                    String ti = "";
+                    if (c3 > 0) {
+                        int rr1 = s.indexOf('"', c3 + 1);
+                        if (rr1 > 0) { int rr2 = rr1 + 1; while (rr2 < s.length()) { if (s.charAt(rr2) == '"' && s.charAt(rr2 - 1) != '\\') break; rr2++; } ti = s.substring(rr1 + 1, rr2); }
+                    }
+                    if (!u.isEmpty()) {
+                        urls.add(u); types.add(tp); titles.add(ti);
+                        int w = 0, h = 0; double du = 0;
+                        int w1 = s.indexOf("\"w\"", q2);
+                        if (w1 > 0) { int cw = s.indexOf(':', w1); if (cw > 0) { int d1 = s.indexOf(',', cw); int d2 = s.indexOf('}', cw); int de = d1 > 0 ? Math.min(d1, d2) : d2; if (de > cw) { try { w = Integer.parseInt(s.substring(cw + 1, de).trim()); } catch (Throwable ignored) {} } } }
+                        int h1 = s.indexOf("\"h\"", q2);
+                        if (h1 > 0) { int ch = s.indexOf(':', h1); if (ch > 0) { int d1 = s.indexOf(',', ch); int d2 = s.indexOf('}', ch); int de = d1 > 0 ? Math.min(d1, d2) : d2; if (de > ch) { try { h = Integer.parseInt(s.substring(ch + 1, de).trim()); } catch (Throwable ignored) {} } } }
+                        int du1 = s.indexOf("\"dur\"", q2);
+                        if (du1 > 0) { int cd = s.indexOf(':', du1); if (cd > 0) { int d1 = s.indexOf(',', cd); int d2 = s.indexOf('}', cd); int de = d1 > 0 ? Math.min(d1, d2) : d2; if (de > cd) { try { du = Double.parseDouble(s.substring(cd + 1, de).trim()); } catch (Throwable ignored) {} } } }
+                        vW.add(w); vH.add(h); vDur.add(du);
+                        if ("audio".equals(tp)) audioCount++;
+                        else if ("image".equals(tp)) imageCount++;
+                        else videoCount++;
+                    }
+                    bp = q2 + 1;
+                }
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] DIALOG parse error: " + t);
             }
+            XposedBridge.log("[SBPlus] DIALOG urls=" + urls.size() + " (manual parse)");
             if (urls.isEmpty()) {
                 toastShort(T("没有发现可下载的资源", "No downloadable resources found on this page"));
                 return true;
@@ -6997,48 +7313,521 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             final int n = urls.size();
             final boolean[] checked = new boolean[n];
             for (int i = 0; i < n; i++) checked[i] = true;   // 默认全选
-            final String[] items = new String[n];
-            for (int i = 0; i < n; i++) {
-                String type = types.get(i);
-                String tag;
-                if ("image".equals(type)) tag = "\uD83D\uDDBC";
-                else if ("audio".equals(type)) tag = "\u266A";
-                else tag = "\u25B6";
-                String ti = titles.get(i);
-                items[i] = tag + " " + (ti == null || ti.isEmpty() ? shortUrl(urls.get(i)) : ti);
+            android.app.Activity act0 = sSniffActivity != null ? sSniffActivity
+                    : (sCurrentActivity != null ? sCurrentActivity
+                    : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null));
+            XposedBridge.log("[SBPlus] showMediaDialog act=" + (act0 != null ? act0.getClass().getName() : "NULL") + " n=" + n);
+            if (act0 == null) {
+                try {
+                    if (sCurrentRealTab != null) {
+                        Object vw = XposedHelpers.callMethod(sCurrentRealTab, "getView");
+                        if (vw instanceof android.view.View) act0 = resolveActivityFromView((android.view.View) vw);
+                    }
+                } catch (Throwable ignored) {}
+                if (act0 == null) return false;
             }
-            final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
-                    : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
-            if (act == null) return false;
-            String typeSummary = T("图片 ", "Images ") + imageCount + T(" / 音频 ", " / Audio ") + audioCount
+            final android.app.Activity act = act0;
+            final String typeSummary = T("图片 ", "Images ") + imageCount + T(" / 音频 ", " / Audio ") + audioCount
                     + T(" / 视频 ", " / Video ") + videoCount;
-            final String title = T("资源嗅探", "Media Sniffer") + " (" + n + ")\n" + typeSummary;
-            new android.app.AlertDialog.Builder(act)
+            final String title = T("资源嗅探", "Media Sniffer") + "  " + typeSummary;
+
+            // ============ 自定义 View 对话框 ============
+            final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+            final int pad = (int)(14 * act.getResources().getDisplayMetrics().density);
+            root.setPadding(pad, (int)(6*act.getResources().getDisplayMetrics().density), pad, 0);
+
+            // Tab 行
+            final android.widget.LinearLayout tabRow = new android.widget.LinearLayout(act);
+            tabRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            final android.widget.TextView tvTab1 = new android.widget.TextView(act);
+            final android.widget.TextView tvTab2 = new android.widget.TextView(act);
+            final android.widget.TextView tvTab3 = new android.widget.TextView(act);
+            tvTab1.setText(T("▶ 视频", "Video") + " (" + videoCount + ")");
+            tvTab2.setText(T("♪ 音频", "Audio") + " (" + audioCount + ")");
+            tvTab3.setText(T("🖼 图片", "Image") + " (" + imageCount + ")");
+            tvTab1.setTextSize(15); tvTab2.setTextSize(15); tvTab3.setTextSize(15);
+            tvTab1.setPadding(pad, 10, pad, 10); tvTab2.setPadding(pad, 10, pad, 10); tvTab3.setPadding(pad, 10, pad, 10);
+            tvTab1.setGravity(android.view.Gravity.CENTER); tvTab2.setGravity(android.view.Gravity.CENTER); tvTab3.setGravity(android.view.Gravity.CENTER);
+            android.widget.LinearLayout.LayoutParams t1p = new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            android.widget.LinearLayout.LayoutParams t2p = new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            android.widget.LinearLayout.LayoutParams t3p = new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            tabRow.addView(tvTab1, t1p); tabRow.addView(tvTab2, t2p); tabRow.addView(tvTab3, t3p);
+            root.addView(tabRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
+
+            // 内容容器（用 FrameLayout 承载可见页）
+            final android.widget.FrameLayout content = new android.widget.FrameLayout(act);
+            final int contentH = (int)(380 * act.getResources().getDisplayMetrics().density);
+            root.addView(content, new android.widget.LinearLayout.LayoutParams(-1, contentH));
+
+            // 三个页面（图片 GridView / 音视频 ListView）
+            final android.widget.GridView gridImages = new android.widget.GridView(act);
+            gridImages.setNumColumns(3);
+            gridImages.setStretchMode(android.widget.GridView.STRETCH_COLUMN_WIDTH);
+            gridImages.setVerticalSpacing(6); gridImages.setHorizontalSpacing(6);
+            gridImages.setPadding(4, 4, 4, 4);
+            final android.widget.ListView listVideo = new android.widget.ListView(act);
+            final android.widget.ListView listAudio = new android.widget.ListView(act);
+            content.addView(gridImages, new android.widget.FrameLayout.LayoutParams(-1, -1));
+            content.addView(listVideo, new android.widget.FrameLayout.LayoutParams(-1, -1));
+            content.addView(listAudio, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
+            // 按类型分组索引
+            final java.util.List<Integer> imgIdx = new java.util.ArrayList<Integer>();
+            final java.util.List<Integer> vidIdx = new java.util.ArrayList<Integer>();
+            final java.util.List<Integer> audIdx = new java.util.ArrayList<Integer>();
+            for (int i = 0; i < n; i++) {
+                String t = types.get(i);
+                if ("image".equals(t)) imgIdx.add(i);
+                else if ("audio".equals(t)) audIdx.add(i);
+                else vidIdx.add(i);
+            }
+
+            // ===== GridView 适配器：图片缩略图 + WxH + 大小 =====
+            android.widget.BaseAdapter gridAdp = new android.widget.BaseAdapter() {
+                @Override public int getCount() { return imgIdx.size(); }
+                @Override public Object getItem(int p) { return imgIdx.get(p); }
+                @Override public long getItemId(int p) { return p; }
+                @Override public android.view.View getView(final int p, android.view.View cv, android.view.ViewGroup parent) {
+                    final int realIdx = imgIdx.get(p);
+                    android.widget.FrameLayout cell;
+                    if (cv instanceof android.widget.FrameLayout) {
+                        cell = (android.widget.FrameLayout) cv;
+                    } else {
+                        cell = new android.widget.FrameLayout(act);
+                        cell.setPadding(2,2,2,2);
+                    }
+                    cell.removeAllViews();
+                    // 缩略图
+                    final android.widget.ImageView iv = new android.widget.ImageView(act);
+                    iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                    iv.setBackgroundColor(0xFF222222);
+                    final String u = urls.get(realIdx);
+                    iv.setTag("loading");
+                    // 固定格子高度（防不同尺寸遮住/错位）
+                    final int cellH = (int)(150 * act.getResources().getDisplayMetrics().density);
+                    cell.setLayoutParams(new android.widget.GridView.LayoutParams(-1, cellH));
+                    // 背景线程下载缩略图
+                    new Thread(new Runnable() {
+                        @Override public void run() {
+                            try {
+                                byte[] bytes = httpGetBytes(u);
+                                if (bytes == null || bytes.length == 0) return;
+                                final android.graphics.Bitmap bmp = decodeSampledBitmap(bytes, 200, 200);
+                                if (bmp == null) return;
+                                android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                                h.post(new Runnable() { @Override public void run() {
+                                    try { iv.setImageBitmap(bmp); } catch (Throwable ignored) {}
+                                }});
+                            } catch (Throwable ignored) {}
+                        }
+                    }).start();
+                    cell.addView(iv, new android.widget.FrameLayout.LayoutParams(-1, -1));
+                    // 底部信息条：WxH + 大小 + 格式
+                    final android.widget.TextView info = new android.widget.TextView(act);
+                    info.setTextColor(0xFFFFFFFF);
+                    info.setTextSize(10);
+                    info.setBackgroundColor(0x88000000);
+                    info.setPadding(4,2,4,2);
+                    final String dim = parseDim(urls.get(realIdx));
+                    final String ext = parseExt(urls.get(realIdx), types.get(realIdx));
+                    String sizeStr = "?";
+                    info.setText(dim + "  " + sizeStr + ext);
+                    android.widget.FrameLayout.LayoutParams infop = new android.widget.FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM);
+                    cell.addView(info, infop);
+                    // HEAD 请求大小（后台）
+                    final String fu = urls.get(realIdx);
+                    new Thread(new Runnable() {
+                        @Override public void run() {
+                            try {
+                                final String sz = httpHeadSize(fu);
+                                if (sz == null) return;
+                                android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                                h.post(new Runnable() { @Override public void run() {
+                                    try { info.setText(dim + "  " + sz + ext); } catch (Throwable ignored) {}
+                                }});
+                            } catch (Throwable ignored) {}
+                        }
+                    }).start();
+                    // 选中状态：点击切换
+                    final android.widget.FrameLayout fcell = cell;
+                    cell.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) {
+                            checked[realIdx] = !checked[realIdx];
+                            fcell.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                        }
+                    });
+                    cell.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                    return cell;
+                }
+            };
+            gridImages.setAdapter(gridAdp);
+
+            // ===== ListView 适配器（视频/音频） =====
+            final android.widget.BaseAdapter adpVideo = new android.widget.BaseAdapter() {
+                @Override public int getCount() { return vidIdx.size(); }
+                @Override public Object getItem(int p) { return vidIdx.get(p); }
+                @Override public long getItemId(int p) { return p; }
+                @Override public android.view.View getView(final int p, android.view.View cv, android.view.ViewGroup parent) {
+                    final int realIdx = vidIdx.get(p);
+                    android.widget.LinearLayout row;
+                    if (cv instanceof android.widget.LinearLayout) {
+                        row = (android.widget.LinearLayout) cv;
+                    } else {
+                        row = new android.widget.LinearLayout(act);
+                        row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                        row.setPadding(8, 8, 8, 8);
+                    }
+                    row.removeAllViews();
+                    final android.widget.CheckBox cb = new android.widget.CheckBox(act);
+                    cb.setChecked(checked[realIdx]);
+                    cb.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) { checked[realIdx] = cb.isChecked(); }
+                    });
+                    row.addView(cb, new android.widget.LinearLayout.LayoutParams(-2, -2));
+
+                    // 缩略图占位（视频封面通常拿不到，用 🎬 图标 + 深色底代表）
+                    final android.widget.TextView thumb = new android.widget.TextView(act);
+                    thumb.setText("\uD83C\uDFAC");
+                    thumb.setTextSize(26);
+                    thumb.setGravity(android.view.Gravity.CENTER);
+                    thumb.setBackgroundColor(0xFFEEEEEE);
+                    int th = (int)(64 * act.getResources().getDisplayMetrics().density);
+                    int tw = (int)(96 * act.getResources().getDisplayMetrics().density);
+                    row.addView(thumb, new android.widget.LinearLayout.LayoutParams(tw, th));
+
+                    // 标题 + 详情
+                    android.widget.LinearLayout col = new android.widget.LinearLayout(act);
+                    col.setOrientation(android.widget.LinearLayout.VERTICAL);
+                    col.setPadding(8, 0, 0, 0);
+                    final String q = videoQuality(urls.get(realIdx), vW.get(realIdx), vH.get(realIdx));
+                    final String ext = parseExt(urls.get(realIdx), types.get(realIdx));
+                    final String dur = fmtDuration(vDur.get(realIdx));
+                    String ti = titles.get(realIdx);
+                    String titleLine = (ti == null || ti.isEmpty() ? shortUrl(urls.get(realIdx)) : ti);
+                    android.widget.TextView tx1 = new android.widget.TextView(act);
+                    tx1.setText(titleLine);
+                    tx1.setTextSize(14);
+                    tx1.setMaxLines(1);
+                    tx1.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    tx1.setTextColor(0xFF111111);
+                    col.addView(tx1, new android.widget.LinearLayout.LayoutParams(-1, -2));
+                    final android.widget.TextView tx2 = new android.widget.TextView(act);
+                    tx2.setTextSize(11);
+                    tx2.setTextColor(0xFF777777);
+                    tx2.setText((q.length() > 0 ? q + "  " : "") + ext + "  " + T("时长 ", "Dur ") + dur);
+                    col.addView(tx2, new android.widget.LinearLayout.LayoutParams(-1, -2));
+                    android.widget.TextView tx3 = new android.widget.TextView(act);
+                    tx3.setText(urls.get(realIdx));
+                    tx3.setTextSize(10);
+                    tx3.setMaxLines(1);
+                    tx3.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    tx3.setTextColor(0xFF999999);
+                    col.addView(tx3, new android.widget.LinearLayout.LayoutParams(-1, -2));
+                    // 大小（后台 HEAD）
+                    new Thread(new Runnable() {
+                        @Override public void run() {
+                            try {
+                                final String sz = httpHeadSize(urls.get(realIdx));
+                                if (sz == null) return;
+                                android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                                h.post(new Runnable() { @Override public void run() {
+                                    try { tx2.setText((q.length() > 0 ? q + "  " : "") + ext + "  " + sz + "  " + T("时长 ", "Dur ") + dur); } catch (Throwable ignored) {}
+                                }});
+                            } catch (Throwable ignored) {}
+                        }
+                    }).start();
+                    row.addView(col, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+
+                    // 整行点击切换选中
+                    row.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) {
+                            checked[realIdx] = !checked[realIdx]; cb.setChecked(checked[realIdx]);
+                            row.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                        }
+                    });
+                    row.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                    return row;
+                }
+            };
+            final android.widget.BaseAdapter adpAudio = new android.widget.BaseAdapter() {
+                @Override public int getCount() { return audIdx.size(); }
+                @Override public Object getItem(int p) { return audIdx.get(p); }
+                @Override public long getItemId(int p) { return p; }
+                @Override public android.view.View getView(final int p, android.view.View cv, android.view.ViewGroup parent) {
+                    final int realIdx = audIdx.get(p);
+                    android.widget.LinearLayout row;
+                    if (cv instanceof android.widget.LinearLayout) {
+                        row = (android.widget.LinearLayout) cv;
+                    } else {
+                        row = new android.widget.LinearLayout(act);
+                        row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                        row.setPadding(8, 8, 8, 8);
+                    }
+                    row.removeAllViews();
+                    final android.widget.CheckBox cb = new android.widget.CheckBox(act);
+                    cb.setChecked(checked[realIdx]);
+                    cb.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) { checked[realIdx] = cb.isChecked(); }
+                    });
+                    row.addView(cb, new android.widget.LinearLayout.LayoutParams(-2, -2));
+                    // ♪ 图标（不下载缩略图）
+                    final android.widget.TextView icon = new android.widget.TextView(act);
+                    icon.setText("\u266A");
+                    icon.setTextSize(26);
+                    icon.setGravity(android.view.Gravity.CENTER);
+                    icon.setBackgroundColor(0xFFF5F5F5);
+                    int th2 = (int)(48 * act.getResources().getDisplayMetrics().density);
+                    int tw2 = (int)(48 * act.getResources().getDisplayMetrics().density);
+                    row.addView(icon, new android.widget.LinearLayout.LayoutParams(tw2, th2));
+                    // 标题 + 详情
+                    android.widget.LinearLayout col = new android.widget.LinearLayout(act);
+                    col.setOrientation(android.widget.LinearLayout.VERTICAL);
+                    col.setPadding(8, 0, 0, 0);
+                    final String ext = parseExt(urls.get(realIdx), types.get(realIdx));
+                    final String dur = fmtDuration(vDur.get(realIdx));
+                    String ti = titles.get(realIdx);
+                    String titleLine = (ti == null || ti.isEmpty() ? shortUrl(urls.get(realIdx)) : ti);
+                    android.widget.TextView tx1 = new android.widget.TextView(act);
+                    tx1.setText(titleLine);
+                    tx1.setTextSize(14);
+                    tx1.setMaxLines(1);
+                    tx1.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    tx1.setTextColor(0xFF111111);
+                    col.addView(tx1, new android.widget.LinearLayout.LayoutParams(-1, -2));
+                    final android.widget.TextView tx2 = new android.widget.TextView(act);
+                    tx2.setTextSize(11);
+                    tx2.setTextColor(0xFF777777);
+                    tx2.setText(ext + "  " + T("时长 ", "Dur ") + dur);
+                    col.addView(tx2, new android.widget.LinearLayout.LayoutParams(-1, -2));
+                    android.widget.TextView tx3 = new android.widget.TextView(act);
+                    tx3.setText(urls.get(realIdx));
+                    tx3.setTextSize(10);
+                    tx3.setMaxLines(1);
+                    tx3.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    tx3.setTextColor(0xFF999999);
+                    col.addView(tx3, new android.widget.LinearLayout.LayoutParams(-1, -2));
+                    // 大小（后台 HEAD）
+                    new Thread(new Runnable() {
+                        @Override public void run() {
+                            try {
+                                final String sz = httpHeadSize(urls.get(realIdx));
+                                if (sz == null) return;
+                                android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                                h.post(new Runnable() { @Override public void run() {
+                                    try { tx2.setText(ext + "  " + sz + "  " + T("时长 ", "Dur ") + dur); } catch (Throwable ignored) {}
+                                }});
+                            } catch (Throwable ignored) {}
+                        }
+                    }).start();
+                    row.addView(col, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+                    // 整行点击切换选中
+                    row.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) {
+                            checked[realIdx] = !checked[realIdx]; cb.setChecked(checked[realIdx]);
+                            row.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                        }
+                    });
+                    row.setAlpha(checked[realIdx] ? 1f : 0.45f);
+                    return row;
+                }
+            };
+            listVideo.setAdapter(adpVideo);
+            listAudio.setAdapter(adpAudio);
+
+            // Tab 切换
+            final Runnable[] showPage = new Runnable[1];
+            showPage[0] = new Runnable() {
+                @Override public void run() {
+                    // 占位，下面重新赋值
+                }
+            };
+            final int[] curTab = new int[]{0};
+            showPage[0] = new Runnable() {
+                @Override public void run() {
+                    try {
+                        gridImages.setVisibility(curTab[0]==2 ? android.view.View.VISIBLE : android.view.View.GONE);
+                        listVideo.setVisibility(curTab[0]==0 ? android.view.View.VISIBLE : android.view.View.GONE);
+                        listAudio.setVisibility(curTab[0]==1 ? android.view.View.VISIBLE : android.view.View.GONE);
+                        tvTab1.setTextColor(curTab[0]==0 ? 0xFF1E88E5 : 0xFF666666);
+                        tvTab2.setTextColor(curTab[0]==1 ? 0xFF1E88E5 : 0xFF666666);
+                        tvTab3.setTextColor(curTab[0]==2 ? 0xFF1E88E5 : 0xFF666666);
+                    } catch (Throwable ignored) {}
+                }
+            };
+            tvTab1.setOnClickListener(new android.view.View.OnClickListener() { @Override public void onClick(android.view.View v) { curTab[0]=0; showPage[0].run(); } });
+            tvTab2.setOnClickListener(new android.view.View.OnClickListener() { @Override public void onClick(android.view.View v) { curTab[0]=1; showPage[0].run(); } });
+            tvTab3.setOnClickListener(new android.view.View.OnClickListener() { @Override public void onClick(android.view.View v) { curTab[0]=2; showPage[0].run(); } });
+
+            // 左右滑动切换 tab
+            final android.view.GestureDetector.SimpleOnGestureListener gl = new android.view.GestureDetector.SimpleOnGestureListener() {
+                @Override public boolean onDown(android.view.MotionEvent e) { return false; }
+                @Override public boolean onFling(android.view.MotionEvent e1, android.view.MotionEvent e2, float vx, float vy) {
+                    try {
+                        if (e1 == null || e2 == null) return false;
+                        float dx = e2.getX() - e1.getX();
+                        float dy = e2.getY() - e1.getY();
+                        if (Math.abs(dx) > Math.abs(dy) * 1.5f && Math.abs(dx) > 100) {
+                            if (dx < 0) curTab[0] = Math.min(2, curTab[0] + 1);
+                            else curTab[0] = Math.max(0, curTab[0] - 1);
+                            showPage[0].run();
+                            return true;
+                        }
+                    } catch (Throwable ignored) {}
+                    return false;
+                }
+            };
+            final android.view.GestureDetector gd = new android.view.GestureDetector(act, gl);
+            android.view.View.OnTouchListener tabTouch = new android.view.View.OnTouchListener() {
+                @Override public boolean onTouch(android.view.View v, android.view.MotionEvent ev) {
+                    try { return gd.onTouchEvent(ev); } catch (Throwable ignored) { return false; }
+                }
+            };
+            content.setOnTouchListener(tabTouch);
+            gridImages.setOnTouchListener(tabTouch);
+            listVideo.setOnTouchListener(tabTouch);
+            listAudio.setOnTouchListener(tabTouch);
+            showPage[0].run();
+
+            // 底部按钮：全选/取消全选 + 下载 + 取消
+            final android.widget.LinearLayout btnRow = new android.widget.LinearLayout(act);
+            btnRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            final android.widget.Button btnAll = new android.widget.Button(act);
+            final android.widget.Button btnDl = new android.widget.Button(act);
+            final android.widget.Button btnCancel = new android.widget.Button(act);
+            btnAll.setText(T("全选", "Select All"));
+            btnDl.setText(T("下载", "Download"));
+            btnCancel.setText(T("取消", "Cancel"));
+            android.widget.LinearLayout.LayoutParams b1p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+            android.widget.LinearLayout.LayoutParams b2p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+            android.widget.LinearLayout.LayoutParams b3p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+            btnRow.addView(btnAll, b1p); btnRow.addView(btnDl, b2p); btnRow.addView(btnCancel, b3p);
+            root.addView(btnRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
+
+            final boolean[] allSelected = new boolean[]{true};
+            btnAll.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    allSelected[0] = !allSelected[0];
+                    for (int i = 0; i < n; i++) checked[i] = allSelected[0];
+                    btnAll.setText(allSelected[0] ? T("全选", "Select All") : T("取消全选", "Deselect All"));
+                    gridAdp.notifyDataSetChanged();
+                    listVideo.invalidateViews(); listAudio.invalidateViews();
+                }
+            });
+            btnDl.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    java.util.List<Integer> sel = new java.util.ArrayList<Integer>();
+                    for (int i = 0; i < n; i++) if (checked[i]) sel.add(i);
+                    if (sel.isEmpty()) { toastShort(T("未选择任何资源", "Nothing selected")); return; }
+                    downloadMany(sel, urls, types, titles);
+                }
+            });
+            final android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(act)
                 .setTitle(title)
-                .setMultiChoiceItems(items, checked, new android.content.DialogInterface.OnMultiChoiceClickListener() {
-                    @Override public void onClick(android.content.DialogInterface dlg, int which, boolean isChecked) {
-                        if (which >= 0 && which < checked.length) checked[which] = isChecked;
-                    }
-                })
-                .setPositiveButton(T("全部下载", "Download All"), new android.content.DialogInterface.OnClickListener() {
-                    @Override public void onClick(android.content.DialogInterface dlg, int which) {
-                        for (int i = 0; i < n; i++) sniffDownload(urls.get(i), types.get(i), titles.get(i));
-                    }
-                })
-                .setNeutralButton(T("下载选中", "Download Selected"), new android.content.DialogInterface.OnClickListener() {
-                    @Override public void onClick(android.content.DialogInterface dlg, int which) {
-                        int c = 0;
-                        for (int i = 0; i < n; i++) if (checked[i]) { sniffDownload(urls.get(i), types.get(i), titles.get(i)); c++; }
-                        if (c == 0) toastShort(T("未选择任何资源", "No resource selected"));
-                    }
-                })
-                .setNegativeButton(T("取消", "Cancel"), null)
-                .show();
+                .setView(root)
+                .setCancelable(true)
+                .create();
+            btnCancel.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { try { dlg.dismiss(); } catch (Throwable ignored) {} }
+            });
+            dlg.show();
             return true;
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] showMediaDialog error: " + t);
             return false;
         }
+    }
+
+    /** 从 URL 后缀解析尺寸，如 @384w_216h_1c.webp -> 384x216 */
+    private String parseDim(String url) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("@(\\d+)w_(\\d+)h").matcher(url);
+            if (m.find()) return m.group(1) + "x" + m.group(2);
+            m = java.util.regex.Pattern.compile("[/_](\\d+)x(\\d+)[/._]").matcher(url);
+            if (m.find()) return m.group(1) + "x" + m.group(2);
+        } catch (Throwable ignored) {}
+        return "?";
+    }
+
+    /** HEAD 请求获取文件大小，返回 "1.2MB"/"350KB"/null */
+    private String httpHeadSize(String url) {
+        try {
+            java.net.URL u = new java.net.URL(url);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) u.openConnection();
+            conn.setRequestMethod("HEAD");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+            conn.setRequestProperty("Referer", url);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+            int code = conn.getResponseCode();
+            if (code == 200 || code == 206) {
+                long len = conn.getContentLengthLong();
+                conn.disconnect();
+                if (len > 0) return fmtSize(len);
+            } else if (code == 405) {
+                // HEAD 不支持则 GET 读前 8KB（只取 Content-Length）
+                conn.disconnect();
+                java.net.HttpURLConnection c2 = (java.net.HttpURLConnection) u.openConnection();
+                c2.setRequestMethod("GET");
+                c2.setConnectTimeout(5000); c2.setReadTimeout(5000);
+                c2.setRequestProperty("Range", "bytes=0-8191");
+                c2.setRequestProperty("Referer", url);
+                long len2 = c2.getContentLengthLong();
+                if (len2 > 0) { c2.disconnect(); return fmtSize(len2); }
+                long total = len2 + 0;
+                c2.disconnect();
+                if (total > 0) return fmtSize(total);
+            } else {
+                conn.disconnect();
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /** GET 下载字节（缩略图） */
+    private byte[] httpGetBytes(String url) {
+        try {
+            java.net.URL u = new java.net.URL(url);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) u.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(8000);
+            conn.setRequestProperty("Referer", url);
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+            int code = conn.getResponseCode();
+            if (code != 200) { conn.disconnect(); return null; }
+            java.io.InputStream is = conn.getInputStream();
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int r;
+            while ((r = is.read(buf)) > 0) bos.write(buf, 0, r);
+            is.close(); conn.disconnect();
+            return bos.toByteArray();
+        } catch (Throwable ignored) { return null; }
+    }
+
+    /** 采样解码 Bitmap（避免 OOM） */
+    private android.graphics.Bitmap decodeSampledBitmap(byte[] data, int reqW, int reqH) {
+        try {
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeByteArray(data, 0, data.length, o);
+            int bw = o.outWidth, bh = o.outHeight;
+            int sample = 1;
+            while (bw / sample > reqW * 2 && bh / sample > reqH * 2) sample *= 2;
+            android.graphics.BitmapFactory.Options o2 = new android.graphics.BitmapFactory.Options();
+            o2.inSampleSize = sample;
+            return android.graphics.BitmapFactory.decodeByteArray(data, 0, data.length, o2);
+        } catch (Throwable ignored) { return null; }
+    }
+
+    /** 格式化大小 */
+    private String fmtSize(long len) {
+        try {
+            if (len >= 1048576) return String.format("%.1fMB", len / 1048576.0);
+            return (len / 1024) + "KB";
+        } catch (Throwable ignored) { return "?"; }
     }
 
     private void sniffDownload(String url, String type, String title) {
