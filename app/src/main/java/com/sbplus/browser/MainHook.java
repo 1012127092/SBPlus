@@ -7370,6 +7370,54 @@ private static final String[] RANDOM_UAS = new String[]{
                               final java.util.List<String> types,
                               final java.util.List<String> titles) {
         try {
+            // ---- 需求2: 分段(m4s)自动识别并合并为完整文件 ----
+            try {
+                java.util.List<java.util.List<Integer>> groups = groupSegments(idxList, urls, types);
+                if (groups != null && !groups.isEmpty()) {
+                    int merged = groups.size();
+                    final java.util.List<java.util.List<Integer>> fg = groups;
+                    final java.util.List<String> fUrls = urls, fTypes = types, fTitles = titles;
+                    final java.util.List<Integer> allSel = new java.util.ArrayList<Integer>(idxList);
+                    new Thread(new Runnable() {
+                        @Override public void run() {
+                            final int[] ok = new int[]{0};
+                            for (java.util.List<Integer> g : fg) {
+                                try {
+                                    java.io.File out = downloadAndMergeSegments(g, fUrls, fTypes, fTitles);
+                                    if (out != null) ok[0]++;
+                                } catch (Throwable t) {
+                                    XposedBridge.log("[SBPlus] merge segment group error: " + t);
+                                }
+                            }
+                            final int done = ok[0];
+                            // 被合并的分片索引去除后，剩余单独下载
+                            java.util.Set<Integer> mergedSet = new java.util.HashSet<Integer>();
+                            for (java.util.List<Integer> g : fg) for (Integer i : g) mergedSet.add(i);
+                            final int remain = allSel.size() - mergedSet.size();
+                            android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                            h.post(new Runnable() { @Override public void run() {
+                                if (done > 0) {
+                                    toastShort(T("分段合成完成: " + done + " 个文件", "Merged: " + done + " file(s)"));
+                                } else {
+                                    toastShort(T("分段合成失败", "Merge failed"));
+                                }
+                            }});
+                            // 剩余非分段项仍逐一下载
+                            if (remain > 0) {
+                                java.util.List<Integer> rest = new java.util.ArrayList<Integer>();
+                                for (Integer i : allSel) if (!mergedSet.contains(i)) rest.add(i);
+                                for (int i : rest) {
+                                    try { sniffDownload(fUrls.get(i), fTypes.get(i), fTitles.get(i)); } catch (Throwable ignored) {}
+                                }
+                            }
+                            XposedBridge.log("[SBPlus] segments merged groups=" + merged + " ok=" + done + " remain=" + remain);
+                        }
+                    }).start();
+                    return;
+                }
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] segment grouping error: " + t);
+            }
             int c = idxList.size();
             if (c <= 10) {
                 for (int i : idxList) {
@@ -7450,7 +7498,136 @@ private static final String[] RANDOM_UAS = new String[]{
 
     
     /** 展示嗅探结果对话框；用户选择媒体后 dispatch 到第三方下载器。 */
-    private boolean showMediaDialog(String json) {
+    /** 需求2: 识别分段组。返回 group 列表（每个 group 是 idxList 中属于同一分段视频的多个索引，按序号排序）。*/
+    private java.util.List<java.util.List<Integer>> groupSegments(final java.util.List<Integer> idxList,
+                                                                  final java.util.List<String> urls,
+                                                                  final java.util.List<String> types) {
+        java.util.List<java.util.List<Integer>> result = new java.util.ArrayList<java.util.List<Integer>>();
+        try {
+            // map: base -> ordered map of seq->idx
+            java.util.Map<String, java.util.TreeMap<Integer, Integer>> map = new java.util.LinkedHashMap<String, java.util.TreeMap<Integer, Integer>>();
+            for (int i : idxList) {
+                if (i < 0 || i >= urls.size()) continue;
+                String url = urls.get(i);
+                String[] sb = segmentInfo(url);
+                String base = sb[0];
+                if (base == null) continue;
+                int seq = 0;
+                try { seq = Integer.parseInt(sb[1]); } catch (Throwable ignored) { seq = 0; }
+                java.util.TreeMap<Integer, Integer> m = map.get(base);
+                if (m == null) { m = new java.util.TreeMap<Integer, Integer>(); map.put(base, m); }
+                m.put(seq, Integer.valueOf(i));
+            }
+            for (java.util.Map.Entry<String, java.util.TreeMap<Integer, Integer>> e : map.entrySet()) {
+                java.util.TreeMap<Integer, Integer> m = e.getValue();
+                // 至少 2 个分片才合并
+                if (m.size() < 2) continue;
+                // 必须能按 1,2,3... 连续排序 (允许 0,1,2 或 1,2,3)
+                java.util.List<Integer> seqs = new java.util.ArrayList<Integer>(m.keySet());
+                java.util.List<Integer> group = new java.util.ArrayList<Integer>();
+                for (Integer k : seqs) group.add(m.get(k));
+                if (group.size() >= 2) result.add(group);
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] groupSegments error: " + t);
+        }
+        return result;
+    }
+
+    /** 返回 {base, seq}。若 URL 是分段 m4s 则 base!=null；否则 base==null。 */
+    private String[] segmentInfo(String url) {
+        try {
+            if (url == null) return new String[]{null, "0"};
+            String path = url.split("[?#]")[0];
+            String lower = path.toLowerCase();
+            if (!lower.endsWith(".m4s") && !lower.endsWith(".ts") && !lower.endsWith(".mp4") && !lower.endsWith(".m4v")) {
+                return new String[]{null, "0"};
+            }
+            // 去掉扩展名后，找末尾的序号模式: -N / _N
+            String noExt = path.substring(0, path.lastIndexOf('.'));
+            // 匹配末尾 "-数字" 或 "_数字" (可以是 _数字_数字 等，取最后一段数字)
+            java.util.regex.Matcher mm = java.util.regex.Pattern.compile("([-_])(\\d+)$").matcher(noExt);
+            if (mm.find()) {
+                String base = noExt.substring(0, mm.start());
+                String seq = mm.group(2);
+                // 排除: base 为空 或 base 本身就是纯数字编号（如 foo/123/ ）不构成分段
+                if (base.isEmpty()) return new String[]{null, "0"};
+                return new String[]{base, seq};
+            }
+            return new String[]{null, "0"};
+        } catch (Throwable t) {
+            return new String[]{null, "0"};
+        }
+    }
+
+    /** 下载一个分段组的所有分片，按顺序拼接保存到 Download/SBPlus/*。返回输出文件或 null。 */
+    private java.io.File downloadAndMergeSegments(final java.util.List<Integer> group,
+                                                  final java.util.List<String> urls,
+                                                  final java.util.List<String> types,
+                                                  final java.util.List<String> titles) {
+        try {
+            if (group == null || group.isEmpty()) return null;
+            // 输出文件名: 取组内第一个 title，或用基础名
+            String baseName = null;
+            String ext = ".m4s";
+            for (int i : group) {
+                if (i >= 0 && i < titles.size() && titles.get(i) != null && !titles.get(i).isEmpty()) {
+                    baseName = titles.get(i);
+                    break;
+                }
+            }
+            if (baseName == null || baseName.isEmpty()) {
+                baseName = sanitizeFileName(urls.get(group.get(0)));
+                int q = baseName.indexOf('.');
+                if (q > 0) baseName = baseName.substring(0, q);
+            } else {
+                baseName = sanitizeFileName(baseName);
+            }
+            // 判断扩展名 (允许 .ts / .mp4 分段)
+            try { String u = urls.get(group.get(0)); String p = u.split("[?#]")[0].toLowerCase(); if (p.endsWith(".ts")) ext=".ts"; else if (p.endsWith(".mp4")||p.endsWith(".m4v")) ext=".mp4"; } catch (Throwable ignored) {}
+            java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
+            if (!dir.exists()) dir.mkdirs();
+            java.io.File out = new java.io.File(dir, baseName + ext);
+            int n = 1;
+            while (out.exists()) { out = new java.io.File(dir, baseName + "_" + n + ext); n++; }
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
+            long total = 0;
+            try {
+                for (int i : group) {
+                    if (i < 0 || i >= urls.size()) continue;
+                    String u = urls.get(i);
+                    byte[] bytes = httpGetBytes(u);
+                    if (bytes == null || bytes.length == 0) {
+                        XposedBridge.log("[SBPlus] merge: empty segment " + u);
+                        continue;
+                    }
+                    // 按序拼接所有分片（分段 ts/m4s 可直接二进制拼接）
+                    fos.write(bytes);
+                    total += bytes.length;
+                }
+                fos.flush();
+            } finally {
+                fos.close();
+            }
+            if (total <= 0) { out.delete(); return null; }
+            // 通知媒体库扫描
+            try {
+                if (sAppContext != null) {
+                    android.content.Intent scan = new android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                    scan.setData(android.net.Uri.fromFile(out));
+                    sAppContext.sendBroadcast(scan);
+                }
+            } catch (Throwable ignored) {}
+            XposedBridge.log("[SBPlus] merged segment -> " + out.getAbsolutePath() + " (" + total + " bytes, " + group.size() + " parts)");
+            return out;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] downloadAndMergeSegments error: " + t);
+            return null;
+        }
+    }
+
+private boolean showMediaDialog(String json) {
         try {
             XposedBridge.log("[SBPlus] DIALOG enter len=" + (json == null ? -1 : json.length()));
             final java.util.List<String> urls = new java.util.ArrayList<String>();
