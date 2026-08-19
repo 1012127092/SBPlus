@@ -7585,7 +7585,7 @@ private void showUaGroupDialog(final Context ctx) {
         "}catch(e){}}" +
         "function scanNow(){try{" +
         "scanDoc(document,false);" +
-        "try{var allText=document.documentElement.outerHTML;var mm=allText.match(/(https?):\\/\\/[^\"' \\s<>]+/g)||[];for(var mi=0;mi<mm.length;mi++){try{var u2=mm[mi];var t3=typeOf(u2);if(t3)add(u2,t3,'');}catch(ee){}}if(typeof player_aaaa!=='undefined'&&player_aaaa&&player_aaaa.url){var pu=player_aaaa.url;if(pu&&(typeof pu==='string')){if(pu.indexOf('//')===0)pu='https:'+pu;var pt=typeOf(pu);if(pt)add(pu,pt,'');}}}catch(e){}" +
+        "try{var scs=document.querySelectorAll('script');for(var si=0;si<scs.length;si++){var st=scs[si].textContent||'';if(st.indexOf('m3u8')<0&&st.indexOf('.mp4')<0&&st.indexOf('.ts')<0&&st.indexOf('m4s')<0)continue;var sp=st.split(/['\"]/);for(var sj=0;sj<sp.length;sj++){var sv=sp[sj];if(sv.length<8||sv.length>500)continue;if((sv.indexOf('m3u8')>=0||sv.indexOf('.mp4')>=0||sv.indexOf('.ts')>=0||sv.indexOf('m4s')>=0)&&(sv.indexOf('http://')>=0||sv.indexOf('https://')>=0||sv.indexOf('//')>=0)){var su=sv.replace(/\\\\/g,'');if(su.indexOf('//')===0)su='https:'+su;var st2=typeOf(su);if(st2)add(su,st2,'');}}}}catch(e){}" +
         "var rs=performance.getEntriesByType('resource');" +
         "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;var t=typeOf(r.name);if(t){add(r.name,t,'');}}" +
         "}catch(e){}}" +
