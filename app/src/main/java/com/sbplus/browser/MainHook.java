@@ -7570,17 +7570,21 @@ private void showUaGroupDialog(final Context ctx) {
         "try{var lo=u.toLowerCase();var x=lo.split(/[?#]/)[0];var q=lo.indexOf('?')>=0?lo.substring(lo.indexOf('?')+1):'';" +
         "if(/\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$/.test(x))return 'image';" +
         "if(/\\.(mp3|m4a|aac|ogg|opus|wav|flac)$/.test(x))return 'audio';" +
-        "if(/\\.(mp4|m4v|webm|mkv|flv|mov|ts|m4s|mpd)$/.test(x)){if(/audio|mime=audio|audio\\/mp4|audio\\/mpeg/.test(q))return 'audio';return 'video';}" +
+        "if(/\\.(mp4|m4v|webm|mkv|flv|mov|ts|m4s|mpd|m3u8)$/.test(x)){if(/audio|mime=audio|audio\\/mp4|audio\\/mpeg/.test(q))return 'audio';return 'video';}" +
         "if(/upgcx\\/|bilivideo\\.com\\//.test(lo)&&/\\.m4s|\\.mp4|\\.ts/.test(lo))return 'video';" +
         "if(/\\/audio\\//.test(lo))return 'audio';" +
         "return '';}catch(e){return '';}}" +
-        "function scanNow(){try{" +
-        "var imgs=document.querySelectorAll('img');" +
+        "function scanDoc(doc,isIframe){try{" +
+        "var imgs=doc.querySelectorAll('img');" +
         "for(var mi=0;mi<imgs.length;mi++){var ig=imgs[mi];var isrc=ig.currentSrc||ig.src||(ig.getAttribute&&ig.getAttribute('data-src'));if(isrc)add(isrc,'image',(ig.alt||''));}" +
-        "var alinks=document.querySelectorAll('a[href]');" +
+        "var alinks=doc.querySelectorAll('a[href]');" +
         "for(var ai=0;ai<alinks.length;ai++){var ah=alinks[ai].getAttribute('href');if(ah&&typeOf(ah)==='image'){add(ah,'image','');}}" +
-        "var els=document.querySelectorAll('video,audio');" +
-        "for(var i=0;i<els.length;i++){var e=els[i];var s=e.currentSrc||e.src;if(s)add(s,(e.tagName==='VIDEO'?'video':'audio'),(e.title||document.title),(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)add(so,(e.tagName==='VIDEO'?'video':'audio'),'',(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));}}" +
+        "var els=doc.querySelectorAll('video,audio');" +
+        "for(var i=0;i<els.length;i++){var e=els[i];var s=e.currentSrc||e.src;if(s)add(s,(e.tagName==='VIDEO'?'video':'audio'),(e.title||doc.title),(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)add(so,(e.tagName==='VIDEO'?'video':'audio'),'',(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));}}" +
+        "if(!isIframe){var iframes=doc.querySelectorAll('iframe');for(var fi=0;fi<iframes.length;fi++){try{var ifrm=iframes[fi];if(ifrm.contentDocument){scanDoc(ifrm.contentDocument,true);}}catch(e){}}}" +
+        "}catch(e){}}" +
+        "function scanNow(){try{" +
+        "scanDoc(document,false);" +
         "var rs=performance.getEntriesByType('resource');" +
         "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;var t=typeOf(r.name);if(t){add(r.name,t,'');}}" +
         "}catch(e){}}" +
