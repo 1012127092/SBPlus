@@ -45,6 +45,8 @@ public class SBPlusSettingsFragment extends Fragment {
     private EditText mPkgInput;
     private EditText mThreadsInput;
     private EditText mParallelInput;
+    private android.widget.RadioButton mRbInternal;
+    private android.widget.RadioButton mRbExternal;
     private TextView mStatusText;
 
     @Nullable
@@ -107,9 +109,9 @@ public class SBPlusSettingsFragment extends Fragment {
         hintLp.topMargin = dp(4);
         root.addView(hint, hintLp);
 
-        // ---- Download concurrency settings ----
+        // ---- 资源嗅探 / 下载设置 ----
         TextView sec2 = new TextView(ctx);
-        sec2.setText("下载设置");
+        sec2.setText("资源嗅探");
         sec2.setTextColor(Color.rgb(0x1B, 0x1B, 0x1B));
         sec2.setTextSize(14);
         sec2.setTypeface(Typeface.DEFAULT_BOLD);
@@ -162,6 +164,39 @@ public class SBPlusSettingsFragment extends Fragment {
         piLp.topMargin = dp(4);
         root.addView(mParallelInput, piLp);
 
+        // 下载方式切换 (内置 vs 外部)
+        TextView modeLabel = new TextView(ctx);
+        modeLabel.setText("下载方式");
+        modeLabel.setTextColor(Color.rgb(0x55, 0x55, 0x55));
+        modeLabel.setTextSize(12);
+        LinearLayout.LayoutParams mlLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlLp.topMargin = dp(12);
+        modeLabel.setPadding(0, 0, 0, dp(2));
+        root.addView(modeLabel, mlLp);
+
+        android.widget.RadioGroup modeGroup = new android.widget.RadioGroup(ctx);
+        modeGroup.setOrientation(android.widget.RadioGroup.VERTICAL);
+        mRbInternal = new android.widget.RadioButton(ctx);
+        mRbInternal.setText("内置下载器（多线程 + 转 MP4，推荐）");
+        modeGroup.addView(mRbInternal);
+        mRbExternal = new android.widget.RadioButton(ctx);
+        mRbExternal.setText("转到外部下载器（转交给下方设置的包名）");
+        modeGroup.addView(mRbExternal);
+        LinearLayout.LayoutParams mgLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mgLp.topMargin = dp(4);
+        root.addView(modeGroup, mgLp);
+
+        // 下载管理入口
+        final Button dlListBtn = new Button(ctx);
+        dlListBtn.setText("打开下载列表");
+        dlListBtn.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams dllLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dllLp.topMargin = dp(12);
+        root.addView(dlListBtn, dllLp);
+
         // Save button
         Button save = new Button(ctx);
         save.setText("保存");
@@ -179,6 +214,9 @@ public class SBPlusSettingsFragment extends Fragment {
         mPkgInput.setText(prefs.getString(KEY_DOWNLOADER_PACKAGE, DEFAULT_ADM_PACKAGE));
         mThreadsInput.setText(String.valueOf(prefs.getInt(KEY_DL_THREADS, 16)));
         mParallelInput.setText(String.valueOf(prefs.getInt(KEY_DL_PARALLEL, 2)));
+        String curMode = prefs.getString("dl_mode", "internal");
+        mRbExternal.setChecked("external".equals(curMode));
+        mRbInternal.setChecked(!"external".equals(curMode));
         refreshStatus();
 
         save.setOnClickListener(new View.OnClickListener() {
@@ -196,13 +234,27 @@ public class SBPlusSettingsFragment extends Fragment {
                 } catch (NumberFormatException ignored) {}
                 threads = Math.max(1, Math.min(32, threads));
                 parallel = Math.max(1, Math.min(10, parallel));
+                String mode = mRbExternal.isChecked() ? "external" : "internal";
                 SharedPreferences.Editor ed = prefs.edit();
                 ed.putString(KEY_DOWNLOADER_PACKAGE, p);
                 ed.putInt(KEY_DL_THREADS, threads);
                 ed.putInt(KEY_DL_PARALLEL, parallel);
+                ed.putString("dl_mode", mode);
                 ed.commit();
                 Toast.makeText(ctx, "已保存", Toast.LENGTH_SHORT).show();
                 refreshStatus();
+            }
+        });
+
+        dlListBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                try {
+                    android.content.Intent it = new android.content.Intent(
+                            "com.sbplus.browser.ACTION_SHOW_DOWNLOADS");
+                    it.setPackage(requireContext().getPackageName());
+                    requireContext().sendBroadcast(it);
+                } catch (Throwable ignored) {}
             }
         });
 
@@ -222,7 +274,8 @@ public class SBPlusSettingsFragment extends Fragment {
                 + "下载桥：已启用\n"
                 + "当前下载器：" + pkg + "\n"
                 + "下载线程：" + threads + "\n"
-                + "并行任务：" + parallel + "\n\n"
+                + "并行任务：" + parallel + "\n"
+                + "下载方式：" + ("external".equals(prefs.getString("dl_mode","internal")) ? "外部下载器" : "内置下载器") + "\n\n"
                 + "修改后点击「保存」，重启浏览器生效。");
     }
 

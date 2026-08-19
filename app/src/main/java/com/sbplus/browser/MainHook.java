@@ -9433,30 +9433,6 @@ private boolean showMediaDialog(String json) {
             btnRow.addView(btnRefresh, b0p); btnRow.addView(btnAll, b1p); btnRow.addView(btnDl, b2p); btnRow.addView(btnCancel, b3p);
             root.addView(btnRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
 
-            // 第二行: 下载设置 + 下载管理入口
-            try {
-                final android.widget.LinearLayout setRow = new android.widget.LinearLayout(act);
-                setRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-                final android.widget.Button btnSettings = new android.widget.Button(act);
-                final android.widget.Button btnDlList = new android.widget.Button(act);
-                btnSettings.setText(T("⚙ 下载设置", "⚙ Settings"));
-                btnDlList.setText(T("📥 下载管理", "📥 Downloads"));
-                btnSettings.setTextSize(13); btnDlList.setTextSize(13);
-                android.widget.LinearLayout.LayoutParams sp1 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
-                android.widget.LinearLayout.LayoutParams sp2 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
-                sp1.setMargins(0, dp(act,6), dp(act,4), 0);
-                sp2.setMargins(dp(act,4), dp(act,6), 0, 0);
-                setRow.addView(btnSettings, sp1);
-                setRow.addView(btnDlList, sp2);
-                root.addView(setRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
-                btnSettings.setOnClickListener(new android.view.View.OnClickListener() {
-                    @Override public void onClick(android.view.View v) { try { showDownloadSettingsDialog(act); } catch (Throwable t) { XposedBridge.log("[SBPlus] settings dlg: " + t); } }
-                });
-                btnDlList.setOnClickListener(new android.view.View.OnClickListener() {
-                    @Override public void onClick(android.view.View v) { try { showDownloadList(); } catch (Throwable t) { XposedBridge.log("[SBPlus] dllist dlg: " + t); } }
-                });
-            } catch (Throwable ignored) {}
-
             final boolean[] allSelected = new boolean[]{false};
             btnAll.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) {
