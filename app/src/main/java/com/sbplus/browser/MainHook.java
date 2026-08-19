@@ -7585,6 +7585,7 @@ private void showUaGroupDialog(final Context ctx) {
         "}catch(e){}}" +
         "function scanNow(){try{" +
         "scanDoc(document,false);" +
+        "try{var allText=document.documentElement.outerHTML;var mm=allText.match(/(https?):\\/\\/[^\"' \\s<>]+/g)||[];for(var mi=0;mi<mm.length;mi++){try{var u2=mm[mi];var t3=typeOf(u2);if(t3)add(u2,t3,'');}catch(ee){}}if(typeof player_aaaa!=='undefined'&&player_aaaa&&player_aaaa.url){var pu=player_aaaa.url;if(pu&&(typeof pu==='string')){if(pu.indexOf('//')===0)pu='https:'+pu;var pt=typeOf(pu);if(pt)add(pu,pt,'');}}}catch(e){}" +
         "var rs=performance.getEntriesByType('resource');" +
         "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;var t=typeOf(r.name);if(t){add(r.name,t,'');}}" +
         "}catch(e){}}" +
