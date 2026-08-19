@@ -7585,7 +7585,7 @@ private void showUaGroupDialog(final Context ctx) {
         "}catch(e){}}" +
         "function scanNow(){try{" +
         "scanDoc(document,false);" +
-        "try{var scs=document.querySelectorAll('script');for(var si=0;si<scs.length;si++){var st=scs[si].textContent||'';if(st.indexOf('m3u8')<0&&st.indexOf('.mp4')<0&&st.indexOf('.ts')<0&&st.indexOf('m4s')<0)continue;var sp=st.split(/['\"]/);for(var sj=0;sj<sp.length;sj++){var sv=sp[sj];if(sv.length<8||sv.length>500)continue;if((sv.indexOf('m3u8')>=0||sv.indexOf('.mp4')>=0||sv.indexOf('.ts')>=0||sv.indexOf('m4s')>=0)&&(sv.indexOf('http://')>=0||sv.indexOf('https://')>=0||sv.indexOf('//')>=0)){var su=sv.replace(/\\\\/g,'');if(su.indexOf('//')===0)su='https:'+su;var st2=typeOf(su);if(st2)add(su,st2,'');}}}}catch(e){}" +
+        "try{var scs=document.querySelectorAll('script');for(var si=0;si<scs.length;si++){var st=scs[si].textContent||'';if(st.indexOf('m3u8')<0&&st.indexOf('.mp4')<0&&st.indexOf('.ts')<0&&st.indexOf('m4s')<0)continue;var sp=st.split(/['\"]/);for(var sj=0;sj<sp.length;sj++){var sv=sp[sj];if(sv.length<10||sv.length>500)continue;if(sv.indexOf('m3u8')<0&&sv.indexOf('.mp4')<0&&sv.indexOf('.ts')<0&&sv.indexOf('m4s')<0)continue;var su=sv.replace(/\\\\/g,'');if(su.indexOf('http://')!==0&&su.indexOf('https://')!==0){if(su.indexOf('//')===0)su='https:'+su;else if(su.indexOf('/')===0)su='https:'+su;else continue;}var st2=typeOf(su);if(st2)add(su,st2,'');}}}catch(e){}" +
         "var rs=performance.getEntriesByType('resource');" +
         "for(var k=0;k<rs.length;k++){var r=rs[k];if(!r||!r.name)continue;var t=typeOf(r.name);if(t){add(r.name,t,'');}}" +
         "}catch(e){}}" +
