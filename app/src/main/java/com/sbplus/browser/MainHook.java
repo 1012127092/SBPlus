@@ -322,6 +322,8 @@ private static final String[] RANDOM_UAS = new String[]{
     // 资源嗅探状态：JS 回调写入，主线程等待读取
     private static volatile String sSniffedMediaJson = null;
     private static volatile boolean sSniffPending = false;
+    /** 网络层嗅探收集的媒体 URL 列表（线程安全）。 */
+    private static final java.util.Set<String> sNetworkSniffedUrls = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<String>());
     private static volatile android.app.Activity sSniffActivity = null;
     private static final Object sSniffLock = new Object();
     @Override
@@ -367,6 +369,7 @@ private static final String[] RANDOM_UAS = new String[]{
         hookVideoBackground(lpparam.classLoader);
         hookUserscript(lpparam.classLoader);
         hookUserscriptToolbar(lpparam.classLoader);
+    hookNetworkSniff(lpparam.classLoader);
     }
 
     private static void copyFile(java.io.File src, java.io.File dst) throws Exception {
@@ -8064,6 +8067,8 @@ private boolean showMediaDialog(String json) {
             final java.util.List<Integer> vH = new java.util.ArrayList<Integer>();
             final java.util.List<Double> vDur = new java.util.ArrayList<Double>();
             int videoCount = 0, audioCount = 0, imageCount = 0;
+            // 合并网络层嗅探的 URL
+            mergeNetworkSniffedUrls(urls, types, titles);
             try {
                 String s = json;
                 try { s = s.replace("\\\"", "\""); } catch (Throwable ignored) {}
@@ -10200,5 +10205,110 @@ private boolean showMediaDialog(String json) {
                     + " cookie=" + (cookie == null ? "null" : "***(" + cookie.length() + " chars)");
         }
     }
+    /** 网络层嗅探：hook 底层网络请求，收集所有媒体资源 URL（包括 iframe 内的）。 */
+    private void hookNetworkSniff(ClassLoader cl) {
+        try {
+            // Hook android.webkit.WebViewClient（三星浏览器基于 WebView）
+            Class<?> webViewClientCls = android.webkit.WebViewClient.class;
+            
+            // Hook shouldInterceptRequest - 拦截所有资源请求
+            XposedHelpers.findAndHookMethod(webViewClientCls, "shouldInterceptRequest",
+                    android.webkit.WebView.class, android.webkit.WebResourceRequest.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                if (!isSniffEnabled()) return;
+                                android.webkit.WebResourceRequest request = (android.webkit.WebResourceRequest) param.args[1];
+                                if (request == null) return;
+                                android.net.Uri uri = request.getUrl();
+                                if (uri == null) return;
+                                String url = uri.toString();
+                                if (url == null || url.isEmpty()) return;
+                                
+                                // 判断是否是媒体资源
+                                String type = detectMediaType(url);
+                                if (type != null && !type.isEmpty()) {
+                                    sNetworkSniffedUrls.add(url);
+                                    XposedBridge.log("[SBPlus] network sniff: " + type + " -> " + url.substring(0, Math.min(100, url.length())));
+                                }
+                            } catch (Throwable t) {
+                                // 静默失败，不影响正常浏览
+                            }
+                        }
+                    });
+            
+            XposedBridge.log("[SBPlus] WebViewClient.shouldInterceptRequest hooked for network sniff");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] hookNetworkSniff failed: " + t);
+        }
+    }
+    
+    /** 检测 URL 是否是媒体资源，返回类型（video/audio/image）或 null。 */
+    private String detectMediaType(String url) {
+        try {
+            if (url == null || url.isEmpty()) return null;
+            String lower = url.toLowerCase();
+            
+            // 过滤掉明显的非媒体资源
+            if (lower.startsWith("data:") || lower.startsWith("blob:")) return null;
+            if (lower.contains("/api/") || lower.contains("/analytics")) return null;
+            if (lower.contains(".css") || lower.contains(".js") || lower.contains(".json")) return null;
+            if (lower.contains(".woff") || lower.contains(".ttf") || lower.contains(".eot")) return null;
+            
+            // 提取路径（去掉查询参数）
+            String path = lower.split("[?#]")[0];
+            
+            // 视频格式
+            if (path.matches(".*\.(mp4|m4v|webm|mkv|flv|mov|avi|wmv|mpg|mpeg|3gp|m4s|ts|mpd)$")) {
+                return "video";
+            }
+            
+            // 音频格式
+            if (path.matches(".*\.(mp3|m4a|aac|ogg|opus|wav|flac|wma)$")) {
+                return "audio";
+            }
+            
+            // 图片格式
+            if (path.matches(".*\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$")) {
+                return "image";
+            }
+            
+            // 特殊域名识别（B站、优酷等）
+            if (lower.contains("bilivideo.com") && (lower.contains(".m4s") || lower.contains(".mp4"))) {
+                return "video";
+            }
+            
+            return null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+    
+    /** 合并网络层嗅探的 URL 到 showMediaDialog 的数据中。 */
+    private void mergeNetworkSniffedUrls(java.util.List<String> urls, java.util.List<String> types, java.util.List<String> titles) {
+        try {
+            synchronized (sNetworkSniffedUrls) {
+                for (String url : sNetworkSniffedUrls) {
+                    // 去重：如果 JS 嗅探已收集过，跳过
+                    if (urls.contains(url)) continue;
+                    
+                    String type = detectMediaType(url);
+                    if (type != null) {
+                        urls.add(url);
+                        types.add(type);
+                        titles.add(""); // 网络层嗅探没有 title
+                    }
+                }
+                
+                // 清空收集列表，为下次嗅探准备
+                sNetworkSniffedUrls.clear();
+            }
+            XposedBridge.log("[SBPlus] merged network sniffed URLs: " + sNetworkSniffedUrls.size());
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] mergeNetworkSniffedUrls error: " + t);
+        }
+    }
+
 }
 
