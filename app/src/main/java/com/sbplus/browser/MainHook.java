@@ -10208,88 +10208,40 @@ private boolean showMediaDialog(String json) {
     /** 网络层嗅探：hook 底层网络请求，收集所有媒体资源 URL（包括 iframe 内的）。 */
     private void hookNetworkSniff(ClassLoader cl) {
         try {
-            // 策略1: Hook WebResourceResponse 创建（更底层）
-            XposedHelpers.findAndHookConstructor(android.webkit.WebResourceResponse.class,
-                    String.class, String.class, java.io.InputStream.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            try {
-                                if (!isSniffEnabled()) return;
-                                String mimeType = (String) param.args[0];
-                                if (mimeType != null && (mimeType.startsWith("video/") || 
-                                        mimeType.startsWith("audio/"))) {
-                                    // 记录媒体类型被加载
-                                    XposedBridge.log("[SBPlus] WebResourceResponse created: " + mimeType);
+            // Hook WebViewClient.shouldInterceptRequest - WebView 加载所有资源的入口
+            // 这个方法会拦截主框架和所有 iframe 的资源请求
+            XposedHelpers.findAndHookMethod(
+                android.webkit.WebViewClient.class,
+                "shouldInterceptRequest",
+                android.webkit.WebView.class,
+                android.webkit.WebResourceRequest.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            if (!isSniffEnabled()) return;
+                            
+                            android.webkit.WebResourceRequest request = 
+                                (android.webkit.WebResourceRequest) param.args[1];
+                            
+                            if (request != null && request.getUrl() != null) {
+                                String url = request.getUrl().toString();
+                                String type = detectMediaType(url);
+                                
+                                if (type != null && !type.isEmpty()) {
+                                    sNetworkSniffedUrls.add(url);
+                                    XposedBridge.log("[SBPlus] WebView intercept: " + type + " -> " + 
+                                            url.substring(0, Math.min(100, url.length())));
                                 }
-                            } catch (Throwable t) {
-                                // 静默
                             }
+                        } catch (Throwable t) {
+                            // 静默
                         }
-                    });
-            
-            // 策略2: Hook HttpURLConnection.getInputStream() (具体实现类)
-            XposedHelpers.findAndHookMethod(java.net.HttpURLConnection.class, "getInputStream", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    try {
-                        if (!isSniffEnabled()) return;
-                        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) param.thisObject;
-                        java.net.URL url = conn.getURL();
-                        if (url != null) {
-                            String urlStr = url.toString();
-                            String contentType = conn.getContentType();
-                            String type = detectMediaType(urlStr);
-                            // 也检查 Content-Type
-                            if (type == null && contentType != null) {
-                                String ctLower = contentType.toLowerCase();
-                                if (ctLower.startsWith("video/")) type = "video";
-                                else if (ctLower.startsWith("audio/")) type = "audio";
-                                else if (ctLower.contains("mpegurl") || ctLower.contains("x-mpegurl")) type = "video";
-                            }
-                            if (type != null && !type.isEmpty()) {
-                                sNetworkSniffedUrls.add(urlStr);
-                                XposedBridge.log("[SBPlus] HttpURLConnection: " + type + " -> " + 
-                                        urlStr.substring(0, Math.min(100, urlStr.length())));
-                            }
-                        }
-                    } catch (Throwable t) {
-                        // 静默
                     }
                 }
-            });
+            );
             
-            // 策略3: Hook HttpsURLConnection.getInputStream()
-            XposedHelpers.findAndHookMethod(javax.net.ssl.HttpsURLConnection.class, "getInputStream", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    try {
-                        if (!isSniffEnabled()) return;
-                        javax.net.ssl.HttpsURLConnection conn = (javax.net.ssl.HttpsURLConnection) param.thisObject;
-                        java.net.URL url = conn.getURL();
-                        if (url != null) {
-                            String urlStr = url.toString();
-                            String contentType = conn.getContentType();
-                            String type = detectMediaType(urlStr);
-                            if (type == null && contentType != null) {
-                                String ctLower = contentType.toLowerCase();
-                                if (ctLower.startsWith("video/")) type = "video";
-                                else if (ctLower.startsWith("audio/")) type = "audio";
-                                else if (ctLower.contains("mpegurl") || ctLower.contains("x-mpegurl")) type = "video";
-                            }
-                            if (type != null && !type.isEmpty()) {
-                                sNetworkSniffedUrls.add(urlStr);
-                                XposedBridge.log("[SBPlus] HttpsURLConnection: " + type + " -> " + 
-                                        urlStr.substring(0, Math.min(100, urlStr.length())));
-                            }
-                        }
-                    } catch (Throwable t) {
-                        // 静默
-                    }
-                }
-            });
-            
-            XposedBridge.log("[SBPlus] hookNetworkSniff: WebResourceResponse + HttpURLConnection + HttpsURLConnection hooked");
+            XposedBridge.log("[SBPlus] hookNetworkSniff: WebViewClient.shouldInterceptRequest hooked");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] hookNetworkSniff failed: " + t);
         }
