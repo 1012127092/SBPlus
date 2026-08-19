@@ -7796,6 +7796,57 @@ private void showUaGroupDialog(final Context ctx) {
                               final java.util.List<String> types,
                               final java.util.List<String> titles) {
         try {
+            // ---- m3u8 播放列表分流: 选中含 m3u8 时走内置解析+多线程+MP4, 不走ADM ----
+            try {
+                // 挑出所有 m3u8 项
+                java.util.List<Integer> m3 = new java.util.ArrayList<Integer>();
+                java.util.List<Integer> notM3 = new java.util.ArrayList<Integer>();
+                boolean hasAny = false;
+                for (int i : idxList) {
+                    boolean isM3 = false;
+                    if (i >= 0 && i < urls.size()) {
+                        String u = urls.get(i);
+                        String pl = u.split("[?#]")[0].toLowerCase();
+                        if (pl.endsWith(".m3u8")) isM3 = true;
+                        else if (pl.endsWith(".m3u")) isM3 = true;
+                    }
+                    if (isM3) { m3.add(Integer.valueOf(i)); hasAny = true; }
+                    else notM3.add(Integer.valueOf(i));
+                }
+                if (hasAny) {
+                    final java.util.List<Integer> fM3 = new java.util.ArrayList<Integer>(m3);
+                    final java.util.List<Integer> fNot = new java.util.ArrayList<Integer>(notM3);
+                    final java.util.List<String> fUrls = urls, fTypes = types, fTitles = titles;
+                    new Thread(new Runnable() {
+                        @Override public void run() {
+                            final int[] ok = new int[]{0};
+                            for (Integer mi : fM3) {
+                                try {
+                                    String url = fUrls.get(mi.intValue());
+                                    String ti = (mi.intValue() < fTitles.size()) ? fTitles.get(mi.intValue()) : null;
+                                    boolean done = downloadM3u8(url, ti);
+                                    if (done) ok[0]++;
+                                } catch (Throwable t) {
+                                    XposedBridge.log("[SBPlus] m3u8 download error: " + t);
+                                }
+                            }
+                            final int don = ok[0];
+                            android.os.Handler hh = new android.os.Handler(android.os.Looper.getMainLooper());
+                            hh.post(new Runnable() { @Override public void run() {
+                                if (don > 0) toastShort(T("MP4 下载完成: " + don + " 个", "MP4 downloaded: " + don + " file(s)"));
+                                else toastShort(T("MP4 下载失败", "MP4 download failed"));
+                            }});
+                            if (!fNot.isEmpty()) {
+                                try { downloadMany(fNot, fUrls, fTypes, fTitles); } catch (Throwable t) { XposedBridge.log("[SBPlus] not-m3u8 rest error: " + t); }
+                            }
+                            XposedBridge.log("[SBPlus] m3u8 batch done m3=" + fM3.size() + " ok=" + don);
+                        }
+                    }).start();
+                    return;
+                }
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] m3u8 branch error: " + t);
+            }
             // ---- 需求2: 分段(视频音频)自动识别合并，与包装zip不冲突 ----
             try {
                 java.util.List<java.util.List<Integer>> groups = groupSegments(idxList, urls, types);
@@ -7986,6 +8037,204 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /** 下载一个分段组的所有分片，按顺序拼接保存到 Download/SBPlus/*。返回输出文件或 null。 */
+    /** 判断 URL 是否 m3u8 播放列表。 */
+    private boolean isM3u8Url(String url) {
+        try {
+            if (url == null) return false;
+            String p = url.split("[?#]")[0].toLowerCase();
+            return p.endsWith(".m3u8") || p.endsWith(".m3u");
+        } catch (Throwable t) { return false; }
+    }
+
+    /** 解析 m3u8 内容返回分片绝对 URL 列表; 若是 variant 列表返回 null(需要先解析出子列表)。 */
+    private java.util.List<String> parseM3u8Segments(String content, String baseUrl) {
+        try {
+            if (content == null) return null;
+            java.util.List<String> segs = new java.util.ArrayList<String>();
+            boolean variant = false;
+            String[] lines = content.split("\r?\n");
+            for (String line : lines) {
+                line = line.trim();
+                if (line.isEmpty()) continue;
+                if (line.startsWith("#EXT-X-STREAM-INF")) { variant = true; continue; }
+                if (line.startsWith("#")) continue;
+                if (variant) { segs.add(resolveUrl(line, baseUrl)); variant = false; }
+            }
+            return segs;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] parseM3u8 error: " + t);
+            return null;
+        }
+    }
+
+    /** 解析 m3u8 内容返回分片(.ts/.m4s) 绝对 URL 列表; variant 已展开。 */
+    private java.util.List<String> parseM3u8Ts(String content, String baseUrl) {
+        try {
+            if (content == null) return new java.util.ArrayList<String>();
+            java.util.List<String> segs = new java.util.ArrayList<String>();
+            String[] lines = content.split("\r?\n");
+            for (String line : lines) {
+                line = line.trim();
+                if (line.isEmpty()) continue;
+                if (line.startsWith("#")) continue;
+                String resolved = resolveUrl(line, baseUrl);
+                String pl = resolved.split("[?#]")[0].toLowerCase();
+                if (pl.endsWith(".ts") || pl.endsWith(".m4s") || pl.endsWith(".aac") || pl.endsWith(".mp3")) {
+                    segs.add(resolved);
+                }
+            }
+            return segs;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] parseM3u8Ts error: " + t);
+            return new java.util.ArrayList<String>();
+        }
+    }
+
+    /** 相对/绝对 URL 统一解析为绝对 URL。 */
+    private String resolveUrl(String u, String base) {
+        try {
+            if (u == null) return base;
+            if (u.startsWith("http://") || u.startsWith("https://")) return u;
+            if (u.startsWith("//")) return "https:" + u;
+            if (base == null) return u;
+            int q = base.indexOf('?');
+            String baseN = (q >= 0) ? base.substring(0, q) : base;
+            int slash = baseN.lastIndexOf('/');
+            String dir = (slash >= 0) ? baseN.substring(0, slash + 1) : baseN + "/";
+            return dir + u;
+        } catch (Throwable t) { return u; }
+    }
+
+    /** 下载 m3u8 获取文本内容。 */
+    private String httpGetText(String url) {
+        try {
+            byte[] b = httpGetBytes(url);
+            if (b == null) return null;
+            return new String(b, "UTF-8");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] httpGetText error: " + t);
+            return null;
+        }
+    }
+    /** 下载 m3u8 视频为 MP4 (解析播放列表 -> 多线程下载分片 -> tsToMp4)。成功返回 true。 */
+    private boolean downloadM3u8(String m3u8Url, String title) {
+        try {
+            XposedBridge.log("[SBPlus] downloadM3u8 start: " + m3u8Url);
+            // 文件名
+            String baseName = null;
+            if (title != null && !title.isEmpty()) baseName = sanitizeFileName(title);
+            if (baseName == null || baseName.isEmpty()) {
+                baseName = sanitizeFileName(m3u8Url);
+                int q = baseName.indexOf('.');
+                if (q > 0) baseName = baseName.substring(0, q);
+            }
+
+            java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
+            if (!dir.exists()) dir.mkdirs();
+
+            // 1. 下载主列表
+            String masterText = httpGetText(m3u8Url);
+            if (masterText == null) { XposedBridge.log("[SBPlus] m3u8: master download failed"); return false; }
+
+            // 2. 递归解析: 可能是 variant 列表, 取最后一个子列表
+            String currentUrl = m3u8Url;
+            java.util.List<String> segs = parseM3u8Ts(masterText, currentUrl);
+            if (segs.isEmpty()) {
+                // 是 variant: 取第一个分辩率子列表
+                java.util.List<String> variants = parseM3u8Segments(masterText, currentUrl);
+                if (variants != null && !variants.isEmpty()) {
+                    String subUrl = variants.get(variants.size() - 1);
+                    XposedBridge.log("[SBPlus] m3u8 variant -> " + subUrl);
+                    String subText = httpGetText(subUrl);
+                    if (subText != null) {
+                        segs = parseM3u8Ts(subText, subUrl);
+                    }
+                }
+            }
+            if (segs.isEmpty()) {
+                XposedBridge.log("[SBPlus] m3u8: no segments found");
+                return false;
+            }
+            XposedBridge.log("[SBPlus] m3u8 segments: " + segs.size());
+
+            // 3. 多线程分批下载分片 -> 按序拼接 .ts
+            final int N = segs.size();
+            final int BATCH = 16;
+            final int threads = 8;
+            java.io.File tsTmp = new java.io.File(dir, baseName + ".ts.merge");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(tsTmp);
+            long total = 0;
+            try {
+                int startPos = 0;
+                while (startPos < N) {
+                    int batchSize = Math.min(BATCH, N - startPos);
+                    final java.util.concurrent.ConcurrentSkipListMap<Integer, byte[]> map =
+                            new java.util.concurrent.ConcurrentSkipListMap<Integer, byte[]>();
+                    final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(batchSize);
+                    final java.util.concurrent.atomic.AtomicInteger bFail = new java.util.concurrent.atomic.AtomicInteger(0);
+                    final java.util.List<String> fSegs = segs;
+                    java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+                    try {
+                        for (int bi = 0; bi < batchSize; bi++) {
+                            final int order = startPos + bi;
+                            pool.execute(new Runnable() {
+                                @Override public void run() {
+                                    try {
+                                        byte[] b = httpGetBytes(fSegs.get(order));
+                                        if (b != null && b.length > 0) map.put(Integer.valueOf(order), b);
+                                        else bFail.incrementAndGet();
+                                    } catch (Throwable t) { bFail.incrementAndGet(); }
+                                    finally { latch.countDown(); }
+                                }
+                            });
+                        }
+                        latch.await(120, java.util.concurrent.TimeUnit.SECONDS);
+                    } finally {
+                        pool.shutdownNow();
+                    }
+                    for (int k = startPos; k < startPos + batchSize; k++) {
+                        byte[] b = map.get(Integer.valueOf(k));
+                        if (b == null) { XposedBridge.log("[SBPlus] m3u8 missing seg #" + k); continue; }
+                        fos.write(b);
+                        total += b.length;
+                    }
+                    startPos += batchSize;
+                }
+                fos.flush();
+            } finally {
+                fos.close();
+            }
+            if (total <= 0) { try { tsTmp.delete(); } catch (Throwable ignored) {} return false; }
+            XposedBridge.log("[SBPlus] m3u8 merged ts " + tsTmp.getAbsolutePath() + " (" + total + " bytes, parts=" + N + ")");
+
+            // 4. 转 MP4
+            java.io.File mp4 = tsToMp4(tsTmp, baseName);
+            if (mp4 != null && mp4.exists() && mp4.length() > 0) {
+                try { tsTmp.delete(); } catch (Throwable ignored) {}
+                try {
+                    if (sAppContext != null) {
+                        android.content.Intent scan = new android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                        scan.setData(android.net.Uri.fromFile(mp4));
+                        sAppContext.sendBroadcast(scan);
+                    }
+                } catch (Throwable ignored) {}
+                XposedBridge.log("[SBPlus] m3u8 -> MP4 OK: " + mp4.getAbsolutePath());
+                return true;
+            }
+            // 失败保留 .ts
+            java.io.File tsFinal = new java.io.File(dir, baseName + ".ts");
+            int n2 = 1;
+            while (tsFinal.exists()) { tsFinal = new java.io.File(dir, baseName + "_" + n2 + ".ts"); n2++; }
+            try { tsTmp.renameTo(tsFinal); } catch (Throwable ignored) {}
+            XposedBridge.log("[SBPlus] m3u8 mp4 fail, kept ts: " + tsFinal.getAbsolutePath());
+            return false;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] downloadM3u8 error: " + t);
+            return false;
+        }
+    }
+
     private java.io.File downloadAndMergeSegments(final java.util.List<Integer> group,
                                                   final java.util.List<String> urls,
                                                   final java.util.List<String> types,
