@@ -1004,6 +1004,9 @@ private static final String[] RANDOM_UAS = new String[]{
                             sAppContext = (Context) param.thisObject;
                             LogWriter.init(sAppContext);
                             LogWriter.log("core", "captured Application Context: " + sAppContext);
+                            try {
+                                registerDownloadListReceiver(sAppContext);
+                            } catch (Throwable ignore) {}
                             // One-time self-heal: if a previous buggy run wiped the "More" menu
                             // (Samsung then logs "onMenuKeyClicked: no Item"), restore defaults.
                             scheduleMenuSelfHeal(cl);
@@ -7819,27 +7822,36 @@ private void showUaGroupDialog(final Context ctx) {
                     final java.util.List<String> fUrls = urls, fTypes = types, fTitles = titles;
                     new Thread(new Runnable() {
                         @Override public void run() {
-                            final int[] ok = new int[]{0};
-                            for (Integer mi : fM3) {
-                                try {
-                                    String url = fUrls.get(mi.intValue());
-                                    String ti = (mi.intValue() < fTitles.size()) ? fTitles.get(mi.intValue()) : null;
-                                    boolean done = downloadM3u8(url, ti);
-                                    if (done) ok[0]++;
-                                } catch (Throwable t) {
-                                    XposedBridge.log("[SBPlus] m3u8 download error: " + t);
+                            int cfgParallel = 2;
+                            try { cfgParallel = prefs.getInt("download_parallel", 2); } catch (Throwable ignored) {}
+                            if (cfgParallel < 1) cfgParallel = 1;
+                            if (cfgParallel > 10) cfgParallel = 10;
+                            com.sbplus.browser.SbDownloadManager.acquireTaskSlot(cfgParallel);
+                            try {
+                                final int[] ok = new int[]{0};
+                                for (Integer mi : fM3) {
+                                    try {
+                                        String url = fUrls.get(mi.intValue());
+                                        String ti = (mi.intValue() < fTitles.size()) ? fTitles.get(mi.intValue()) : null;
+                                        boolean done = downloadM3u8(url, ti);
+                                        if (done) ok[0]++;
+                                    } catch (Throwable t) {
+                                        XposedBridge.log("[SBPlus] m3u8 download error: " + t);
+                                    }
                                 }
+                                final int don = ok[0];
+                                android.os.Handler hh = new android.os.Handler(android.os.Looper.getMainLooper());
+                                hh.post(new Runnable() { @Override public void run() {
+                                    if (don > 0) toastShort(T("MP4 下载完成: " + don + " 个", "MP4 downloaded: " + don + " file(s)"));
+                                    else toastShort(T("MP4 下载失败", "MP4 download failed"));
+                                }});
+                                if (!fNot.isEmpty()) {
+                                    try { downloadMany(fNot, fUrls, fTypes, fTitles); } catch (Throwable t) { XposedBridge.log("[SBPlus] not-m3u8 rest error: " + t); }
+                                }
+                                XposedBridge.log("[SBPlus] m3u8 batch done m3=" + fM3.size() + " ok=" + don);
+                            } finally {
+                                com.sbplus.browser.SbDownloadManager.releaseTaskSlot();
                             }
-                            final int don = ok[0];
-                            android.os.Handler hh = new android.os.Handler(android.os.Looper.getMainLooper());
-                            hh.post(new Runnable() { @Override public void run() {
-                                if (don > 0) toastShort(T("MP4 下载完成: " + don + " 个", "MP4 downloaded: " + don + " file(s)"));
-                                else toastShort(T("MP4 下载失败", "MP4 download failed"));
-                            }});
-                            if (!fNot.isEmpty()) {
-                                try { downloadMany(fNot, fUrls, fTypes, fTitles); } catch (Throwable t) { XposedBridge.log("[SBPlus] not-m3u8 rest error: " + t); }
-                            }
-                            XposedBridge.log("[SBPlus] m3u8 batch done m3=" + fM3.size() + " ok=" + don);
                         }
                     }).start();
                     return;
@@ -8124,11 +8136,17 @@ private void showUaGroupDialog(final Context ctx) {
      */
     private java.io.File downloadSegmentsHighConcurrent(final java.util.List<String> segs,
                                                         final java.io.File tmpDir,
-                                                        final String baseName) {
+                                                        final String baseName,
+                                                        final com.sbplus.browser.SbDownloadManager.Task task,
+                                                        final android.content.Context ctx) {
         try {
             final int N = segs.size();
             if (N == 0) return null;
-            final int CONCURRENCY = 16;
+            int cfgThreads = 16;
+            try { cfgThreads = prefs.getInt("download_threads", 16); } catch (Throwable ignored) {}
+            if (cfgThreads < 1) cfgThreads = 1;
+            if (cfgThreads > 32) cfgThreads = 32;
+            final int CONCURRENCY = cfgThreads;
             final java.util.concurrent.atomic.AtomicInteger next = new java.util.concurrent.atomic.AtomicInteger(0);
             final java.util.concurrent.atomic.AtomicInteger okCount = new java.util.concurrent.atomic.AtomicInteger(0);
             final java.util.concurrent.atomic.AtomicInteger failCount = new java.util.concurrent.atomic.AtomicInteger(0);
@@ -8156,6 +8174,19 @@ private void showUaGroupDialog(final Context ctx) {
                                         try { po.write(b); } finally { po.close(); }
                                         bytesDone.addAndGet(b.length);
                                         okCount.incrementAndGet();
+                                        // 进度更新
+                                        if (task != null) {
+                                            task.partCount = (int)(okCount.get());
+                                            task.partTotal = N;
+                                            task.totalBytes = bytesDone.get();
+                                            long now = System.currentTimeMillis();
+                                            if (now - task.lastTime > 300) {
+                                                task.speedBps = (long)((bytesDone.get() - task.lastBytes) * 1000.0 / (now - task.lastTime));
+                                                task.lastTime = now;
+                                                task.lastBytes = bytesDone.get();
+                                                com.sbplus.browser.SbDownloadManager.post(ctx, task);
+                                            }
+                                        }
                                     } else {
                                         failCount.incrementAndGet();
                                     }
@@ -8200,6 +8231,141 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
+    /** 注册通知点击 -> 打开下载列表 的广播接收器(动态注册在浏览器进程). */
+    private void registerDownloadListReceiver(final android.content.Context ctx) {
+        try {
+            android.content.BroadcastReceiver rcv = new android.content.BroadcastReceiver() {
+                @Override public void onReceive(android.content.Context c, android.content.Intent i) {
+                    try {
+                        String action = i.getAction();
+                        if (action == null) return;
+                        if (action.equals("com.sbplus.browser.ACTION_SHOW_DOWNLOADS")) {
+                            showDownloadList();
+                        } else if (action.equals("com.sbplus.browser.ACTION_CANCEL_DL")) {
+                            String id = i.getStringExtra("task_id");
+                            if (id != null) com.sbplus.browser.SbDownloadManager.cancel(sAppContext, id);
+                        }
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] download list receiver error: " + t);
+                    }
+                }
+            };
+            android.content.IntentFilter flt = new android.content.IntentFilter();
+            flt.addAction("com.sbplus.browser.ACTION_SHOW_DOWNLOADS");
+            flt.addAction("com.sbplus.browser.ACTION_CANCEL_DL");
+            ctx.registerReceiver(rcv, flt);
+            XposedBridge.log("[SBPlus] download list receiver registered");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] registerDownloadListReceiver error: " + t);
+        }
+    }
+
+    /** 在浏览器进程弹出一个下载任务列表对话框. */
+    private void showDownloadList() {
+        try {
+            final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
+            if (act == null) { toastShort(T("无活动窗口", "No active window")); return; }
+            act.runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    try {
+                        final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
+                        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+                        int pad = (int)(act.getResources().getDisplayMetrics().density * 14 + 0.5f);
+                        root.setPadding(pad, pad, pad, pad);
+                        android.widget.TextView title = new android.widget.TextView(act);
+                        title.setText(T("下载任务", "Downloads"));
+                        title.setTextSize(18);
+                        title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                        root.addView(title);
+                        final android.widget.LinearLayout list = new android.widget.LinearLayout(act);
+                        list.setOrientation(android.widget.LinearLayout.VERTICAL);
+                        root.addView(list);
+                        // 新启线程定时刷新
+                        final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                        refreshListIn(act, root, list, h);
+
+                        new android.app.AlertDialog.Builder(act)
+                            .setTitle(T("下载管理", "Download Manager"))
+                            .setView(root)
+                            .setPositiveButton(T("关闭", "Close"), null)
+                            .create().show();
+                    } catch (Throwable t) { XposedBridge.log("[SBPlus] showDownloadList ui error: " + t); }
+                }
+            });
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] showDownloadList error: " + t); }
+    }
+
+    private void refreshListIn(final android.app.Activity act, final android.widget.LinearLayout root,
+                               final android.widget.LinearLayout list, final android.os.Handler h) {
+        try {
+            list.removeAllViews();
+            java.util.List<com.sbplus.browser.SbDownloadManager.Task> tasks = com.sbplus.browser.SbDownloadManager.all();
+            if (tasks.isEmpty()) {
+                android.widget.TextView empty = new android.widget.TextView(act);
+                empty.setText(T("暂无下载任务", "No download tasks"));
+                empty.setTextColor(0xFF888888);
+                empty.setPadding(0, dp(act, 8), 0, 0);
+                list.addView(empty);
+            }
+            for (final com.sbplus.browser.SbDownloadManager.Task t : tasks) {
+                android.widget.LinearLayout row = new android.widget.LinearLayout(act);
+                row.setOrientation(android.widget.LinearLayout.VERTICAL);
+                row.setPadding(0, dp(act, 8), 0, dp(act, 8));
+                android.widget.TextView name = new android.widget.TextView(act);
+                name.setText(t.name + "  ·  " + statusText(t));
+                name.setTextSize(14);
+                name.setTextColor(0xFF1B1B1B);
+                row.addView(name);
+                android.widget.ProgressBar pb = new android.widget.ProgressBar(act, null,
+                        android.R.attr.progressBarStyleHorizontal);
+                if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING) {
+                    if (t.partTotal > 0) { pb.setMax(100); pb.setProgress(t.percent()); }
+                    else pb.setIndeterminate(true);
+                } else if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING) {
+                    pb.setIndeterminate(true);
+                } else {
+                    pb.setMax(100); pb.setProgress(100);
+                }
+                row.addView(pb);
+                android.widget.TextView sub = new android.widget.TextView(act);
+                sub.setText(detailText(t));
+                sub.setTextSize(12);
+                sub.setTextColor(0xFF888888);
+                row.addView(sub);
+                list.addView(row);
+            }
+            // 3秒后自动刷新一次(如果对话框还开着)
+            h.postDelayed(new Runnable() {
+                @Override public void run() {
+                    try { if (list.getParent() != null) refreshListIn(act, root, list, h); } catch (Throwable ignored) {}
+                }
+            }, 3000);
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] refreshListIn error: " + t); }
+    }
+
+    private String statusText(com.sbplus.browser.SbDownloadManager.Task t) {
+        try {
+            switch (t.status) {
+                case com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING:
+                    return T("下载中 " + t.percent() + "%", "DL " + t.percent() + "%");
+                case com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING:
+                    return T("转换 MP4 中...", "Converting MP4...");
+                case com.sbplus.browser.SbDownloadManager.STATUS_DONE:
+                    return T("已完成", "Done");
+                default:
+                    return T("失败", "Failed");
+            }
+        } catch (Throwable t2) { return ""; }
+    }
+
+    private String detailText(com.sbplus.browser.SbDownloadManager.Task t) {
+        try {
+            String s = t.partCount + "/" + t.partTotal + " · " + com.sbplus.browser.SbDownloadManager.fmtSpeed(t.speedBps);
+            if (t.detail != null && !t.detail.isEmpty()) s += " · " + t.detail;
+            return s;
+        } catch (Throwable t2) { return ""; }
+    }
+
     private boolean downloadM3u8(String m3u8Url, String title) {
         try {
             XposedBridge.log("[SBPlus] downloadM3u8 start: " + m3u8Url);
@@ -8215,6 +8381,13 @@ private void showUaGroupDialog(final Context ctx) {
             java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
                     android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
             if (!dir.exists()) dir.mkdirs();
+
+            // register task for notification + list
+            final String taskId = "dl_" + System.currentTimeMillis();
+            final com.sbplus.browser.SbDownloadManager.Task task =
+                    com.sbplus.browser.SbDownloadManager.register(taskId, baseName);
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING;
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
 
             // 1. 下载主列表
             String masterText = httpGetText(m3u8Url);
@@ -8242,14 +8415,16 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] m3u8 segments: " + segs.size());
 
             // 3. 高并发下载分片 -> 顺序拼接 .ts
-            final java.util.concurrent.atomic.AtomicLong bytesDone = new java.util.concurrent.atomic.AtomicLong(0);
-            java.io.File tsTmp = downloadSegmentsHighConcurrent(segs, dir, baseName);
+            java.io.File tsTmp = downloadSegmentsHighConcurrent(segs, dir, baseName, task, sAppContext);
             if (tsTmp == null || !tsTmp.exists() || tsTmp.length() <= 0) {
                 XposedBridge.log("[SBPlus] m3u8: all segments failed");
                 return false;
             }
             XposedBridge.log("[SBPlus] m3u8 merged ts " + tsTmp.getAbsolutePath() + " (" + tsTmp.length() + " bytes, parts=" + segs.size() + ")");
             // 4. 转 MP4
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING;
+            task.detail = "TS " + (tsTmp.length()/1048576) + "MB";
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
             java.io.File mp4 = tsToMp4(tsTmp, baseName);
             if (mp4 != null && mp4.exists() && mp4.length() > 0) {
                 try { tsTmp.delete(); } catch (Throwable ignored) {}
@@ -8260,6 +8435,10 @@ private void showUaGroupDialog(final Context ctx) {
                         sAppContext.sendBroadcast(scan);
                     }
                 } catch (Throwable ignored) {}
+                task.status = com.sbplus.browser.SbDownloadManager.STATUS_DONE;
+                task.outPath = mp4.getAbsolutePath();
+                task.partCount = task.partTotal;
+                com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
                 XposedBridge.log("[SBPlus] m3u8 -> MP4 OK: " + mp4.getAbsolutePath());
                 return true;
             }
@@ -8312,6 +8491,11 @@ private void showUaGroupDialog(final Context ctx) {
             if (!dir.exists()) dir.mkdirs();
 
             // ===== 1. 高并发下载分片(独立落盘+按序拼接) =====
+            final String taskId = "dl_" + System.currentTimeMillis();
+            final com.sbplus.browser.SbDownloadManager.Task task =
+                    com.sbplus.browser.SbDownloadManager.register(taskId, baseName);
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING;
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
             final int N = group.size();
             if (N == 0) return null;
             // 转成有序 URL 列表
@@ -8320,13 +8504,16 @@ private void showUaGroupDialog(final Context ctx) {
                 if (i >= 0 && i < urls.size()) segUrls.add(urls.get(i));
             }
             if (segUrls.isEmpty()) return null;
-            java.io.File tsTmp = downloadSegmentsHighConcurrent(segUrls, dir, baseName);
+            java.io.File tsTmp = downloadSegmentsHighConcurrent(segUrls, dir, baseName, null, sAppContext);
             if (tsTmp == null || !tsTmp.exists() || tsTmp.length() <= 0) {
                 XposedBridge.log("[SBPlus] downloadAndMergeSegments: all segments failed");
                 return null;
             }
             XposedBridge.log("[SBPlus] merged ts " + tsTmp.getAbsolutePath() + " (" + tsTmp.length() + " bytes, parts=" + segUrls.size() + ")");
             // ===== 3. 转成 MP4 (MediaExtractor + MediaMuxer) =====
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING;
+            task.detail = "TS " + (tsTmp.length()/1048576) + "MB";
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
             java.io.File result = null;
             boolean isVideo = ext.equals(".ts") || ext.equals(".mp4");
             if (isVideo) {
@@ -8334,6 +8521,10 @@ private void showUaGroupDialog(final Context ctx) {
                 if (mp4 != null && mp4.exists() && mp4.length() > 0) {
                     result = mp4;
                     try { tsTmp.delete(); } catch (Throwable ignored) {}
+                    task.status = com.sbplus.browser.SbDownloadManager.STATUS_DONE;
+                    task.outPath = mp4.getAbsolutePath();
+                    task.partCount = task.partTotal;
+                    com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
                     XposedBridge.log("[SBPlus] converted to MP4: " + mp4.getAbsolutePath());
                 } else {
                     // 转 MP4 失败, 保留 .ts
@@ -8342,6 +8533,9 @@ private void showUaGroupDialog(final Context ctx) {
                     while (tsFinal.exists()) { tsFinal = new java.io.File(dir, baseName + "_" + n2 + ".ts"); n2++; }
                     try { tsTmp.renameTo(tsFinal); } catch (Throwable ignored) {}
                     result = tsFinal;
+                                        task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED;
+                    task.detail = "MP4 转换失败, 已保留 TS";
+                    com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
                     XposedBridge.log("[SBPlus] mp4 conversion failed, kept ts: " + tsFinal.getAbsolutePath());
                 }
             } else {
@@ -8350,6 +8544,10 @@ private void showUaGroupDialog(final Context ctx) {
                 int n3 = 1;
                 while (finalFile.exists()) { finalFile = new java.io.File(dir, baseName + "_" + n3 + ext); n3++; }
                 try { tsTmp.renameTo(finalFile); } catch (Throwable ignored) {}
+                                task.status = com.sbplus.browser.SbDownloadManager.STATUS_DONE;
+                task.outPath = finalFile.getAbsolutePath();
+                task.partCount = task.partTotal;
+                com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
                 result = finalFile;
             }
 

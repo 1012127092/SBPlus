@@ -39,7 +39,12 @@ public class SBPlusSettingsFragment extends Fragment {
     private static final String KEY_DOWNLOADER_PACKAGE = "downloader_package";
     private static final String DEFAULT_ADM_PACKAGE = "com.dv.adm";
 
+    private static final String KEY_DL_THREADS = "download_threads";
+    private static final String KEY_DL_PARALLEL = "download_parallel";
+
     private EditText mPkgInput;
+    private EditText mThreadsInput;
+    private EditText mParallelInput;
     private TextView mStatusText;
 
     @Nullable
@@ -102,6 +107,61 @@ public class SBPlusSettingsFragment extends Fragment {
         hintLp.topMargin = dp(4);
         root.addView(hint, hintLp);
 
+        // ---- Download concurrency settings ----
+        TextView sec2 = new TextView(ctx);
+        sec2.setText("下载设置");
+        sec2.setTextColor(Color.rgb(0x1B, 0x1B, 0x1B));
+        sec2.setTextSize(14);
+        sec2.setTypeface(Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams sec2Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sec2Lp.topMargin = dp(20);
+        root.addView(sec2, sec2Lp);
+
+        TextView threadsLabel = new TextView(ctx);
+        threadsLabel.setText("分片下载线程数（1-32，越大越快，默认16）");
+        threadsLabel.setTextColor(Color.rgb(0x55, 0x55, 0x55));
+        threadsLabel.setTextSize(12);
+        LinearLayout.LayoutParams tlLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tlLp.topMargin = dp(8);
+        threadsLabel.setPadding(0, 0, 0, dp(2));
+        root.addView(threadsLabel, tlLp);
+
+        mThreadsInput = new EditText(ctx);
+        mThreadsInput.setSingleLine(true);
+        mThreadsInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        mThreadsInput.setTextSize(14);
+        mThreadsInput.setTextColor(Color.rgb(0x1B, 0x1B, 0x1B));
+        mThreadsInput.setBackgroundColor(Color.WHITE);
+        mThreadsInput.setPadding(dp(14), dp(10), dp(14), dp(10));
+        LinearLayout.LayoutParams tiLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tiLp.topMargin = dp(4);
+        root.addView(mThreadsInput, tiLp);
+
+        TextView parallelLabel = new TextView(ctx);
+        parallelLabel.setText("同时下载的任务数（1-10，默认2）");
+        parallelLabel.setTextColor(Color.rgb(0x55, 0x55, 0x55));
+        parallelLabel.setTextSize(12);
+        LinearLayout.LayoutParams plLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        plLp.topMargin = dp(12);
+        parallelLabel.setPadding(0, 0, 0, dp(2));
+        root.addView(parallelLabel, plLp);
+
+        mParallelInput = new EditText(ctx);
+        mParallelInput.setSingleLine(true);
+        mParallelInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        mParallelInput.setTextSize(14);
+        mParallelInput.setTextColor(Color.rgb(0x1B, 0x1B, 0x1B));
+        mParallelInput.setBackgroundColor(Color.WHITE);
+        mParallelInput.setPadding(dp(14), dp(10), dp(14), dp(10));
+        LinearLayout.LayoutParams piLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        piLp.topMargin = dp(4);
+        root.addView(mParallelInput, piLp);
+
         // Save button
         Button save = new Button(ctx);
         save.setText("保存");
@@ -117,6 +177,8 @@ public class SBPlusSettingsFragment extends Fragment {
         // Load current value
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         mPkgInput.setText(prefs.getString(KEY_DOWNLOADER_PACKAGE, DEFAULT_ADM_PACKAGE));
+        mThreadsInput.setText(String.valueOf(prefs.getInt(KEY_DL_THREADS, 16)));
+        mParallelInput.setText(String.valueOf(prefs.getInt(KEY_DL_PARALLEL, 2)));
         refreshStatus();
 
         save.setOnClickListener(new View.OnClickListener() {
@@ -127,8 +189,19 @@ public class SBPlusSettingsFragment extends Fragment {
                     Toast.makeText(ctx, "包名不能为空", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                prefs.edit().putString(KEY_DOWNLOADER_PACKAGE, p).commit();
-                Toast.makeText(ctx, "已保存: " + p, Toast.LENGTH_SHORT).show();
+                int threads = 16, parallel = 2;
+                try {
+                    threads = Integer.parseInt(mThreadsInput.getText().toString().trim());
+                    parallel = Integer.parseInt(mParallelInput.getText().toString().trim());
+                } catch (NumberFormatException ignored) {}
+                threads = Math.max(1, Math.min(32, threads));
+                parallel = Math.max(1, Math.min(10, parallel));
+                SharedPreferences.Editor ed = prefs.edit();
+                ed.putString(KEY_DOWNLOADER_PACKAGE, p);
+                ed.putInt(KEY_DL_THREADS, threads);
+                ed.putInt(KEY_DL_PARALLEL, parallel);
+                ed.commit();
+                Toast.makeText(ctx, "已保存", Toast.LENGTH_SHORT).show();
                 refreshStatus();
             }
         });
@@ -141,12 +214,16 @@ public class SBPlusSettingsFragment extends Fragment {
         SharedPreferences prefs = requireContext()
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         String pkg = prefs.getString(KEY_DOWNLOADER_PACKAGE, DEFAULT_ADM_PACKAGE);
+        int threads = prefs.getInt(KEY_DL_THREADS, 16);
+        int parallel = prefs.getInt(KEY_DL_PARALLEL, 2);
         mStatusText.setText(
                 "SBPlus（LSPosed 模块）\n\n"
                 + "目标应用：三星浏览器\n"
                 + "下载桥：已启用\n"
-                + "当前下载器：" + pkg + "\n\n"
-                + "修改下载器包名后点击「保存」，重启浏览器生效。");
+                + "当前下载器：" + pkg + "\n"
+                + "下载线程：" + threads + "\n"
+                + "并行任务：" + parallel + "\n\n"
+                + "修改后点击「保存」，重启浏览器生效。");
     }
 
     private int dp(int v) {
