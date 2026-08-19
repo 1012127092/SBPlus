@@ -5106,77 +5106,57 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /** 资源嗅探开关：控制地址栏 🔍 图标。 */
+    /** 「资源嗅探」纯入口(前面无开关/勾选按钮)：点击进入资源嗅探子页。 */
     private Object buildSniffSwitch(Context ctx, ClassLoader cl) {
-        Class<?> switchPrefCls = XposedHelpers.findClass(
-                "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
-        Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
-        XposedHelpers.callMethod(pref, "setTitle", T("资源嗅探", "Media Sniffer"));
-        XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_sniff");
-        XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，点击识别当前页面的音频/视频/图片并下载（可预览、多选、打包）", "Show a sniffer icon in the address bar. Detect audio/video/images on the current page, preview, multi-select and download"));
-        XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
-        XposedHelpers.callMethod(pref, "setSelectable", true);
-        // 显示条目分隔线(竖线), 与油猴子页入口一致.
-        try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
-        // 点击整行 -> 进入「资源嗅探」子页(下载方式/线程/任务数/下载列表). 与油猴入口同款写法.
         try {
-            Class<?> clickListenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
-            Object clickListener = java.lang.reflect.Proxy.newProxyInstance(cl,
-                    new Class[]{clickListenerType},
-                    new java.lang.reflect.InvocationHandler() {
-                        @Override
-                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
-                            try {
-                                if (m.getName().equals("onPreferenceClick")) {
-                                    Object clicked = args[0];
-                                    Object actObj = XposedHelpers.callMethod(clicked, "getContext");
-                                    if (actObj instanceof android.app.Activity) {
-                                        android.os.Bundle a = new android.os.Bundle();
-                                        a.putString(ARG_PAGE, PAGE_SNIFF_SETTINGS);
-                                        navigateToFragment((android.app.Activity) actObj,
-                                                "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom", a);
-                                        sInPickerPage = true;
-                                        sCurrentPickerPage = PAGE_SNIFF_SETTINGS;
+            Class<?> prefCls = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+            Object pref = XposedHelpers.newInstance(prefCls, new Class[]{Context.class}, ctx);
+            XposedHelpers.callMethod(pref, "setTitle", T("资源嗅探", "Media Sniffer"));
+            XposedHelpers.callMethod(pref, "setKey", "sbplus_sniff_settings");
+            XposedHelpers.callMethod(pref, "setSummary", T("嗅探音频/视频/图片并下载（含下载设置）", "Sniff audio/video/images & download (incl. download settings)"));
+            XposedHelpers.callMethod(pref, "setSelectable", true);
+            // 显示分隔线(竖线).
+            try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+            // 点击 -> 进入「资源嗅探」子页.
+            try {
+                Class<?> clickListenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
+                Object clickListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                        new Class[]{clickListenerType},
+                        new java.lang.reflect.InvocationHandler() {
+                            @Override
+                            public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                                try {
+                                    if (m.getName().equals("onPreferenceClick")) {
+                                        Object clicked = args[0];
+                                        Object actObj = XposedHelpers.callMethod(clicked, "getContext");
+                                        if (actObj instanceof android.app.Activity) {
+                                            android.os.Bundle a = new android.os.Bundle();
+                                            a.putString(ARG_PAGE, PAGE_SNIFF_SETTINGS);
+                                            navigateToFragment((android.app.Activity) actObj,
+                                                    "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom", a);
+                                            sInPickerPage = true;
+                                            sCurrentPickerPage = PAGE_SNIFF_SETTINGS;
+                                        }
+                                        return Boolean.TRUE;
                                     }
-                                    return Boolean.TRUE;
+                                } catch (Throwable t) {
+                                    XposedBridge.log("[SBPlus] sniff navigate error: " + t);
                                 }
-                            } catch (Throwable t) {
-                                XposedBridge.log("[SBPlus] sniff navigate error: " + t);
+                                return Boolean.FALSE;
                             }
-                            return Boolean.FALSE;
-                        }
-                    });
-            XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", clickListener);
+                        });
+                XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", clickListener);
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] sniff click bind failed: " + t);
+            }
+            return pref;
         } catch (Throwable t) {
-            XposedBridge.log("[SBPlus] sniff click bind failed: " + t);
+            XposedBridge.log("[SBPlus] build sniff entry error: " + t);
+            return null;
         }
-
-        try {
-            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
-            Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
-                    new Class[]{listenerType},
-                    new java.lang.reflect.InvocationHandler() {
-                        @Override
-                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
-                            try {
-                                if (m.getName().equals("onPreferenceChange")) {
-                                    boolean enabled = args[1] instanceof Boolean && (Boolean) args[1];
-                                    saveSniffEnabled(enabled);
-                                    XposedBridge.log("[SBPlus] sniff toggled: " + enabled);
-                                    applySniffSwitchIcon(enabled);
-                                    return Boolean.TRUE;
-                                }
-                            } catch (Throwable t) {
-                                XposedBridge.log("[SBPlus] sniff listener error: " + t);
-                            }
-                            return Boolean.FALSE;
-                        }
-                    });
-            XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", changeListener);
-        } catch (Throwable t) {
-            XposedBridge.log("[SBPlus] sniff listener bind failed: " + t);
-        }
-        return pref;
     }
+
     private void navigateToSniffSettings(android.app.Activity act) {
         try {
             android.os.Bundle args = new android.os.Bundle();
@@ -5195,6 +5175,10 @@ private void showUaGroupDialog(final Context ctx) {
     /** 资源嗅探子页：嗅探开关 + 下载方式 + 线程数/任务数 + 打开下载列表。 */
     private void injectSniffSettingsPicker(final Context ctx, final ClassLoader cl, Object screen) {
         try {
+            // 启用资源嗅探(开关在子页内)
+            Object sniffOn = buildEnableSniffSwitch(ctx, cl);
+            if (sniffOn != null) XposedHelpers.callMethod(screen, "addPreference", sniffOn);
+
             // 下载方式
             final Object modePref = buildPreferenceCustom(ctx, cl);
             XposedHelpers.callMethod(modePref, "setTitle", T("下载方式", "Download mode"));
@@ -5237,6 +5221,46 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] sniff settings submenu injected");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] injectSniffSettingsPicker error: " + t);
+        }
+    }
+
+    /** 「启用资源嗅探」开关(置于资源嗅探子页顶部). */
+    private Object buildEnableSniffSwitch(Context ctx, ClassLoader cl) {
+        try {
+            Class<?> switchPrefCls = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+            Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
+            XposedHelpers.callMethod(pref, "setTitle", T("启用资源嗅探", "Enable media sniffer"));
+            XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_sniff");
+            XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，识别页面音频/视频/图片并下载", "Show sniffer icon in address bar"));
+            XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
+            XposedHelpers.callMethod(pref, "setSelectable", true);
+            try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+            Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+            Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{listenerType},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceChange")) {
+                                    boolean enabled = args[1] instanceof Boolean && (Boolean) args[1];
+                                    saveSniffEnabled(enabled);
+                                    XposedBridge.log("[SBPlus] sniff toggled: " + enabled);
+                                    applySniffSwitchIcon(enabled);
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] sniff listener error: " + t);
+                            }
+                            return Boolean.FALSE;
+                        }
+                    });
+            XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", changeListener);
+            return pref;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] buildEnableSniffSwitch error: " + t);
+            return null;
         }
     }
 
