@@ -10208,37 +10208,88 @@ private boolean showMediaDialog(String json) {
     /** 网络层嗅探：hook 底层网络请求，收集所有媒体资源 URL（包括 iframe 内的）。 */
     private void hookNetworkSniff(ClassLoader cl) {
         try {
-            // Hook android.webkit.WebViewClient（三星浏览器基于 WebView）
-            Class<?> webViewClientCls = android.webkit.WebViewClient.class;
-            
-            // Hook shouldInterceptRequest - 拦截所有资源请求
-            XposedHelpers.findAndHookMethod(webViewClientCls, "shouldInterceptRequest",
-                    android.webkit.WebView.class, android.webkit.WebResourceRequest.class,
+            // 策略1: Hook WebResourceResponse 创建（更底层）
+            XposedHelpers.findAndHookConstructor(android.webkit.WebResourceResponse.class,
+                    String.class, String.class, java.io.InputStream.class,
                     new XC_MethodHook() {
                         @Override
-                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 if (!isSniffEnabled()) return;
-                                android.webkit.WebResourceRequest request = (android.webkit.WebResourceRequest) param.args[1];
-                                if (request == null) return;
-                                android.net.Uri uri = request.getUrl();
-                                if (uri == null) return;
-                                String url = uri.toString();
-                                if (url == null || url.isEmpty()) return;
-                                
-                                // 判断是否是媒体资源
-                                String type = detectMediaType(url);
-                                if (type != null && !type.isEmpty()) {
-                                    sNetworkSniffedUrls.add(url);
-                                    XposedBridge.log("[SBPlus] network sniff: " + type + " -> " + url.substring(0, Math.min(100, url.length())));
+                                String mimeType = (String) param.args[0];
+                                if (mimeType != null && (mimeType.startsWith("video/") || 
+                                        mimeType.startsWith("audio/"))) {
+                                    // 记录媒体类型被加载
+                                    XposedBridge.log("[SBPlus] WebResourceResponse created: " + mimeType);
                                 }
                             } catch (Throwable t) {
-                                // 静默失败，不影响正常浏览
+                                // 静默
                             }
                         }
                     });
             
-            XposedBridge.log("[SBPlus] WebViewClient.shouldInterceptRequest hooked for network sniff");
+            // 策略2: Hook HttpURLConnection.getInputStream() (具体实现类)
+            XposedHelpers.findAndHookMethod(java.net.HttpURLConnection.class, "getInputStream", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    try {
+                        if (!isSniffEnabled()) return;
+                        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) param.thisObject;
+                        java.net.URL url = conn.getURL();
+                        if (url != null) {
+                            String urlStr = url.toString();
+                            String contentType = conn.getContentType();
+                            String type = detectMediaType(urlStr);
+                            // 也检查 Content-Type
+                            if (type == null && contentType != null) {
+                                String ctLower = contentType.toLowerCase();
+                                if (ctLower.startsWith("video/")) type = "video";
+                                else if (ctLower.startsWith("audio/")) type = "audio";
+                                else if (ctLower.contains("mpegurl") || ctLower.contains("x-mpegurl")) type = "video";
+                            }
+                            if (type != null && !type.isEmpty()) {
+                                sNetworkSniffedUrls.add(urlStr);
+                                XposedBridge.log("[SBPlus] HttpURLConnection: " + type + " -> " + 
+                                        urlStr.substring(0, Math.min(100, urlStr.length())));
+                            }
+                        }
+                    } catch (Throwable t) {
+                        // 静默
+                    }
+                }
+            });
+            
+            // 策略3: Hook HttpsURLConnection.getInputStream()
+            XposedHelpers.findAndHookMethod(javax.net.ssl.HttpsURLConnection.class, "getInputStream", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    try {
+                        if (!isSniffEnabled()) return;
+                        javax.net.ssl.HttpsURLConnection conn = (javax.net.ssl.HttpsURLConnection) param.thisObject;
+                        java.net.URL url = conn.getURL();
+                        if (url != null) {
+                            String urlStr = url.toString();
+                            String contentType = conn.getContentType();
+                            String type = detectMediaType(urlStr);
+                            if (type == null && contentType != null) {
+                                String ctLower = contentType.toLowerCase();
+                                if (ctLower.startsWith("video/")) type = "video";
+                                else if (ctLower.startsWith("audio/")) type = "audio";
+                                else if (ctLower.contains("mpegurl") || ctLower.contains("x-mpegurl")) type = "video";
+                            }
+                            if (type != null && !type.isEmpty()) {
+                                sNetworkSniffedUrls.add(urlStr);
+                                XposedBridge.log("[SBPlus] HttpsURLConnection: " + type + " -> " + 
+                                        urlStr.substring(0, Math.min(100, urlStr.length())));
+                            }
+                        }
+                    } catch (Throwable t) {
+                        // 静默
+                    }
+                }
+            });
+            
+            XposedBridge.log("[SBPlus] hookNetworkSniff: WebResourceResponse + HttpURLConnection + HttpsURLConnection hooked");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] hookNetworkSniff failed: " + t);
         }
@@ -10260,17 +10311,17 @@ private boolean showMediaDialog(String json) {
             String path = lower.split("[?#]")[0];
             
             // 视频格式
-            if (path.matches(".*\.(mp4|m4v|webm|mkv|flv|mov|avi|wmv|mpg|mpeg|3gp|m4s|ts|mpd)$")) {
+            if (path.matches(".*\\.(mp4|m4v|webm|mkv|flv|mov|avi|wmv|mpg|mpeg|3gp|m4s|ts|mpd)$")) {
                 return "video";
             }
             
             // 音频格式
-            if (path.matches(".*\.(mp3|m4a|aac|ogg|opus|wav|flac|wma)$")) {
+            if (path.matches(".*\\.(mp3|m4a|aac|ogg|opus|wav|flac|wma)$")) {
                 return "audio";
             }
             
             // 图片格式
-            if (path.matches(".*\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$")) {
+            if (path.matches(".*\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$")) {
                 return "image";
             }
             
