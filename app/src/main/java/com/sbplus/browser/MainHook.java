@@ -8221,6 +8221,9 @@ private boolean showMediaDialog(String json) {
                         cell.setPadding(2,2,2,2);
                     }
                     cell.removeAllViews();
+                    // ⚠️ 关键修复：在添加子view之前就设置cell可点击（解决第一列/第三列难点问题）
+                    cell.setClickable(true);
+                    cell.setFocusable(true);
                     // 缩略图
                     final android.widget.ImageView iv = new android.widget.ImageView(act);
                     iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
@@ -8305,8 +8308,6 @@ private boolean showMediaDialog(String json) {
                             updateSelCount.run();
                         } catch (Throwable ignored) {}
                     }};
-                    cell.setClickable(true);
-                    cell.setFocusable(true);
                     // 禁用所有子view的触摸拦截（解决第一列难以点击的问题）
                     iv.setClickable(false);
                     iv.setFocusable(false);
@@ -8314,6 +8315,24 @@ private boolean showMediaDialog(String json) {
                     selOverlay.setFocusable(false);
                     chkBadge.setClickable(false);
                     chkBadge.setFocusable(false);
+                    // 强制拦截触摸事件（解决子view在某些列阻断点击的问题）
+
+                    cell.setOnTouchListener(new android.view.View.OnTouchListener() {
+
+                        @Override public boolean onTouch(android.view.View v, android.view.MotionEvent event) {
+
+                            if (event.getAction() == android.view.MotionEvent.ACTION_UP) {
+
+                                v.performClick();
+
+                            }
+
+                            return true; // 消费事件，不让子view拦截
+
+                        }
+
+                    });
+
                     cell.setOnClickListener(new android.view.View.OnClickListener() {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx];
