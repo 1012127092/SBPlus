@@ -7992,9 +7992,8 @@ private void showUaGroupDialog(final Context ctx) {
                                                   final java.util.List<String> titles) {
         try {
             if (group == null || group.isEmpty()) return null;
-            // 输出文件名: 取组内第一个 title，或用基础名
             String baseName = null;
-            String ext = ".m4s";
+            String ext = ".ts";
             for (int i : group) {
                 if (i >= 0 && i < titles.size() && titles.get(i) != null && !titles.get(i).isEmpty()) {
                     baseName = titles.get(i);
@@ -8008,56 +8007,178 @@ private void showUaGroupDialog(final Context ctx) {
             } else {
                 baseName = sanitizeFileName(baseName);
             }
-            // 判断扩展名 (视频: .ts/.mp4/m4s; 音频: m4a/aac/mp3/ogg/opus)
             try {
                 String u = urls.get(group.get(0));
                 String p = u.split("[?#]")[0].toLowerCase();
-                if (p.endsWith(".ts")) ext = ".ts";
-                else if (p.endsWith(".mp4") || p.endsWith(".m4v")) ext = ".mp4";
+                if (p.endsWith(".mp4") || p.endsWith(".m4v")) ext = ".mp4";
                 else if (p.endsWith(".m4a")) ext = ".m4a";
                 else if (p.endsWith(".mp3")) ext = ".mp3";
                 else if (p.endsWith(".aac")) ext = ".aac";
-                else if (p.endsWith(".ogg")) ext = ".ogg";
-                else if (p.endsWith(".opus")) ext = ".opus";
+                else if (p.endsWith(".ts")) ext = ".ts";
             } catch (Throwable ignored) {}
+
             java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
                     android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
             if (!dir.exists()) dir.mkdirs();
-            java.io.File out = new java.io.File(dir, baseName + ext);
-            int n = 1;
-            while (out.exists()) { out = new java.io.File(dir, baseName + "_" + n + ext); n++; }
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
+
+            // ===== 1. 多线程分批并发下载分片, 按序写入 =====
+            final int N = group.size();
+            if (N == 0) return null;
+            final int BATCH = 16; // 每批最多同时下载 16 个
+            final int threads = 8; // 并发线程数
+            final java.util.List<String> fUrls = urls;
+            final java.util.List<Integer> orderUrls = new java.util.ArrayList<Integer>();
+            final int[] orderIdxArr = new int[N];
+            {
+                int idx = 0;
+                for (int i : group) { orderIdxArr[idx++] = i; }
+            }
+            java.io.File tsTmp = new java.io.File(dir, baseName + ".ts.merge");
+            java.io.FileOutputStream fos0 = new java.io.FileOutputStream(tsTmp);
             long total = 0;
             try {
-                for (int i : group) {
-                    if (i < 0 || i >= urls.size()) continue;
-                    String u = urls.get(i);
-                    byte[] bytes = httpGetBytes(u);
-                    if (bytes == null || bytes.length == 0) {
-                        XposedBridge.log("[SBPlus] merge: empty segment " + u);
-                        continue;
+                int startPos = 0;
+                while (startPos < N) {
+                    int batchSize = Math.min(BATCH, N - startPos);
+                    final java.util.concurrent.ConcurrentSkipListMap<Integer, byte[]> map =
+                            new java.util.concurrent.ConcurrentSkipListMap<Integer, byte[]>();
+                    final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(batchSize);
+                    final java.util.concurrent.atomic.AtomicInteger bFail = new java.util.concurrent.atomic.AtomicInteger(0);
+                    java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+                    try {
+                        for (int bi = 0; bi < batchSize; bi++) {
+                            final int order = startPos + bi;
+                            final int urlIdx = orderIdxArr[order];
+                            pool.execute(new Runnable() {
+                                @Override public void run() {
+                                    try {
+                                        if (urlIdx >= 0 && urlIdx < fUrls.size()) {
+                                            byte[] b = httpGetBytes(fUrls.get(urlIdx));
+                                            if (b != null && b.length > 0) map.put(Integer.valueOf(order), b);
+                                            else bFail.incrementAndGet();
+                                        } else bFail.incrementAndGet();
+                                    } catch (Throwable t) { bFail.incrementAndGet(); }
+                                    finally { latch.countDown(); }
+                                }
+                            });
+                        }
+                        latch.await(120, java.util.concurrent.TimeUnit.SECONDS);
+                    } finally {
+                        pool.shutdownNow();
                     }
-                    // 按序拼接所有分片（分段 ts/m4s 可直接二进制拼接）
-                    fos.write(bytes);
-                    total += bytes.length;
+                    // 按序写盘
+                    for (int k = startPos; k < startPos + batchSize; k++) {
+                        byte[] b = map.get(Integer.valueOf(k));
+                        if (b == null) { XposedBridge.log("[SBPlus] merge: missing seg #" + k); continue; }
+                        fos0.write(b);
+                        total += b.length;
+                    }
+                    startPos += batchSize;
                 }
-                fos.flush();
+                fos0.flush();
             } finally {
-                fos.close();
+                fos0.close();
             }
-            if (total <= 0) { out.delete(); return null; }
-            // 通知媒体库扫描
-            try {
-                if (sAppContext != null) {
-                    android.content.Intent scan = new android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-                    scan.setData(android.net.Uri.fromFile(out));
-                    sAppContext.sendBroadcast(scan);
+            if (total <= 0) { try { tsTmp.delete(); } catch (Throwable ignored) {} return null; }
+            XposedBridge.log("[SBPlus] merged ts " + tsTmp.getAbsolutePath() + " (" + total + " bytes, parts=" + N + ")");
+
+            // ===== 3. 转成 MP4 (MediaExtractor + MediaMuxer) =====
+            java.io.File result = null;
+            boolean isVideo = ext.equals(".ts") || ext.equals(".mp4");
+            if (isVideo) {
+                java.io.File mp4 = tsToMp4(tsTmp, baseName);
+                if (mp4 != null && mp4.exists() && mp4.length() > 0) {
+                    result = mp4;
+                    try { tsTmp.delete(); } catch (Throwable ignored) {}
+                    XposedBridge.log("[SBPlus] converted to MP4: " + mp4.getAbsolutePath());
+                } else {
+                    // 转 MP4 失败, 保留 .ts
+                    java.io.File tsFinal = new java.io.File(dir, baseName + ".ts");
+                    int n2 = 1;
+                    while (tsFinal.exists()) { tsFinal = new java.io.File(dir, baseName + "_" + n2 + ".ts"); n2++; }
+                    try { tsTmp.renameTo(tsFinal); } catch (Throwable ignored) {}
+                    result = tsFinal;
+                    XposedBridge.log("[SBPlus] mp4 conversion failed, kept ts: " + tsFinal.getAbsolutePath());
                 }
-            } catch (Throwable ignored) {}
-            XposedBridge.log("[SBPlus] merged segment -> " + out.getAbsolutePath() + " (" + total + " bytes, " + group.size() + " parts)");
-            return out;
+            } else {
+                // 音频等, 直接改名
+                java.io.File finalFile = new java.io.File(dir, baseName + ext);
+                int n3 = 1;
+                while (finalFile.exists()) { finalFile = new java.io.File(dir, baseName + "_" + n3 + ext); n3++; }
+                try { tsTmp.renameTo(finalFile); } catch (Throwable ignored) {}
+                result = finalFile;
+            }
+
+            if (result != null) {
+                try {
+                    if (sAppContext != null) {
+                        android.content.Intent scan = new android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                        scan.setData(android.net.Uri.fromFile(result));
+                        sAppContext.sendBroadcast(scan);
+                    }
+                } catch (Throwable ignored) {}
+            }
+            return result;
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] downloadAndMergeSegments error: " + t);
+            return null;
+        }
+    }
+    /** 用 MediaExtractor 读 TS, MediaMuxer 封装成 MP4 (纯 remux 不重编码)。返回 mp4 文件或 null。 */
+    private java.io.File tsToMp4(final java.io.File tsFile, final String baseName) {
+        try {
+            final android.media.MediaExtractor extractor = new android.media.MediaExtractor();
+            extractor.setDataSource(tsFile.getAbsolutePath());
+            final int trackCount = extractor.getTrackCount();
+            android.media.MediaMuxer muxer = null;
+            final java.util.List<Integer> muxerTracks = new java.util.ArrayList<Integer>();
+            try {
+                final java.util.List<android.media.MediaFormat> formats = new java.util.ArrayList<android.media.MediaFormat>();
+                int selected = 0;
+                for (int i = 0; i < trackCount; i++) {
+                    final android.media.MediaFormat fmt = extractor.getTrackFormat(i);
+                    formats.add(fmt);
+                    XposedBridge.log("[SBPlus] tsToMp4 track[" + i + "] mime=" + fmt.getString(android.media.MediaFormat.KEY_MIME));
+                    extractor.selectTrack(i);
+                    selected++;
+                }
+                if (selected == 0) { extractor.release(); return null; }
+                final java.io.File out = new java.io.File(tsFile.getParentFile(), baseName + ".mp4");
+                muxer = new android.media.MediaMuxer(out.getAbsolutePath(),
+                        android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+                for (int i = 0; i < trackCount; i++) {
+                    muxerTracks.add(Integer.valueOf(muxer.addTrack(formats.get(i))));
+                }
+                muxer.start();
+                java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(2 * 1024 * 1024);
+                android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+                // 每个 track 单独读取: 先取消全部选中, 再单独选一个
+                for (int ti = 0; ti < trackCount; ti++) {
+                    for (int u = 0; u < trackCount; u++) { try { extractor.unselectTrack(u); } catch (Throwable ignored) {} }
+                    extractor.selectTrack(ti);
+                    int idx = muxerTracks.get(ti).intValue();
+                    while (true) {
+                        int sampleSize = extractor.readSampleData(buf, 0);
+                        if (sampleSize < 0) break;
+                        info.offset = 0;
+                        info.size = sampleSize;
+                        info.presentationTimeUs = extractor.getSampleTime();
+                        info.flags = (extractor.getSampleFlags() & android.media.MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                                ? android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                        muxer.writeSampleData(idx, buf, info);
+                        if (!extractor.advance()) break;
+                    }
+                }
+                muxer.stop();
+                muxer.release();
+                muxer = null;
+                XposedBridge.log("[SBPlus] tsToMp4 OK -> " + out.getAbsolutePath());
+                return out;
+            } finally {
+                try { if (muxer != null) muxer.release(); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] tsToMp4 error: " + t);
             return null;
         }
     }
