@@ -8117,6 +8117,89 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
     /** 下载 m3u8 视频为 MP4 (解析播放列表 -> 多线程下载分片 -> tsToMp4)。成功返回 true。 */
+    /**
+     * 高效下载分片列表并顺序拼接成单一文件.
+     * 策略: 固定并发线程池 + 工作队列(每线程循环取序号) + 每分片独立落盘 + 按序拼接.
+     * 优点: 无短板效应, 高并发, 内存安全.
+     */
+    private java.io.File downloadSegmentsHighConcurrent(final java.util.List<String> segs,
+                                                        final java.io.File tmpDir,
+                                                        final String baseName) {
+        try {
+            final int N = segs.size();
+            if (N == 0) return null;
+            final int CONCURRENCY = 16;
+            final java.util.concurrent.atomic.AtomicInteger next = new java.util.concurrent.atomic.AtomicInteger(0);
+            final java.util.concurrent.atomic.AtomicInteger okCount = new java.util.concurrent.atomic.AtomicInteger(0);
+            final java.util.concurrent.atomic.AtomicInteger failCount = new java.util.concurrent.atomic.AtomicInteger(0);
+            final java.util.concurrent.atomic.AtomicLong bytesDone = new java.util.concurrent.atomic.AtomicLong(0);
+            final java.util.List<String> fSegs = segs;
+            final java.io.File fTmp = tmpDir;
+            final String fBase = baseName;
+            final java.util.concurrent.CountDownLatch allDone = new java.util.concurrent.CountDownLatch(1);
+
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(CONCURRENCY);
+            // 每个工作线程循环取序号下载, 直到取完
+            final int workerCount = CONCURRENCY;
+            for (int w = 0; w < workerCount; w++) {
+                pool.execute(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            while (true) {
+                                int seq = next.getAndIncrement();
+                                if (seq >= N) break;
+                                try {
+                                    byte[] b = httpGetBytes(fSegs.get(seq));
+                                    if (b != null && b.length > 0) {
+                                        java.io.File pf = new java.io.File(fTmp, fBase + ".part_" + seq);
+                                        java.io.FileOutputStream po = new java.io.FileOutputStream(pf);
+                                        try { po.write(b); } finally { po.close(); }
+                                        bytesDone.addAndGet(b.length);
+                                        okCount.incrementAndGet();
+                                    } else {
+                                        failCount.incrementAndGet();
+                                    }
+                                } catch (Throwable t) {
+                                    failCount.incrementAndGet();
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+            }
+            // 等待所有 worker 结束(它们循环直到序号取完)
+            pool.shutdown();
+            try { pool.awaitTermination(15, java.util.concurrent.TimeUnit.MINUTES); } catch (Throwable ignored) {}
+            XposedBridge.log("[SBPlus] seg download done ok=" + okCount.get() + " fail=" + failCount.get() + " bytes=" + bytesDone.get());
+
+            if (okCount.get() == 0) return null;
+
+            // 按序拼接
+            java.io.File out = new java.io.File(fTmp, baseName + ".ts.merge");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
+            try {
+                for (int seq = 0; seq < N; seq++) {
+                    java.io.File pf = new java.io.File(fTmp, baseName + ".part_" + seq);
+                    if (pf.exists()) {
+                        java.io.InputStream in = new java.io.FileInputStream(pf);
+                        byte[] buf = new byte[65536];
+                        int r;
+                        while ((r = in.read(buf)) > 0) fos.write(buf, 0, r);
+                        in.close();
+                        pf.delete();
+                    } else {
+                        XposedBridge.log("[SBPlus] seg #" + seq + " missing (skipped)");
+                    }
+                }
+                fos.flush();
+            } finally { fos.close(); }
+            return out;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] downloadSegmentsHighConcurrent error: " + t);
+            return null;
+        }
+    }
+
     private boolean downloadM3u8(String m3u8Url, String title) {
         try {
             XposedBridge.log("[SBPlus] downloadM3u8 start: " + m3u8Url);
@@ -8158,56 +8241,14 @@ private void showUaGroupDialog(final Context ctx) {
             }
             XposedBridge.log("[SBPlus] m3u8 segments: " + segs.size());
 
-            // 3. 多线程分批下载分片 -> 按序拼接 .ts
-            final int N = segs.size();
-            final int BATCH = 16;
-            final int threads = 8;
-            java.io.File tsTmp = new java.io.File(dir, baseName + ".ts.merge");
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(tsTmp);
-            long total = 0;
-            try {
-                int startPos = 0;
-                while (startPos < N) {
-                    int batchSize = Math.min(BATCH, N - startPos);
-                    final java.util.concurrent.ConcurrentSkipListMap<Integer, byte[]> map =
-                            new java.util.concurrent.ConcurrentSkipListMap<Integer, byte[]>();
-                    final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(batchSize);
-                    final java.util.concurrent.atomic.AtomicInteger bFail = new java.util.concurrent.atomic.AtomicInteger(0);
-                    final java.util.List<String> fSegs = segs;
-                    java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
-                    try {
-                        for (int bi = 0; bi < batchSize; bi++) {
-                            final int order = startPos + bi;
-                            pool.execute(new Runnable() {
-                                @Override public void run() {
-                                    try {
-                                        byte[] b = httpGetBytes(fSegs.get(order));
-                                        if (b != null && b.length > 0) map.put(Integer.valueOf(order), b);
-                                        else bFail.incrementAndGet();
-                                    } catch (Throwable t) { bFail.incrementAndGet(); }
-                                    finally { latch.countDown(); }
-                                }
-                            });
-                        }
-                        latch.await(120, java.util.concurrent.TimeUnit.SECONDS);
-                    } finally {
-                        pool.shutdownNow();
-                    }
-                    for (int k = startPos; k < startPos + batchSize; k++) {
-                        byte[] b = map.get(Integer.valueOf(k));
-                        if (b == null) { XposedBridge.log("[SBPlus] m3u8 missing seg #" + k); continue; }
-                        fos.write(b);
-                        total += b.length;
-                    }
-                    startPos += batchSize;
-                }
-                fos.flush();
-            } finally {
-                fos.close();
+            // 3. 高并发下载分片 -> 顺序拼接 .ts
+            final java.util.concurrent.atomic.AtomicLong bytesDone = new java.util.concurrent.atomic.AtomicLong(0);
+            java.io.File tsTmp = downloadSegmentsHighConcurrent(segs, dir, baseName);
+            if (tsTmp == null || !tsTmp.exists() || tsTmp.length() <= 0) {
+                XposedBridge.log("[SBPlus] m3u8: all segments failed");
+                return false;
             }
-            if (total <= 0) { try { tsTmp.delete(); } catch (Throwable ignored) {} return false; }
-            XposedBridge.log("[SBPlus] m3u8 merged ts " + tsTmp.getAbsolutePath() + " (" + total + " bytes, parts=" + N + ")");
-
+            XposedBridge.log("[SBPlus] m3u8 merged ts " + tsTmp.getAbsolutePath() + " (" + tsTmp.length() + " bytes, parts=" + segs.size() + ")");
             // 4. 转 MP4
             java.io.File mp4 = tsToMp4(tsTmp, baseName);
             if (mp4 != null && mp4.exists() && mp4.length() > 0) {
@@ -8270,67 +8311,21 @@ private void showUaGroupDialog(final Context ctx) {
                     android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
             if (!dir.exists()) dir.mkdirs();
 
-            // ===== 1. 多线程分批并发下载分片, 按序写入 =====
+            // ===== 1. 高并发下载分片(独立落盘+按序拼接) =====
             final int N = group.size();
             if (N == 0) return null;
-            final int BATCH = 16; // 每批最多同时下载 16 个
-            final int threads = 8; // 并发线程数
-            final java.util.List<String> fUrls = urls;
-            final java.util.List<Integer> orderUrls = new java.util.ArrayList<Integer>();
-            final int[] orderIdxArr = new int[N];
-            {
-                int idx = 0;
-                for (int i : group) { orderIdxArr[idx++] = i; }
+            // 转成有序 URL 列表
+            final java.util.List<String> segUrls = new java.util.ArrayList<String>();
+            for (int i : group) {
+                if (i >= 0 && i < urls.size()) segUrls.add(urls.get(i));
             }
-            java.io.File tsTmp = new java.io.File(dir, baseName + ".ts.merge");
-            java.io.FileOutputStream fos0 = new java.io.FileOutputStream(tsTmp);
-            long total = 0;
-            try {
-                int startPos = 0;
-                while (startPos < N) {
-                    int batchSize = Math.min(BATCH, N - startPos);
-                    final java.util.concurrent.ConcurrentSkipListMap<Integer, byte[]> map =
-                            new java.util.concurrent.ConcurrentSkipListMap<Integer, byte[]>();
-                    final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(batchSize);
-                    final java.util.concurrent.atomic.AtomicInteger bFail = new java.util.concurrent.atomic.AtomicInteger(0);
-                    java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
-                    try {
-                        for (int bi = 0; bi < batchSize; bi++) {
-                            final int order = startPos + bi;
-                            final int urlIdx = orderIdxArr[order];
-                            pool.execute(new Runnable() {
-                                @Override public void run() {
-                                    try {
-                                        if (urlIdx >= 0 && urlIdx < fUrls.size()) {
-                                            byte[] b = httpGetBytes(fUrls.get(urlIdx));
-                                            if (b != null && b.length > 0) map.put(Integer.valueOf(order), b);
-                                            else bFail.incrementAndGet();
-                                        } else bFail.incrementAndGet();
-                                    } catch (Throwable t) { bFail.incrementAndGet(); }
-                                    finally { latch.countDown(); }
-                                }
-                            });
-                        }
-                        latch.await(120, java.util.concurrent.TimeUnit.SECONDS);
-                    } finally {
-                        pool.shutdownNow();
-                    }
-                    // 按序写盘
-                    for (int k = startPos; k < startPos + batchSize; k++) {
-                        byte[] b = map.get(Integer.valueOf(k));
-                        if (b == null) { XposedBridge.log("[SBPlus] merge: missing seg #" + k); continue; }
-                        fos0.write(b);
-                        total += b.length;
-                    }
-                    startPos += batchSize;
-                }
-                fos0.flush();
-            } finally {
-                fos0.close();
+            if (segUrls.isEmpty()) return null;
+            java.io.File tsTmp = downloadSegmentsHighConcurrent(segUrls, dir, baseName);
+            if (tsTmp == null || !tsTmp.exists() || tsTmp.length() <= 0) {
+                XposedBridge.log("[SBPlus] downloadAndMergeSegments: all segments failed");
+                return null;
             }
-            if (total <= 0) { try { tsTmp.delete(); } catch (Throwable ignored) {} return null; }
-            XposedBridge.log("[SBPlus] merged ts " + tsTmp.getAbsolutePath() + " (" + total + " bytes, parts=" + N + ")");
-
+            XposedBridge.log("[SBPlus] merged ts " + tsTmp.getAbsolutePath() + " (" + tsTmp.length() + " bytes, parts=" + segUrls.size() + ")");
             // ===== 3. 转成 MP4 (MediaExtractor + MediaMuxer) =====
             java.io.File result = null;
             boolean isVideo = ext.equals(".ts") || ext.equals(".mp4");
