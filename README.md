@@ -23,9 +23,10 @@ A **LSPosed** module that enhances Samsung Internet Browser (package `com.sec.an
 8. **Homepage Video Background** — play a video on the homepage (loop, muted).
 9. **Userscript Manager** — full built-in manager: list / add / save / delete / toggle, `.user.js` interception, source management, "update all", lightweight GM API, detail page + share import.
 10. **Bookmark Management** — import / export bookmarks (Chrome / Edge / Firefox HTML format), tree checkbox dialog.
-11. **Random UA** — 55 real UA strings with random rotation.
-12. **Homepage Beautification** — personalize the homepage search box and other elements.
-13. **Version + Project URL + Auto Update Check** — version and project URL shown in module home and browser menu, with auto update checking.
+11. **Random UA** — 55 real UA strings with random rotation; supports platform/browser multi-select and custom parameters.
+12. **Media Sniffer** — sniff and download video/audio/image resources; supports tab-based select-all (video/audio/image independent), segmented video (m4s/ts) auto-merge.
+13. **Homepage Beautification** — personalize the homepage search box and other elements.
+14. **Version + Project URL + Auto Update Check** — version and project URL shown in module home and browser menu, with auto update checking.
 
 ### Requirements
 
@@ -126,12 +127,19 @@ hook `SBrowserCommandLine.initialize()`，通过 `TerraceCommandLine.appendSwitc
 - 树形勾选对话框（可选导入/导出指定节点）
 
 ### 11. 随机浏览器标识（UA）
-内置 55 条真实 UA 池，支持随机轮换（桌面 Chrome / 手机 / iPhone / 自定义）。
+内置 55 条真实 UA 池，支持随机轮换（桌面 Chrome / 手机 / iPhone / 自定义）。支持平台/浏览器多选和自定义参数动态生成。
 
-### 12. 主页美化子菜单
+### 12. 资源嗅探面板
+嗅探并下载视频/音频/图片资源：
+- 按类型分tab显示（视频/音频/图片独立全选）
+- 显示已选文件数量
+- 支持分片视频（m4s/ts）自动识别和二进制拼接下载
+- 图片格子选中显示蓝色遮罩
+
+### 13. 主页美化子菜单
 主页搜索框等页面元素的个性化设置。
 
-### 13. 版本号 + 项目地址 + 自动检测更新
+### 14. 版本号 + 项目地址 + 自动检测更新
 - SBPlus 应用首页与浏览器 SBPlus 菜单里都显示版本号 + 项目地址
 - 启动/进入页面时自动检测 GitHub 最新 release，有新版本在版本号后提示「点击更新」，点击后确认下载 apk
 
