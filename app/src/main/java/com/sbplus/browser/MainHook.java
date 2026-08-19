@@ -7583,7 +7583,7 @@ private void showUaGroupDialog(final Context ctx) {
         "var alinks=doc.querySelectorAll('a[href]');" +
         "for(var ai=0;ai<alinks.length;ai++){var ah=alinks[ai].getAttribute('href');if(ah&&typeOf(ah)==='image'){add(ah,'image','');}}" +
         "var els=doc.querySelectorAll('video,audio');" +
-        "for(var i=0;i<els.length;i++){var e=els[i];var s=e.currentSrc||e.src;if(s)add(s,(e.tagName==='VIDEO'?'video':'audio'),(e.title||doc.title),(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)add(so,(e.tagName==='VIDEO'?'video':'audio'),'',(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));}}" +
+        "for(var i=0;i<els.length;i++){var e=els[i];var s=e.currentSrc||e.src;if(s)add(s,(e.tagName==='VIDEO'?'video':'audio'),(e.title||doc.title),(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));var ss=e.querySelectorAll('source');for(var j=0;j<ss.length;j++){var so=ss[j].src;if(so)add(so,(e.tagName==='VIDEO'?'video':'audio'),(e.title||doc.title),(e.videoWidth||0),(e.videoHeight||0),(e.duration||0));}}" +
         "if(!isIframe){var iframes=doc.querySelectorAll('iframe');for(var fi=0;fi<iframes.length;fi++){try{var ifrm=iframes[fi];if(ifrm.contentDocument){scanDoc(ifrm.contentDocument,true);}}catch(e){}}}" +
         "}catch(e){}}" +
         "function scanNow(){try{" +
@@ -7833,8 +7833,21 @@ private void showUaGroupDialog(final Context ctx) {
                                     try {
                                         String url = fUrls.get(mi.intValue());
                                         String ti = (mi.intValue() < fTitles.size()) ? fTitles.get(mi.intValue()) : null;
-                                        boolean done = downloadM3u8(url, ti);
-                                        if (done) ok[0]++;
+                                        boolean done = false;
+                                        String dlMode = "internal";
+                                        try { dlMode = prefs.getString("dl_mode", "internal"); } catch (Throwable ignored) {}
+                                        if ("external".equals(dlMode)) {
+                                            // 外部下载器模式: 转交 ADM 等
+                                            DownloadMeta meta = new DownloadMeta();
+                                            meta.url = url;
+                                            meta.fileName = (ti != null && !ti.isEmpty()) ? ti : shortUrl(url);
+                                            meta.mimeType = "application/x-mpegURL";
+                                            try { done = dispatchToDownloader(meta); } catch (Throwable t) { XposedBridge.log("[SBPlus] external m3u8 dispatch: " + t); done = false; }
+                                            if (done) ok[0]++;
+                                        } else {
+                                            done = downloadM3u8(url, ti);
+                                            if (done) ok[0]++;
+                                        }
                                     } catch (Throwable t) {
                                         XposedBridge.log("[SBPlus] m3u8 download error: " + t);
                                     }
@@ -8261,6 +8274,95 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /** 在浏览器进程弹出一个下载任务列表对话框. */
+    /** 下载设置子对话框: 线程数 / 并行任务数 / 下载方式(内置 vs 外部). */
+    private void showDownloadSettingsDialog(final android.app.Activity act) {
+        try {
+            final android.content.Context ctx = act != null ? act : sAppContext;
+            final android.content.SharedPreferences prefs = ctx.getSharedPreferences("samsung_download_bridge",
+                    android.content.Context.MODE_PRIVATE);
+            int curThreads = prefs.getInt("download_threads", 16);
+            int curParallel = prefs.getInt("download_parallel", 2);
+            String curMode = prefs.getString("dl_mode", "internal"); // internal=内置, external=外部
+
+            final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+            final int pad = (int)(14 * act.getResources().getDisplayMetrics().density);
+            root.setPadding(pad, pad, pad, pad);
+
+            // 下载方式
+            android.widget.TextView modeLbl = new android.widget.TextView(act);
+            modeLbl.setText(T("下载方式", "Download mode"));
+            modeLbl.setTextSize(16); modeLbl.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            root.addView(modeLbl);
+            final android.widget.RadioGroup modeG = new android.widget.RadioGroup(act);
+            modeG.setOrientation(android.widget.RadioGroup.VERTICAL);
+            final android.widget.RadioButton rInternal = new android.widget.RadioButton(act);
+            rInternal.setText(T("内置下载器（多线程+MP4，推荐）", "Built-in (multi-thread + MP4, recommended)"));
+            final android.widget.RadioButton rExternal = new android.widget.RadioButton(act);
+            rExternal.setText(T("转到外部下载器（ADM 等）", "External downloader (ADM etc.)"));
+            modeG.addView(rInternal); modeG.addView(rExternal);
+            if ("external".equals(curMode)) rExternal.setChecked(true); else rInternal.setChecked(true);
+            root.addView(modeG);
+            android.widget.TextView modeHint = new android.widget.TextView(act);
+            modeHint.setText(T("内置：嗅探后多线程下载并转 MP4；外部：转交给已设置的下载器连接", "Built-in: download + convert MP4; External: hand off to configured downloader"));
+            modeHint.setTextSize(11); modeHint.setTextColor(0xFF888888);
+            root.addView(modeHint);
+
+            // 线程数
+            android.widget.TextView threadsLbl = new android.widget.TextView(act);
+            threadsLbl.setText(T("分片下载线程数（1-32）", "Download threads (1-32)"));
+            threadsLbl.setTextSize(14); 
+            android.widget.LinearLayout.LayoutParams tlLp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            tlLp.topMargin = pad;
+            root.addView(threadsLbl, tlLp);
+            final android.widget.EditText threadsIn = new android.widget.EditText(act);
+            threadsIn.setSingleLine(true); threadsIn.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            threadsIn.setText(String.valueOf(curThreads));
+            root.addView(threadsIn);
+
+            // 并行任务数
+            android.widget.TextView parLbl = new android.widget.TextView(act);
+            parLbl.setText(T("同时下载的任务数（1-10）", "Parallel tasks (1-10)"));
+            parLbl.setTextSize(14);
+            android.widget.LinearLayout.LayoutParams plLp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            plLp.topMargin = pad;
+            root.addView(parLbl, plLp);
+            final android.widget.EditText parIn = new android.widget.EditText(act);
+            parIn.setSingleLine(true); parIn.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            parIn.setText(String.valueOf(curParallel));
+            root.addView(parIn);
+
+            android.widget.ScrollView sv = new android.widget.ScrollView(act);
+            sv.addView(root, new android.widget.FrameLayout.LayoutParams(-1, -1));
+            new android.app.AlertDialog.Builder(act)
+                .setTitle(T("下载设置", "Download Settings"))
+                .setView(sv)
+                .setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) {
+                        try {
+                            String mode = rExternal.isChecked() ? "external" : "internal";
+                            int threads = 16, parallel = 2;
+                            try { threads = Integer.parseInt(threadsIn.getText().toString().trim()); } catch (Throwable ignored) {}
+                            try { parallel = Integer.parseInt(parIn.getText().toString().trim()); } catch (Throwable ignored) {}
+                            threads = Math.max(1, Math.min(32, threads));
+                            parallel = Math.max(1, Math.min(10, parallel));
+                            prefs.edit()
+                                .putString("dl_mode", mode)
+                                .putInt("download_threads", threads)
+                                .putInt("download_parallel", parallel)
+                                .commit();
+                            com.sbplus.browser.SbDownloadManager.setParallelCapacity(parallel);
+                            toastShort(T("已保存下载设置", "Download settings saved"));
+                        } catch (Throwable t) { XposedBridge.log("[SBPlus] save settings: " + t); }
+                    }
+                })
+                .setNegativeButton(T("取消", "Cancel"), null)
+                .create().show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showDownloadSettingsDialog: " + t);
+        }
+    }
+
     private void showDownloadList() {
         try {
             final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
@@ -8310,7 +8412,7 @@ private void showUaGroupDialog(final Context ctx) {
             for (final com.sbplus.browser.SbDownloadManager.Task t : tasks) {
                 android.widget.LinearLayout row = new android.widget.LinearLayout(act);
                 row.setOrientation(android.widget.LinearLayout.VERTICAL);
-                row.setPadding(0, dp(act, 8), 0, dp(act, 8));
+                row.setPadding(0, dp(act, 6), 0, dp(act, 6));
                 android.widget.TextView name = new android.widget.TextView(act);
                 name.setText(t.name + "  ·  " + statusText(t));
                 name.setTextSize(14);
@@ -8332,6 +8434,31 @@ private void showUaGroupDialog(final Context ctx) {
                 sub.setTextSize(12);
                 sub.setTextColor(0xFF888888);
                 row.addView(sub);
+                // 操作按钮行: 打开文件 / 删除
+                if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_DONE) {
+                    android.widget.LinearLayout opRow = new android.widget.LinearLayout(act);
+                    opRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                    android.widget.Button bOpen = new android.widget.Button(act);
+                    bOpen.setText(T("打开", "Open"));
+                    bOpen.setTextSize(12);
+                    android.widget.Button bDel = new android.widget.Button(act);
+                    bDel.setText(T("删除", "Delete"));
+                    bDel.setTextSize(12);
+                    android.widget.LinearLayout.LayoutParams op1 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+                    android.widget.LinearLayout.LayoutParams op2 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+                    op1.setMargins(0, dp(act,4), dp(act,4), 0);
+                    op2.setMargins(dp(act,4), dp(act,4), 0, 0);
+                    opRow.addView(bOpen, op1);
+                    opRow.addView(bDel, op2);
+                    row.addView(opRow);
+                    final String fid = t.id;
+                    bOpen.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) { try { openDownloadedFile(act, fid); } catch (Throwable ignored) {} }
+                    });
+                    bDel.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) { confirmDeleteDownload(act, fid); }
+                    });
+                }
                 list.addView(row);
             }
             // 3秒后自动刷新一次(如果对话框还开着)
@@ -8342,6 +8469,60 @@ private void showUaGroupDialog(final Context ctx) {
             }, 3000);
         } catch (Throwable t) { XposedBridge.log("[SBPlus] refreshListIn error: " + t); }
     }
+
+    /** 打开已下载的文件(系统媒体播放器). */
+    private void openDownloadedFile(android.app.Activity act, String id) {
+        try {
+            com.sbplus.browser.SbDownloadManager.Task t = com.sbplus.browser.SbDownloadManager.get(id);
+            if (t == null || t.outPath == null || t.outPath.isEmpty()) { toastShort(T("文件不存在", "File not found")); return; }
+            java.io.File f = new java.io.File(t.outPath);
+            if (!f.exists()) { toastShort(T("文件不存在", "File not found")); return; }
+            String mime;
+            String lower = f.getName().toLowerCase();
+            if (lower.endsWith(".mp4")) mime = "video/mp4";
+            else if (lower.endsWith(".mkv")) mime = "video/x-matroska";
+            else if (lower.endsWith(".m4a")) mime = "audio/mp4";
+            else if (lower.endsWith(".mp3")) mime = "audio/mpeg";
+            else mime = "video/*";
+            android.net.Uri uri = android.net.Uri.fromFile(f);
+            android.content.Intent it = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+            it.setDataAndType(uri, mime);
+            it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            try { act.startActivity(it); }
+            catch (Throwable t2) { toastShort(T("无法打开，可用文件管理器打开", "Cannot open")); }
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] openDownloadedFile: " + t); }
+    }
+
+    /** 确认删除: 询问是否连同文件一起删除. */
+    private void confirmDeleteDownload(final android.app.Activity act, final String id) {
+        try {
+            new android.app.AlertDialog.Builder(act)
+                .setTitle(T("删除下载", "Delete download"))
+                .setMessage(T("同时删除已下载的文件？", "Also delete the downloaded file?"))
+                .setPositiveButton(T("连同文件删除", "Delete file too"), new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) {
+                        try {
+                            com.sbplus.browser.SbDownloadManager.Task t = com.sbplus.browser.SbDownloadManager.get(id);
+                            if (t != null && t.outPath != null && !t.outPath.isEmpty()) {
+                                try { new java.io.File(t.outPath).delete(); } catch (Throwable ignored) {}
+                            }
+                            com.sbplus.browser.SbDownloadManager.remove(id);
+                            com.sbplus.browser.SbDownloadManager.cancel(sAppContext, id);
+                            toastShort(T("已删除", "Deleted"));
+                        } catch (Throwable ignored) {}
+                    }
+                })
+                .setNegativeButton(T("仅删记录", "Record only"), new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) {
+                        com.sbplus.browser.SbDownloadManager.remove(id);
+                        com.sbplus.browser.SbDownloadManager.cancel(sAppContext, id);
+                        toastShort(T("已删除记录", "Record deleted"));
+                    }
+                })
+                .create().show();
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] confirmDelete: " + t); }
+    }
+
 
     private String statusText(com.sbplus.browser.SbDownloadManager.Task t) {
         try {
@@ -8373,9 +8554,18 @@ private void showUaGroupDialog(final Context ctx) {
             String baseName = null;
             if (title != null && !title.isEmpty()) baseName = sanitizeFileName(title);
             if (baseName == null || baseName.isEmpty()) {
-                baseName = sanitizeFileName(m3u8Url);
-                int q = baseName.indexOf('.');
-                if (q > 0) baseName = baseName.substring(0, q);
+                // 从 URL 提取最后一个有意义的路径段作为文件名(去掉 query/hash)
+                String uu = m3u8Url;
+                int hq = uu.indexOf('?'); if (hq > 0) uu = uu.substring(0, hq);
+                int hh = uu.indexOf('#'); if (hh > 0) uu = uu.substring(0, hh);
+                int slash = uu.lastIndexOf('/');
+                String last = slash >= 0 ? uu.substring(slash + 1) : uu;
+                if (last == null || last.isEmpty()) last = uu;
+                // 去掉扩展名
+                int dot = last.lastIndexOf('.');
+                if (dot > 0) last = last.substring(0, dot);
+                if (last == null || last.isEmpty()) last = "video";
+                baseName = sanitizeFileName(last);
             }
 
             java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
@@ -8576,38 +8766,72 @@ private void showUaGroupDialog(final Context ctx) {
             final java.util.List<Integer> muxerTracks = new java.util.ArrayList<Integer>();
             try {
                 final java.util.List<android.media.MediaFormat> formats = new java.util.ArrayList<android.media.MediaFormat>();
-                int selected = 0;
                 for (int i = 0; i < trackCount; i++) {
                     final android.media.MediaFormat fmt = extractor.getTrackFormat(i);
                     formats.add(fmt);
-                    XposedBridge.log("[SBPlus] tsToMp4 track[" + i + "] mime=" + fmt.getString(android.media.MediaFormat.KEY_MIME));
-                    extractor.selectTrack(i);
-                    selected++;
+                    String mime = "";
+                    try { mime = fmt.getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {}
+                    XposedBridge.log("[SBPlus] tsToMp4 track[" + i + "] mime=" + mime);
                 }
-                if (selected == 0) { extractor.release(); return null; }
+                if (formats.isEmpty()) { extractor.release(); return null; }
                 final java.io.File out = new java.io.File(tsFile.getParentFile(), baseName + ".mp4");
                 muxer = new android.media.MediaMuxer(out.getAbsolutePath(),
                         android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
                 for (int i = 0; i < trackCount; i++) {
-                    muxerTracks.add(Integer.valueOf(muxer.addTrack(formats.get(i))));
+                    android.media.MediaFormat fmt = formats.get(i);
+                    // 音频若缺 csd-0, 尝试从首个 sample 的 ADTS 头补 AudioSpecificConfig
+                    String mime = "";
+                    try { mime = fmt.getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {}
+                    if (mime != null && mime.equals("audio/mp4a-latm") && !fmt.containsKey("csd-0")) {
+                        int[] p = sniffAacFromExtractor(extractor, i);
+                        if (p != null) {
+                            byte[] cfg = buildAudioSpecificConfig(p[0], p[1]);
+                            if (cfg != null) {
+                                fmt.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg));
+                                XposedBridge.log("[SBPlus] tsToMp4 audio csd-0 set sr=" + p[0] + " ch=" + p[1]);
+                            }
+                        }
+                    }
+                    muxerTracks.add(Integer.valueOf(muxer.addTrack(fmt)));
                 }
                 muxer.start();
                 java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(2 * 1024 * 1024);
                 android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
-                // 每个 track 单独读取: 先取消全部选中, 再单独选一个
                 for (int ti = 0; ti < trackCount; ti++) {
                     for (int u = 0; u < trackCount; u++) { try { extractor.unselectTrack(u); } catch (Throwable ignored) {} }
                     extractor.selectTrack(ti);
+                    String mime = "";
+                    try { mime = formats.get(ti).getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {}
+                    boolean isAac = mime != null && mime.equals("audio/mp4a-latm");
                     int idx = muxerTracks.get(ti).intValue();
+                    boolean needSeek = true;
                     while (true) {
                         int sampleSize = extractor.readSampleData(buf, 0);
                         if (sampleSize < 0) break;
-                        info.offset = 0;
-                        info.size = sampleSize;
+                        int off = 0, size = sampleSize;
+                        if (isAac && sampleSize >= 7) {
+                            byte b0 = buf.get(0), b1 = buf.get(1);
+                            if ((b0 & 0xFF) == 0xFF && (b1 & 0xF0) == 0xF0) {
+                                // ADTS header: 7 或 9 字节(带 CRC/ID3)
+                                int protectionAbsent = (b1 >> 1) & 0x01;
+                                int hdr = protectionAbsent == 1 ? 7 : 9;
+                                // frameLength
+                                int fl = 0;
+                                try { fl = ((buf.get(3) & 0x03) << 11) | ((buf.get(4) & 0xFF) << 3) | ((buf.get(5) & 0xE0) >> 5); } catch (Throwable ignored) {}
+                                if (hdr > 0 && hdr <= sampleSize) { off = hdr; size = sampleSize - hdr; }
+                                if (fl > 0 && fl >= hdr && fl <= sampleSize) size = fl - hdr;
+                            }
+                        }
+                        info.offset = off;
+                        info.size = size;
                         info.presentationTimeUs = extractor.getSampleTime();
                         info.flags = (extractor.getSampleFlags() & android.media.MediaExtractor.SAMPLE_FLAG_SYNC) != 0
                                 ? android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
-                        muxer.writeSampleData(idx, buf, info);
+                        try {
+                            muxer.writeSampleData(idx, buf, info);
+                        } catch (Throwable we) {
+                            if (needSeek) { needSeek = false; }
+                        }
                         if (!extractor.advance()) break;
                     }
                 }
@@ -8624,6 +8848,49 @@ private void showUaGroupDialog(final Context ctx) {
             return null;
         }
     }
+
+    /** 从 extractor 选中 track 的首个 sample 读 ADTS 头, 返回 {采样率, 声道}. */
+    private int[] sniffAacFromExtractor(android.media.MediaExtractor ext, int track) {
+        try {
+            int save = -1;
+            try { save = ext.getSampleTrackIndex(); } catch (Throwable ignored) {}
+            for (int u = 0; u < ext.getTrackCount(); u++) { try { ext.unselectTrack(u); } catch (Throwable ignored) {} }
+            ext.selectTrack(track);
+            java.nio.ByteBuffer hb = java.nio.ByteBuffer.allocate(64);
+            int n = ext.readSampleData(hb, 0);
+            if (n < 7) return null;
+            byte b0 = hb.get(0), b1 = hb.get(1);
+            if ((b0 & 0xFF) != 0xFF || (b1 & 0xF0) != 0xF0) return null;
+            int sfIdx = (b1 >> 2) & 0x0F;
+            int chan = ((b1 & 0x01) << 2) | ((hb.get(2) >> 6) & 0x03);
+            int[] srTab = {96000,88200,64000,48000,44100,32000,24000,22050,16000,12000,11025,8000,7350};
+            int sr = (sfIdx >= 0 && sfIdx < srTab.length) ? srTab[sfIdx] : -1;
+            return new int[]{sr, chan};
+        } catch (Throwable t) { return null; }
+    }
+
+    private byte[] buildAudioSpecificConfig(int sr, int ch) {
+        int sfIdx;
+        switch (sr) {
+            case 96000: sfIdx = 0; break;
+            case 88200: sfIdx = 1; break;
+            case 64000: sfIdx = 2; break;
+            case 48000: sfIdx = 3; break;
+            case 44100: sfIdx = 4; break;
+            case 32000: sfIdx = 5; break;
+            case 24000: sfIdx = 6; break;
+            case 22050: sfIdx = 7; break;
+            case 16000: sfIdx = 8; break;
+            case 12000: sfIdx = 9; break;
+            case 11025: sfIdx = 10; break;
+            case 8000:  sfIdx = 11; break;
+            default: sfIdx = -1;
+        }
+        if (sfIdx < 0 || ch < 1 || ch > 8) return null;
+        int asc = (2 << 11) | (sfIdx << 7) | (ch << 3);
+        return new byte[] { (byte)((asc >> 8) & 0xFF), (byte)(asc & 0xFF) };
+    }
+
 
 private boolean showMediaDialog(String json) {
         try {
@@ -9165,6 +9432,30 @@ private boolean showMediaDialog(String json) {
             android.widget.LinearLayout.LayoutParams b3p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
             btnRow.addView(btnRefresh, b0p); btnRow.addView(btnAll, b1p); btnRow.addView(btnDl, b2p); btnRow.addView(btnCancel, b3p);
             root.addView(btnRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
+
+            // 第二行: 下载设置 + 下载管理入口
+            try {
+                final android.widget.LinearLayout setRow = new android.widget.LinearLayout(act);
+                setRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                final android.widget.Button btnSettings = new android.widget.Button(act);
+                final android.widget.Button btnDlList = new android.widget.Button(act);
+                btnSettings.setText(T("⚙ 下载设置", "⚙ Settings"));
+                btnDlList.setText(T("📥 下载管理", "📥 Downloads"));
+                btnSettings.setTextSize(13); btnDlList.setTextSize(13);
+                android.widget.LinearLayout.LayoutParams sp1 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+                android.widget.LinearLayout.LayoutParams sp2 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+                sp1.setMargins(0, dp(act,6), dp(act,4), 0);
+                sp2.setMargins(dp(act,4), dp(act,6), 0, 0);
+                setRow.addView(btnSettings, sp1);
+                setRow.addView(btnDlList, sp2);
+                root.addView(setRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
+                btnSettings.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override public void onClick(android.view.View v) { try { showDownloadSettingsDialog(act); } catch (Throwable t) { XposedBridge.log("[SBPlus] settings dlg: " + t); } }
+                });
+                btnDlList.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override public void onClick(android.view.View v) { try { showDownloadList(); } catch (Throwable t) { XposedBridge.log("[SBPlus] dllist dlg: " + t); } }
+                });
+            } catch (Throwable ignored) {}
 
             final boolean[] allSelected = new boolean[]{false};
             btnAll.setOnClickListener(new android.view.View.OnClickListener() {

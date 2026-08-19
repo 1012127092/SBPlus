@@ -75,6 +75,15 @@ public class SbDownloadManager {
         try { if (taskSem != null) taskSem.release(); } catch (Throwable ignored) {}
     }
 
+    /** 直接设置/调整全局任务并发容量(由下载设置调用). */
+    public static synchronized void setParallelCapacity(int capacity) {
+        try {
+            if (capacity < 1) capacity = 1;
+            taskSemCap = capacity;
+            taskSem = new java.util.concurrent.Semaphore(capacity);
+        } catch (Throwable ignored) {}
+    }
+
 
     public static synchronized Task register(String id, String name) {
         Task t = new Task(id, name);
@@ -156,9 +165,13 @@ public class SbDownloadManager {
             } else if (t.status == STATUS_DONE) {
                 b.setContentText("下载完成 ✔ · " + t.outPath);
                 b.setProgress(0, 0, false);
+                b.setSmallIcon(android.R.drawable.stat_sys_download_done);
+                b.setAutoCancel(true);
             } else {
                 b.setContentText("下载失败 · " + t.detail);
                 b.setProgress(0, 0, false);
+                b.setSmallIcon(android.R.drawable.stat_sys_download_done);
+                b.setAutoCancel(true);
             }
 
             // 通知点击 -> 发广播, 由浏览器进程内的接收器弹出下载列表
@@ -171,6 +184,20 @@ public class SbDownloadManager {
             } catch (Throwable ignored) {}
 
             nm.notify(notifId(t.id), b.build());
+
+            // 完成后延迟数秒自动移除通知(避免一直挂着"运行中")
+            if (t.status == STATUS_DONE || t.status == STATUS_FAILED) {
+                final String fid = t.id;
+                final int nid = notifId(t.id);
+                new java.lang.Thread(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            java.lang.Thread.sleep(4000);
+                            try { nm.cancel(nid); } catch (Throwable ignored) {}
+                        } catch (Throwable ignored) {}
+                    }
+                }).start();
+            }
         } catch (Throwable ignored) {}
     }
 
