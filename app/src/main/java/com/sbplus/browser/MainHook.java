@@ -1390,9 +1390,9 @@ private static final String[] RANDOM_UAS = new String[]{
             XposedBridge.log("[SBPlus] userscript item injected: " + addedUserscript);
 
             // 「资源嗅探」作为可点击进入子页的入口（带右侧指示竖线箭头）。
-            Object sniffPref = buildSniffEntry(ctx, cl);
+            Object sniffPref = buildSniffSwitch(ctx, cl);
             boolean addedSniff = (Boolean) XposedHelpers.callMethod(screen, "addPreference", sniffPref);
-            XposedBridge.log("[SBPlus] sniff entry injected: " + addedSniff);
+            XposedBridge.log("[SBPlus] sniff item injected: " + addedSniff);
 
             Object pref = buildExternalDownloaderSwitch(ctx, cl);
             boolean added = (Boolean) XposedHelpers.callMethod(screen, "addPreference", pref);
@@ -5115,7 +5115,40 @@ private void showUaGroupDialog(final Context ctx) {
         XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，点击识别当前页面的音频/视频/图片并下载（可预览、多选、打包）", "Show a sniffer icon in the address bar. Detect audio/video/images on the current page, preview, multi-select and download"));
         XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
-        try { XposedHelpers.callMethod(pref, "setDividerVisible", false); } catch (Throwable ignored) {}
+        // 显示条目分隔线(竖线), 与油猴子页入口一致.
+        try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+        // 点击整行 -> 进入「资源嗅探」子页(下载方式/线程/任务数/下载列表). 与油猴入口同款写法.
+        try {
+            Class<?> clickListenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
+            Object clickListener = java.lang.reflect.Proxy.newProxyInstance(cl,
+                    new Class[]{clickListenerType},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceClick")) {
+                                    Object clicked = args[0];
+                                    Object actObj = XposedHelpers.callMethod(clicked, "getContext");
+                                    if (actObj instanceof android.app.Activity) {
+                                        android.os.Bundle a = new android.os.Bundle();
+                                        a.putString(ARG_PAGE, PAGE_SNIFF_SETTINGS);
+                                        navigateToFragment((android.app.Activity) actObj,
+                                                "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom", a);
+                                        sInPickerPage = true;
+                                        sCurrentPickerPage = PAGE_SNIFF_SETTINGS;
+                                    }
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] sniff navigate error: " + t);
+                            }
+                            return Boolean.FALSE;
+                        }
+                    });
+            XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", clickListener);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] sniff click bind failed: " + t);
+        }
 
         try {
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
@@ -5144,46 +5177,6 @@ private void showUaGroupDialog(final Context ctx) {
         }
         return pref;
     }
-    /** 「资源嗅探」可点击入口：进入资源嗅探/下载设置子页。带右侧指示竖线。 */
-    private Object buildSniffEntry(Context ctx, ClassLoader cl) {
-        try {
-            Class<?> prefCls = XposedHelpers.findClass(
-                    "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
-            Object pref = XposedHelpers.newInstance(prefCls, new Class[]{Context.class}, ctx);
-            XposedHelpers.callMethod(pref, "setTitle", T("资源嗅探", "Media Sniffer"));
-            XposedHelpers.callMethod(pref, "setKey", "sbplus_sniff_settings");
-            refreshSniffEntrySummary(pref);
-            // 不调用 setDividerVisible(false)：保留条目分隔线（竖线）。
-            final ClassLoader fcl = cl;
-            final Context fctx = ctx;
-            bindPreferenceClick(pref, cl, new Runnable() {
-                @Override public void run() {
-                    if (fctx instanceof android.app.Activity) navigateToSniffSettings((android.app.Activity) fctx);
-                }
-            });
-            XposedBridge.log("[SBPlus] sniff entry built");
-            return pref;
-        } catch (Throwable t) {
-            XposedBridge.log("[SBPlus] buildSniffEntry error: " + t);
-            return buildSniffSwitch(ctx, cl); // 兜底：退回开关
-        }
-    }
-
-    private void refreshSniffEntrySummary(Object pref) {
-        try {
-            android.content.Context ctx = null;
-            try { ctx = (android.content.Context) XposedHelpers.callMethod(pref, "getContext"); } catch (Throwable ignored) {}
-            if (ctx == null) return;
-            android.content.SharedPreferences sp = ctx.getSharedPreferences(
-                    "samsung_download_bridge", android.content.Context.MODE_PRIVATE);
-            String mode = sp.getString("dl_mode", "internal");
-            String modeStr = "internal".equals(mode) ? T("内置下载器", "Built-in") : T("外部下载器", "External");
-            String sniffOn = isSniffEnabled() ? T("已开启", "On") : T("已关闭", "Off");
-            XposedHelpers.callMethod(pref, "setSummary",
-                    T("嗅探：", "Sniff: ") + sniffOn + "  ·  " + T("下载：", "DL: ") + modeStr);
-        } catch (Throwable ignored) {}
-    }
-
     private void navigateToSniffSettings(android.app.Activity act) {
         try {
             android.os.Bundle args = new android.os.Bundle();
@@ -5202,10 +5195,6 @@ private void showUaGroupDialog(final Context ctx) {
     /** 资源嗅探子页：嗅探开关 + 下载方式 + 线程数/任务数 + 打开下载列表。 */
     private void injectSniffSettingsPicker(final Context ctx, final ClassLoader cl, Object screen) {
         try {
-            // 嗅探开关
-            Object sniffOn = buildSniffSwitch(ctx, cl);
-            XposedHelpers.callMethod(screen, "addPreference", sniffOn);
-
             // 下载方式
             final Object modePref = buildPreferenceCustom(ctx, cl);
             XposedHelpers.callMethod(modePref, "setTitle", T("下载方式", "Download mode"));
