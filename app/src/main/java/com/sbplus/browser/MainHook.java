@@ -101,6 +101,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String PAGE_UA_PICKER = "ua_picker";
     private static final String PAGE_CLEAN_SETTINGS_PICKER = "clean_settings_picker";
     private static final String PAGE_VIDEO_BG_PICKER = "video_bg_picker";
+    private static final String PAGE_SNIFF_SETTINGS = "sniff_settings";
     private static final String PAGE_HOME_BEAUTIFY = "home_beautify";
     private static final String PAGE_USERSCRIPT_PICKER = "userscript_picker";
     private static final String PAGE_USERSCRIPT_DETAIL = "userscript_detail";
@@ -1367,6 +1368,8 @@ private static final String[] RANDOM_UAS = new String[]{
             injectCleanSettingsPicker(ctx, cl, screen, frag);
         } else if (PAGE_VIDEO_BG_PICKER.equals(page)) {
             injectVideoBgPicker(ctx, cl, screen);
+        } else if (PAGE_SNIFF_SETTINGS.equals(page)) {
+            injectSniffSettingsPicker(ctx, cl, screen);
         } else if (PAGE_HOME_BEAUTIFY.equals(page)) {
             injectHomeBeautify(ctx, cl, screen);
         } else if (PAGE_USERSCRIPT_PICKER.equals(page)) {
@@ -1386,9 +1389,10 @@ private static final String[] RANDOM_UAS = new String[]{
             boolean addedUserscript = (Boolean) XposedHelpers.callMethod(screen, "addPreference", userscriptPref);
             XposedBridge.log("[SBPlus] userscript item injected: " + addedUserscript);
 
-            Object sniffPref = buildSniffSwitch(ctx, cl);
+            // 「资源嗅探」作为可点击进入子页的入口（带右侧指示竖线箭头）。
+            Object sniffPref = buildSniffEntry(ctx, cl);
             boolean addedSniff = (Boolean) XposedHelpers.callMethod(screen, "addPreference", sniffPref);
-            XposedBridge.log("[SBPlus] sniff item injected: " + addedSniff);
+            XposedBridge.log("[SBPlus] sniff entry injected: " + addedSniff);
 
             Object pref = buildExternalDownloaderSwitch(ctx, cl);
             boolean added = (Boolean) XposedHelpers.callMethod(screen, "addPreference", pref);
@@ -5140,6 +5144,191 @@ private void showUaGroupDialog(final Context ctx) {
         }
         return pref;
     }
+    /** 「资源嗅探」可点击入口：进入资源嗅探/下载设置子页。带右侧指示竖线。 */
+    private Object buildSniffEntry(Context ctx, ClassLoader cl) {
+        try {
+            Class<?> prefCls = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+            Object pref = XposedHelpers.newInstance(prefCls, new Class[]{Context.class}, ctx);
+            XposedHelpers.callMethod(pref, "setTitle", T("资源嗅探", "Media Sniffer"));
+            XposedHelpers.callMethod(pref, "setKey", "sbplus_sniff_settings");
+            refreshSniffEntrySummary(pref);
+            // 不调用 setDividerVisible(false)：保留条目分隔线（竖线）。
+            final ClassLoader fcl = cl;
+            final Context fctx = ctx;
+            bindPreferenceClick(pref, cl, new Runnable() {
+                @Override public void run() {
+                    if (fctx instanceof android.app.Activity) navigateToSniffSettings((android.app.Activity) fctx);
+                }
+            });
+            XposedBridge.log("[SBPlus] sniff entry built");
+            return pref;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] buildSniffEntry error: " + t);
+            return buildSniffSwitch(ctx, cl); // 兜底：退回开关
+        }
+    }
+
+    private void refreshSniffEntrySummary(Object pref) {
+        try {
+            android.content.Context ctx = null;
+            try { ctx = (android.content.Context) XposedHelpers.callMethod(pref, "getContext"); } catch (Throwable ignored) {}
+            if (ctx == null) return;
+            android.content.SharedPreferences sp = ctx.getSharedPreferences(
+                    "samsung_download_bridge", android.content.Context.MODE_PRIVATE);
+            String mode = sp.getString("dl_mode", "internal");
+            String modeStr = "internal".equals(mode) ? T("内置下载器", "Built-in") : T("外部下载器", "External");
+            String sniffOn = isSniffEnabled() ? T("已开启", "On") : T("已关闭", "Off");
+            XposedHelpers.callMethod(pref, "setSummary",
+                    T("嗅探：", "Sniff: ") + sniffOn + "  ·  " + T("下载：", "DL: ") + modeStr);
+        } catch (Throwable ignored) {}
+    }
+
+    private void navigateToSniffSettings(android.app.Activity act) {
+        try {
+            android.os.Bundle args = new android.os.Bundle();
+            args.putString(ARG_PAGE, PAGE_SNIFF_SETTINGS);
+            navigateToFragment(act,
+                    "com.sec.android.app.sbrowser.common.settings.PreferenceFragmentCustom",
+                    args);
+            sInPickerPage = true;
+            sCurrentPickerPage = PAGE_SNIFF_SETTINGS;
+            XposedBridge.log("[SBPlus] navigated to sniff settings");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] navigateToSniffSettings error: " + t);
+        }
+    }
+
+    /** 资源嗅探子页：嗅探开关 + 下载方式 + 线程数/任务数 + 打开下载列表。 */
+    private void injectSniffSettingsPicker(final Context ctx, final ClassLoader cl, Object screen) {
+        try {
+            // 嗅探开关
+            Object sniffOn = buildSniffSwitch(ctx, cl);
+            XposedHelpers.callMethod(screen, "addPreference", sniffOn);
+
+            // 下载方式
+            final Object modePref = buildPreferenceCustom(ctx, cl);
+            XposedHelpers.callMethod(modePref, "setTitle", T("下载方式", "Download mode"));
+            XposedHelpers.callMethod(modePref, "setKey", "sbplus_dl_mode");
+            refreshModeSummary(ctx, modePref);
+            final Object[] modePrefRef = new Object[]{modePref};
+            bindPreferenceClick(modePref, cl, new Runnable() { @Override public void run() { pickDownloadMode(ctx, modePrefRef); } });
+            XposedHelpers.callMethod(screen, "addPreference", modePref);
+
+            // 分片下载线程数
+            final Object threadsPref = buildPreferenceCustom(ctx, cl);
+            XposedHelpers.callMethod(threadsPref, "setTitle", T("分片下载线程数", "Download threads"));
+            XposedHelpers.callMethod(threadsPref, "setKey", "sbplus_dl_threads");
+            refreshThreadsSummary(ctx, threadsPref);
+            bindPreferenceClick(threadsPref, cl, new Runnable() { @Override public void run() { editNumber(ctx, "download_threads", 16, 1, 32, threadsPref); } });
+            XposedHelpers.callMethod(screen, "addPreference", threadsPref);
+
+            // 同时下载任务数
+            final Object parallelPref = buildPreferenceCustom(ctx, cl);
+            XposedHelpers.callMethod(parallelPref, "setTitle", T("同时下载任务数", "Parallel tasks"));
+            XposedHelpers.callMethod(parallelPref, "setKey", "sbplus_dl_parallel");
+            refreshParallelSummary(ctx, parallelPref);
+            bindPreferenceClick(parallelPref, cl, new Runnable() { @Override public void run() { editNumber(ctx, "download_parallel", 2, 1, 10, parallelPref); } });
+            XposedHelpers.callMethod(screen, "addPreference", parallelPref);
+
+            // 打开下载列表
+            final Object listPref = buildPreferenceCustom(ctx, cl);
+            XposedHelpers.callMethod(listPref, "setTitle", T("打开下载列表", "Open download list"));
+            XposedHelpers.callMethod(listPref, "setSummary", T("查看下载状态、打开文件、删除", "View status, open files, delete"));
+            XposedHelpers.callMethod(listPref, "setKey", "sbplus_dl_list");
+            bindPreferenceClick(listPref, cl, new Runnable() { @Override public void run() {
+                try {
+                    android.content.Intent it = new android.content.Intent("com.sbplus.browser.ACTION_SHOW_DOWNLOADS");
+                    it.setPackage(ctx.getPackageName());
+                    ctx.sendBroadcast(it);
+                } catch (Throwable ignored) {}
+            } });
+            XposedHelpers.callMethod(screen, "addPreference", listPref);
+
+            XposedBridge.log("[SBPlus] sniff settings submenu injected");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] injectSniffSettingsPicker error: " + t);
+        }
+    }
+
+    private Object buildPreferenceCustom(Context ctx, ClassLoader cl) {
+        Class<?> prefCls = XposedHelpers.findClass(
+                "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+        return XposedHelpers.newInstance(prefCls, new Class[]{Context.class}, ctx);
+    }
+
+    private void refreshModeSummary(Context ctx, Object pref) {
+        try {
+            android.content.SharedPreferences sp = ctx.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE);
+            String mode = sp.getString("dl_mode", "internal");
+            XposedHelpers.callMethod(pref, "setSummary",
+                    "internal".equals(mode) ? T("内置下载器（多线程 + 转 MP4）", "Built-in (multi-thread + MP4)") : T("外部下载器（转交第三方）", "External downloader"));
+        } catch (Throwable ignored) {}
+    }
+    private void refreshThreadsSummary(Context ctx, Object pref) {
+        try {
+            android.content.SharedPreferences sp = ctx.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE);
+            XposedHelpers.callMethod(pref, "setSummary", T("当前 ", "Current ") + sp.getInt("download_threads", 16));
+        } catch (Throwable ignored) {}
+    }
+    private void refreshParallelSummary(Context ctx, Object pref) {
+        try {
+            android.content.SharedPreferences sp = ctx.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE);
+            XposedHelpers.callMethod(pref, "setSummary", T("当前 ", "Current ") + sp.getInt("download_parallel", 2));
+        } catch (Throwable ignored) {}
+    }
+
+    private void pickDownloadMode(final Context ctx, final Object[] modePrefRef) {
+        try {
+            android.content.SharedPreferences sp = ctx.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE);
+            final String cur = sp.getString("dl_mode", "internal");
+            String[] items = new String[]{ T("内置下载器（多线程+MP4，推荐）", "Built-in (recommended)"),
+                                           T("外部下载器（转交第三方）", "External downloader") };
+            int idx = "external".equals(cur) ? 1 : 0;
+            android.app.AlertDialog d = new android.app.AlertDialog.Builder(ctx)
+                .setTitle(T("下载方式", "Download mode"))
+                .setSingleChoiceItems(items, idx, new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface dlg, int which) {
+                        String mode = (which == 1) ? "external" : "internal";
+                        sp.edit().putString("dl_mode", mode).commit();
+                        com.sbplus.browser.SbDownloadManager.setParallelCapacity(sp.getInt("download_parallel", 2));
+                        refreshModeSummary(ctx, modePrefRef[0]);
+                        dlg.dismiss();
+                    }
+                })
+                .setNegativeButton(T("取消", "Cancel"), null)
+                .create();
+            d.show();
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] pickDownloadMode: " + t); }
+    }
+
+    private void editNumber(final Context ctx, final String key, final int def, final int min, final int max, final Object pref) {
+        try {
+            final android.content.SharedPreferences sp = ctx.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE);
+            final android.widget.EditText et = new android.widget.EditText(ctx);
+            et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            et.setText(String.valueOf(sp.getInt(key, def)));
+            final int pad = (int)(16 * ctx.getResources().getDisplayMetrics().density);
+            et.setPadding(pad, pad, pad, pad);
+            new android.app.AlertDialog.Builder(ctx)
+                .setTitle((min<=10&&max<=10) ? T("任务数（1-10）", "Tasks (1-10)") : T("线程数（1-32）", "Threads (1-32)"))
+                .setView(et)
+                .setPositiveButton(T("确定", "OK"), new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) {
+                        try {
+                            int v = Integer.parseInt(et.getText().toString().trim());
+                            v = Math.max(min, Math.min(max, v));
+                            sp.edit().putInt(key, v).commit();
+                            if ("download_threads".equals(key)) refreshThreadsSummary(ctx, pref);
+                            else if ("download_parallel".equals(key)) { refreshParallelSummary(ctx, pref); com.sbplus.browser.SbDownloadManager.setParallelCapacity(v); }
+                        } catch (Throwable ignored) {}
+                    }
+                })
+                .setNegativeButton(T("取消", "Cancel"), null)
+                .create().show();
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] editNumber: " + t); }
+    }
+
 
     /** 嗅探开关变化时，立即从当前地址栏移除图标（启用则等下次布局重建自动出现）。 */
     private void applySniffSwitchIcon(final boolean enabled) {
