@@ -6895,6 +6895,41 @@ private void showUaGroupDialog(final Context ctx) {
             bindPreferenceClick(modePref, cl, new Runnable() { @Override public void run() { pickDownloadMode(ctx, modePrefRef); } });
             XposedHelpers.callMethod(screen, "addPreference", modePref);
 
+            // 下载后转 MP4 开关
+            try {
+                Class<?> switchPrefCls = XposedHelpers.findClass(
+                        "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+                final Object conv = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
+                XposedHelpers.callMethod(conv, "setTitle", T("下载后转 MP4", "Convert to MP4"));
+                XposedHelpers.callMethod(conv, "setKey", "sbplus_dl_convertmp4");
+                XposedHelpers.callMethod(conv, "setSummary", T("关:保留下载的 TS/原格式;开:下载完成后转成 MP4", "Off: keep TS/original; On: convert to MP4 after download"));
+                boolean convOn = ctx.getSharedPreferences("samsung_download_bridge", Context.MODE_PRIVATE)
+                        .getBoolean("dl_convert_mp4", true);
+                XposedHelpers.callMethod(conv, "setChecked", convOn);
+                XposedHelpers.callMethod(conv, "setSelectable", true);
+                try { XposedHelpers.callMethod(conv, "setDividerVisible", true); } catch (Throwable ignored) {}
+                Class<?> lt = listenerParamType(conv.getClass(), "setOnPreferenceChangeListener");
+                Object cl2 = java.lang.reflect.Proxy.newProxyInstance(cl, new Class[]{lt},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceChange")) {
+                                    boolean en = args[1] instanceof Boolean && (Boolean) args[1];
+                                    ctx.getSharedPreferences("samsung_download_bridge", Context.MODE_PRIVATE)
+                                            .edit().putBoolean("dl_convert_mp4", en).commit();
+                                    XposedBridge.log("[SBPlus] convert-mp4 -> " + en);
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable ignored) {}
+                            return Boolean.FALSE;
+                        }
+                    });
+                XposedHelpers.callMethod(conv, "setOnPreferenceChangeListener", cl2);
+                XposedHelpers.callMethod(screen, "addPreference", conv);
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] convert-mp4 switch err: " + t);
+            }
+
             // 分片下载线程数
             final Object threadsPref = buildPreferenceCustom(ctx, cl);
             XposedHelpers.callMethod(threadsPref, "setTitle", T("分片下载线程数", "Download threads"));
