@@ -127,6 +127,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     /** 当前详情页绑定的脚本文件名(供 setChecked hook 写回 prefs)。 */
     private static String sDetailFileName = null;
     private static final int REQUEST_USERSCRIPT_PICK = 61002;
+    public static final int REQUEST_FONT_PICK = 61004;
     private static final String KEY_USERSCRIPT_SOURCES = "userscript_sources";
 
     // Default target downloaders (overridable).
@@ -375,6 +376,7 @@ private static final String[] RANDOM_UAS = new String[]{
         hookUserscriptToolbar(lpparam.classLoader);
     hookNetworkSniff(lpparam.classLoader);
         hookThemeHook(lpparam.classLoader);
+        hookGlobalFont(lpparam.classLoader);
 
         // ===== 临时诊断: 定位"页面背景变蓝"来源 (hook setColorFilter 蓝色) =====
         try {
@@ -737,19 +739,30 @@ private static final String[] RANDOM_UAS = new String[]{
         } catch (Throwable ignored) {}
     }
 
+    private static boolean isSniffPageKey(String key) {
+        // 资源嗅探子页的下载设置条目(普通设置,非单选)固定 key, 注入圆点时需排除
+        return "sbplus_dl_mode".equals(key)
+                || "sbplus_dl_threads".equals(key)
+                || "sbplus_dl_parallel".equals(key)
+                || "sbplus_dl_list".equals(key);
+    }
+
     private void decoratePickerRow(Object preference, Object holder) {
         try {
             String key = (String) XposedHelpers.callMethod(preference, "getKey");
             if (key == null) return;
 
-            if (key.startsWith("sbplus_dl_")) {
-                // 下载方式/线程数/任务数/打开下载列表 等普通条目: 不再注入圆点(旧的单选残留已废弃)
+            if (key.startsWith("sbplus_dl_") && !isSniffPageKey(key)) {
                 Object itemView = XposedHelpers.getObjectField(holder, "itemView");
                 if (!(itemView instanceof android.view.View)) return;
-                // 仅"自定义下载器"行保留内联编辑(不带圆点)
+                android.view.View root = (android.view.View) itemView;
                 if ("sbplus_dl_custom".equals(key)) {
-                    android.view.View root = (android.view.View) itemView;
+                    // 自定义下载器行: 选中圆点 + 内联编辑
+                    injectRadioDot(root, key);
                     injectInlineEdit(root, key);
+                } else {
+                    // 预设下载器行: 注入选中圆点(单选标记)
+                    injectRadioDot(root, key);
                 }
             } else if (key.startsWith("sbplus_region_")) {
                 Object itemView = XposedHelpers.getObjectField(holder, "itemView");
@@ -3350,8 +3363,8 @@ private static final String[] RANDOM_UAS = new String[]{
                         @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 XposedBridge.log("[SBPlus] onPageFinished fired url=" + (param.args.length>1?String.valueOf(param.args[1]):""));
-                                if (!isThemeActive()) return;
                                 Object wv = param.args[0];
+                                if (!isThemeActive()) return;
                                 if (!(wv instanceof android.webkit.WebView)) return;
                                 android.content.Context ctx = sAppContext;
                                 if (ctx == null) return;
@@ -3731,7 +3744,15 @@ private boolean isThemeMasterEnabled() {
         Object themeEntry = ThemeColorHelper.buildEntry(ctx, cl);
         if (themeEntry != null) { XposedHelpers.callMethod(screen, "addPreference", themeEntry); }
 
-        XposedBridge.log("[SBPlus] home beautify page injected (theme color)");
+        // -- 字体入口 --
+        try {
+            Object fontEntry = FontHelper.buildEntry(ctx, cl);
+            if (fontEntry != null) { XposedHelpers.callMethod(screen, "addPreference", fontEntry); }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] font entry error: " + t);
+        }
+
+        XposedBridge.log("[SBPlus] home beautify page injected (theme color + font)");
     }
 
     /** 开关:去除主页搜索框内文字(搜索或输入网址)。 */
@@ -5131,6 +5152,31 @@ private void showUaGroupDialog(final Context ctx) {
                                     }
                                     return;
                                 }
+                                if (req == REQUEST_FONT_PICK) {
+                                    int res = (Integer) param.args[1];
+                                    android.content.Intent data = (android.content.Intent) param.args[2];
+                                    if (res != android.app.Activity.RESULT_OK || data == null
+                                            || data.getData() == null) return;
+                                    android.net.Uri uri = data.getData();
+                                    boolean ok = FontHelper.addFontFromUri((android.content.Context) param.thisObject, uri);
+                                    if (ok) {
+                                        // 自动选中刚添加的字体并启用
+                                        java.util.List<String> list = FontHelper.listFonts((android.content.Context) param.thisObject);
+                                        String newest = list.isEmpty() ? "" : list.get(list.size() - 1);
+                                        if (!newest.isEmpty()) {
+                                            FontHelper.selectFont((android.content.Context) param.thisObject, newest);
+                                            FontHelper.setEnabled((android.content.Context) param.thisObject, true);
+                                        }
+                                        android.widget.Toast.makeText((android.content.Context) param.thisObject,
+                                                T("字体已添加: ", "Font added: ") + newest,
+                                                android.widget.Toast.LENGTH_SHORT).show();
+                                        XposedBridge.log("[SBPlus] font added: " + newest);
+                                    } else {
+                                        android.widget.Toast.makeText((android.content.Context) param.thisObject,
+                                                T("字体添加失败", "Failed to add font"), android.widget.Toast.LENGTH_SHORT).show();
+                                    }
+                                    return;
+                                }
                                 if (req != 61001) return;
                                 int res = (Integer) param.args[1];
                                 android.content.Intent data = (android.content.Intent) param.args[2];
@@ -5220,6 +5266,177 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /** 把选中的视频 content URI 通过 MediaStore 插到公共 Video 集合,返回可访问的 content URI(失败返回 null)。 */
+    // ==================== 全局自定义字体 ====================
+    private java.util.WeakHashMap<android.widget.TextView, java.lang.Boolean> sFontTinted = new java.util.WeakHashMap<>();
+    private java.util.Set<android.widget.TextView> sPendingFontViews =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<android.widget.TextView, java.lang.Boolean>());
+    private volatile android.graphics.Typeface sFontTypeface = null;
+    private volatile String fontPathCache = "";
+    private volatile boolean sFontLoading = false;
+
+    /** 全局自定义字体: 把浏览器所有 TextView 的字体换成用户选的自定义字体(后台加载, 不阻塞主线程)。 */
+    private void hookGlobalFont(final ClassLoader cl) {
+        try {
+            XposedHelpers.findAndHookMethod("android.widget.TextView", cl, "setTypeface",
+                    android.graphics.Typeface.class,
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam param) {
+                            try { applyFontToTextView((android.widget.TextView) param.thisObject); } catch (Throwable ignored) {}
+                        }
+                    });
+            XposedHelpers.findAndHookMethod("android.widget.TextView", cl, "setTypeface",
+                    android.graphics.Typeface.class, int.class,
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                if (sFontHookDiag++ % 50 == 0)
+                                    XposedBridge.log("[SBPlus] FONT setTypeface hook firing, shouldApply="
+                                        + (sAppContext != null && FontHelper.shouldApply(sAppContext)));
+                                applyFontToTextView((android.widget.TextView) param.thisObject);
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+            // hook setText: 覆盖面更大, 让更多界面 TextView 应用自定义字体
+            try {
+                XposedHelpers.findAndHookMethod("android.widget.TextView", cl, "setText",
+                        java.lang.CharSequence.class,
+                        new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam param) {
+                                try { applyFontToTextView((android.widget.TextView) param.thisObject); } catch (Throwable ignored) {}
+                            }
+                        });
+            } catch (Throwable ignored) {}
+            try {
+                XposedHelpers.findAndHookMethod("android.widget.TextView", cl, "setText",
+                        int.class,
+                        new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam param) {
+                                try { applyFontToTextView((android.widget.TextView) param.thisObject); } catch (Throwable ignored) {}
+                            }
+                        });
+            } catch (Throwable ignored) {}
+            // onDraw 兜底: 覆盖所有被绘制的 TextView(安全版, 只对未标记的 setTypeface 一次, 不加 postInvalidate 不打日志)
+            try {
+                XposedHelpers.findAndHookMethod("android.widget.TextView", cl, "onDraw",
+                        android.graphics.Canvas.class,
+                        new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam param) {
+                                try { applyFontToTextView((android.widget.TextView) param.thisObject); } catch (Throwable ignored) {}
+                            }
+                        });
+            } catch (Throwable ignored) {}
+            XposedBridge.log("[SBPlus] global font hook installed");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] global font hook failed: " + t);
+        }
+    }
+
+    /** 递归遍历 View 树, 对每个 TextView 显式设置字体并强制重绘。 */
+    private void applyFontRecursive(android.view.View view, android.graphics.Typeface tf) {
+        try {
+            if (view instanceof android.widget.TextView) {
+                android.widget.TextView tv = (android.widget.TextView) view;
+                if (!sFontTinted.containsKey(tv)) {
+                    sFontTinted.put(tv, java.lang.Boolean.TRUE);
+                    tv.setTypeface(tf);
+                    tv.requestLayout();
+                    tv.invalidate();
+                }
+                return;
+            }
+            if (view instanceof android.view.ViewGroup) {
+                android.view.ViewGroup vg = (android.view.ViewGroup) view;
+                for (int i = 0; i < vg.getChildCount(); i++) {
+                    applyFontRecursive(vg.getChildAt(i), tf);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void applyFontToTextView(android.widget.TextView tv) {
+        try {
+            if (tv == null) return;
+            if (sFontTinted.containsKey(tv)) return; // 已换过, 跳过
+            if (sAppContext == null || !FontHelper.shouldApply(sAppContext)) return;
+            String p = FontHelper.selectedPath(sAppContext);
+            if (sFontDiagDetail++ % 20 == 0)
+                XposedBridge.log("[SBPlus] FONT apply path=" + p + " sel='" + FontHelper.selectedName(sAppContext)
+                    + "' ext=" + (sAppContext != null ? FontHelper.selectedPath(sAppContext) : "null"));
+            if (p == null || p.isEmpty()) return;
+            try { sPendingFontViews.add(tv); } catch (Throwable ignored) {}
+            if (sFontTypeface == null || !p.equals(fontPathCache)) {
+                if (sFontDiagDetail++ % 60 == 0) XposedBridge.log("[SBPlus] FONT cache-miss tf=" + (sFontTypeface != null) + " pc='" + fontPathCache + "'");
+                ensureFontLoadedAsync();
+                return;
+            }
+            if (sFontDiagDetail++ % 60 == 0) XposedBridge.log("[SBPlus] FONT cache-hit applying");
+            try {
+                sFontTinted.put(tv, java.lang.Boolean.TRUE); // 先标记, 防止 setTypeface 递归再进
+                tv.setTypeface(sFontTypeface);
+                if (sFontDiagCount++ % 100 == 0) XposedBridge.log("[SBPlus] FONT applied path=" + p);
+            } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {}
+    }
+    private int sFontDiagCount = 0;
+    private int sFontDiagDetail = 0;
+    private int sFontHookDiag = 0;
+
+    /** 后台线程加载 Typeface, 完成后在主线程刷新所有待应用/已应用的 TextView。 */
+    private void ensureFontLoadedAsync() {
+        if (sAppContext == null) return;
+        final String p = FontHelper.selectedPath(sAppContext);
+        if (p == null || p.isEmpty()) return;
+        if (sFontTypeface != null && p.equals(fontPathCache)) return;
+        if (sFontLoading) {
+            // 上次加载未完成或卡住: 若已超过超时则允许重试, 否则跳过本次
+            long now = System.currentTimeMillis();
+            if (sFontLoadStart != 0 && (now - sFontLoadStart) < 15000L) return;
+            sFontLoading = false;
+        }
+        sFontLoading = true;
+        sFontLoadStart = System.currentTimeMillis();
+        XposedBridge.log("[SBPlus] FONT loading start p=" + p);
+        final android.content.Context c = sAppContext;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    final android.graphics.Typeface tf = FontHelper.loadTypeface(c);
+                    if (tf != null) {
+                        sFontTypeface = tf;
+                        fontPathCache = p;
+                        XposedBridge.log("[SBPlus] FONT loaded OK path=" + p);
+                        // 主线程刷新所有待应用的 TextView + 递归遍历当前 Activity 全树强制生效
+                        android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                        h.post(new Runnable() {
+                            public void run() {
+                                try {
+                                    android.app.Activity act = sCurrentActivity;
+                                    if (act != null && act.getWindow() != null && act.getWindow().getDecorView() != null) {
+                                        applyFontRecursive(act.getWindow().getDecorView().getRootView(), tf);
+                                    }
+                                    java.util.List<android.widget.TextView> list;
+                                    synchronized (sPendingFontViews) {
+                                        list = new java.util.ArrayList<>(sPendingFontViews);
+                                    }
+                                    for (final android.widget.TextView v : list) {
+                                        try {
+                                            if (v != null && !sFontTinted.containsKey(v)) { v.setTypeface(tf); sFontTinted.put(v, java.lang.Boolean.TRUE); }
+                                        } catch (Throwable ignored) {}
+                                    }
+                                    XposedBridge.log("[SBPlus] FONT tree refresh done");
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                    }
+                } catch (Throwable ignored) {} finally {
+                    sFontLoading = false;
+                    XposedBridge.log("[SBPlus] FONT loading done");
+                }
+            }
+        }).start();
+    }
+    private volatile long sFontLoadStart = 0;
+
     private String copyVideoToPublicDir(android.content.Context ctx, android.net.Uri uri) {
         java.io.InputStream in = null;
         java.io.OutputStream out = null;
@@ -8345,6 +8562,11 @@ private void showUaGroupDialog(final Context ctx) {
                                 XposedBridge.log("[SBPlus] injectWebTheme error: " + t);
                             }
                             try {
+                                injectWebFont(param.thisObject, (String) param.args[0]);
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] injectWebFont error: " + t);
+                            }
+                            try {
                                 injectUserscripts(param.thisObject, (String) param.args[0]);
                             } catch (Throwable t) {
                                 XposedBridge.log("[SBPlus] injectUserscripts error: " + t);
@@ -8993,6 +9215,33 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] web theme injected url=" + url + " text=#" + Integer.toHexString(wtext) + " bg=#" + Integer.toHexString(wbg));
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] injectWebTheme error: " + t);
+        }
+    }
+
+    /** 网页字体: 页面加载完成后注入 @font-face + 全局字体族(三星引擎真实回调)。 */
+    private void injectWebFont(Object tabEventHandlerObj, String url) {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || !FontHelper.shouldApply(ctx)) return;
+            String fp = FontHelper.selectedPath(ctx);
+            if (fp == null || fp.isEmpty()) return;
+            Object tab = XposedHelpers.getObjectField(tabEventHandlerObj, "mTab");
+            if (tab == null) return;
+            Object realTab = XposedHelpers.callMethod(tab, "getTab");
+            if (realTab == null) return;
+            String css = "@font-face{font-family:'SBPlusFont';src:url('file://" + fp + "');}" +
+                    "*{font-family:'SBPlusFont' !important}input,textarea{font-family:'SBPlusFont' !important}";
+            final String js = "(function(){" +
+                    "var e=document.getElementById('sbplusFont');" +
+                    "if(e){e.parentNode.removeChild(e);}" +
+                    "var s=document.createElement('style');s.id='sbplusFont';" +
+                    "s.textContent='" + css + "';" +
+                    "(document.head||document.documentElement).appendChild(s);" +
+                    "})();";
+            evaluateJsWithResult(realTab, js, null);
+            XposedBridge.log("[SBPlus] web font injected path=" + fp);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] injectWebFont error: " + t);
         }
     }
 
