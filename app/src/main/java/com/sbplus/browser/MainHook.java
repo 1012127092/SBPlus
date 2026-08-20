@@ -1525,6 +1525,46 @@ private static final String[] RANDOM_UAS = new String[]{
                 XposedBridge.log("[SBPlus] home beautify entry error: " + t);
             }
 
+            // -- Cookie 管理入口 --
+            try {
+                Class<?> cookiePrefCls = XposedHelpers.findClass(
+                        "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
+                Object cookiePref = XposedHelpers.newInstance(cookiePrefCls, new Class[]{Context.class}, ctx);
+                XposedHelpers.callMethod(cookiePref, "setTitle", T("Cookie 管理", "Cookie Manager"));
+                XposedHelpers.callMethod(cookiePref, "setKey", "sbplus_cookie_manager");
+                XposedHelpers.callMethod(cookiePref, "setSummary", T("查看 / 修改网页 Cookie(登录态)", "View / edit website cookies (login state)"));
+                try {
+                    Class<?> listenerType = listenerParamType(cookiePref.getClass(), "setOnPreferenceClickListener");
+                    Object onCookieClick = java.lang.reflect.Proxy.newProxyInstance(cl,
+                            new Class[]{listenerType},
+                            new java.lang.reflect.InvocationHandler() {
+                                @Override
+                                public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                                    try {
+                                        if (m.getName().equals("onPreferenceClick")) {
+                                            Object clicked = args[0];
+                                            Object actObj = XposedHelpers.callMethod(clicked, "getContext");
+                                            if (actObj instanceof android.app.Activity) {
+                                                showCookieDialog((android.app.Activity) actObj);
+                                            }
+                                            return Boolean.TRUE;
+                                        }
+                                    } catch (Throwable t) {
+                                        XposedBridge.log("[SBPlus] cookie navigate error: " + t);
+                                    }
+                                    return Boolean.FALSE;
+                                }
+                            });
+                    XposedHelpers.callMethod(cookiePref, "setOnPreferenceClickListener", onCookieClick);
+                } catch (Throwable t) {
+                    XposedBridge.log("[SBPlus] cookie click bind failed: " + t);
+                }
+                XposedHelpers.callMethod(screen, "addPreference", cookiePref);
+                XposedBridge.log("[SBPlus] cookie entry injected");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] cookie entry error: " + t);
+            }
+
             Object uaPref = buildUaSwitch(ctx, cl);
             boolean addedUa = (Boolean) XposedHelpers.callMethod(screen, "addPreference", uaPref);
             XposedBridge.log("[SBPlus] ua override item injected: " + addedUa);
@@ -1961,6 +2001,172 @@ private static final String[] RANDOM_UAS = new String[]{
      */
     private void showSettingsDialog(final android.app.Activity act) {
         showCustomDownloaderDialog(act);
+    }
+    private void showCookieDialog(final android.app.Activity act) {
+        try {
+            final Context ctx = act;
+            final java.util.List<String> hosts = CookieHelper.listHosts(ctx);
+            final java.util.Map<String,Integer> countMap = new java.util.LinkedHashMap<>();
+            for (String h : hosts) countMap.put(h, CookieHelper.readHostCookies(ctx, hostKeyOf(h)).size());
+
+            int pad = dp(ctx, 10);
+            final android.widget.EditText search = new android.widget.EditText(ctx);
+            search.setHint(T("搜索网站域名...", "Search site domain..."));
+            search.setSingleLine(true);
+            search.setPadding(pad, pad, pad, pad);
+
+            final java.util.List<String> fullList = new java.util.ArrayList<>(hosts);
+            final java.util.List<String> shown = new java.util.ArrayList<>(hosts);
+            final android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<>(
+                    ctx, android.R.layout.simple_list_item_1, new java.util.ArrayList<String>());
+
+            android.widget.ListView lv = new android.widget.ListView(ctx);
+            lv.setAdapter(adapter);
+            lv.setOnItemClickListener(new android.widget.AdapterView.OnItemClickListener() {
+                @Override public void onItemClick(android.widget.AdapterView<?> parent, android.view.View view, int position, long id) {
+                    String h = shown.get(position);
+                    editSiteCookies(act, h);
+                }
+            });
+
+            android.widget.LinearLayout box = new android.widget.LinearLayout(ctx);
+            box.setOrientation(android.widget.LinearLayout.VERTICAL);
+            box.addView(search);
+            box.addView(lv, new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
+            b.setTitle(T("Cookie 管理 (", "Cookie Manager (") + hosts.size() + T(" 个网站)", " sites)"));
+            b.setView(box);
+            b.setNegativeButton(T("关闭", "Close"), null);
+            final android.app.AlertDialog dlg = b.create();
+
+            final java.lang.Runnable refresh = new java.lang.Runnable() {
+                @Override public void run() {
+                    String q = search.getText().toString().trim().toLowerCase();
+                    shown.clear();
+                    for (String h : fullList) {
+                        if (q.isEmpty() || h.toLowerCase().contains(q)) shown.add(h);
+                    }
+                    adapter.clear();
+                    for (String h : shown) {
+                        Integer c = countMap.get(h);
+                        adapter.add(h + "   (" + (c == null ? 0 : c) + ")");
+                    }
+                    adapter.notifyDataSetChanged();
+                }
+            };
+            search.addTextChangedListener(new android.text.TextWatcher() {
+                @Override public void afterTextChanged(android.text.Editable s) { refresh.run(); }
+                @Override public void beforeTextChanged(CharSequence s, int a, int b2, int c2) {}
+                @Override public void onTextChanged(CharSequence s, int a, int b2, int c2) {}
+            });
+            if (shown.size() == 0) adapter.add(T("（无 Cookie）", "(no cookies)"));
+            refresh.run();
+            dlg.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] cookie list error: " + t);
+        }
+    }
+
+    private static String hostKeyOf(String host) { return host.startsWith(".") ? host : "." + host; }
+
+    /** 编辑单个网站的 cookie(每行 name=value, 可保存/删/清空)。 */
+    private void editSiteCookies(final android.app.Activity act, final String host) {
+        try {
+            final Context ctx = act;
+            final String rawHost = hostKeyOf(host);
+            int pad = dp(ctx, 12);
+            android.widget.TextView hostLabel = new android.widget.TextView(ctx);
+            hostLabel.setText(host);
+            hostLabel.setTextSize(15);
+            hostLabel.setTypeface(hostLabel.getTypeface(), android.graphics.Typeface.BOLD);
+
+            final android.widget.EditText cookieInput = new android.widget.EditText(ctx);
+            cookieInput.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
+            cookieInput.setSingleLine(false);
+            cookieInput.setMinLines(12);
+            cookieInput.setHint(T("每行一个 Cookie, 格式 name=value", "One cookie per line: name=value"));
+            cookieInput.setPadding(pad, pad, pad, pad);
+            loadHostInto(cookieInput, ctx, rawHost);
+
+            android.widget.Button refreshBtn = new android.widget.Button(ctx);
+            refreshBtn.setText(T("刷新列表", "Refresh"));
+            refreshBtn.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    loadHostInto(cookieInput, ctx, rawHost);
+                }
+            });
+
+            android.widget.Button deleteBtn = new android.widget.Button(ctx);
+            deleteBtn.setText(T("删除选中行", "Delete focus line"));
+
+            android.widget.LinearLayout box = new android.widget.LinearLayout(ctx);
+            box.setOrientation(android.widget.LinearLayout.VERTICAL);
+            box.addView(hostLabel);
+            android.widget.TextView hint = new android.widget.TextView(ctx);
+            hint.setText(T("每行 name=value。改完点[保存]写回; 想清除某条就删掉该行再保存; [清空该站]删除全部。",
+                    "name=value per line. Edit then Save. Delete a line to remove it. Clear removes all."));
+            hint.setTextSize(12);
+            hint.setPadding(0, dp(ctx, 4), 0, dp(ctx, 4));
+            box.addView(hint);
+            box.addView(refreshBtn);
+            box.addView(cookieInput);
+
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
+            b.setTitle(T("编辑 Cookie · ", "Cookies · ") + host);
+            b.setView(box);
+            b.setPositiveButton(T("保存", "Save"), null);
+            b.setNeutralButton(T("清空该站", "Clear site"), null);
+            b.setNegativeButton(T("返回", "Back"), null);
+            final android.app.AlertDialog dlg = b.create();
+            dlg.setOnShowListener(new android.content.DialogInterface.OnShowListener() {
+                @Override public void onShow(android.content.DialogInterface dialogInterface) {
+                    dlg.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) {
+                            String editor = cookieInput.getText().toString();
+                            java.util.List<String[]> kvs = new java.util.ArrayList<>();
+                            for (String line : editor.split("\n")) {
+                                String t = line.trim();
+                                if (t.isEmpty()) continue;
+                                int eq = t.indexOf('=');
+                                if (eq > 0) kvs.add(new String[]{ t.substring(0, eq).trim(), t.substring(eq + 1).trim(), "/" });
+                            }
+                            // 先清空该站再全量写入(保证覆盖/删除一致性)
+                            CookieHelper.clearHost(ctx, rawHost);
+                            int n = CookieHelper.setCookies(ctx, rawHost, kvs);
+                            toast(ctx, T("已写回 ", "Saved ") + n + T(" 个 Cookie", " cookie(s)"));
+                            XposedBridge.log("[SBPlus] cookie saved n=" + n + " host=" + host + " (需刷新/重载页面生效)");
+                            dlg.dismiss();
+                        }
+                    });
+                    dlg.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) {
+                            int n = CookieHelper.clearHost(ctx, rawHost);
+                            toast(ctx, T("已清除 ", "Cleared ") + n + T(" 个 Cookie", " cookie(s)"));
+                            cookieInput.setText("");
+                            XposedBridge.log("[SBPlus] cookie cleared n=" + n + " host=" + host);
+                        }
+                    });
+                }
+            });
+            dlg.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] cookie edit error: " + t);
+        }
+    }
+
+    private static void loadHostInto(android.widget.EditText tv, Context ctx, String rawHost) {
+        java.util.List<String[]> rows = CookieHelper.readHostCookies(ctx, rawHost);
+        StringBuilder sb = new StringBuilder();
+        for (String[] r : rows) sb.append(r[0]).append("=").append(r[1]).append("\n");
+        tv.setText(sb.toString());
+        XposedBridge.log("[SBPlus] cookie load host=" + rawHost + " rows=" + rows.size());
+    }
+
+    private void toast(Context ctx, String msg) {
+        try { android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show(); }
+        catch (Throwable ignored) {}
     }
 
     /**
@@ -5281,7 +5487,7 @@ private void showUaGroupDialog(final Context ctx) {
                     android.graphics.Typeface.class,
                     new XC_MethodHook() {
                         @Override protected void afterHookedMethod(MethodHookParam param) {
-                            try { applyFontToTextView((android.widget.TextView) param.thisObject); } catch (Throwable ignored) {}
+                            try { applyFontForce((android.widget.TextView) param.thisObject); } catch (Throwable ignored) {}
                         }
                     });
             XposedHelpers.findAndHookMethod("android.widget.TextView", cl, "setTypeface",
@@ -5292,7 +5498,7 @@ private void showUaGroupDialog(final Context ctx) {
                                 if (sFontHookDiag++ % 50 == 0)
                                     XposedBridge.log("[SBPlus] FONT setTypeface hook firing, shouldApply="
                                         + (sAppContext != null && FontHelper.shouldApply(sAppContext)));
-                                applyFontToTextView((android.widget.TextView) param.thisObject);
+                                applyFontForce((android.widget.TextView) param.thisObject);
                             } catch (Throwable ignored) {}
                         }
                     });
@@ -5325,6 +5531,26 @@ private void showUaGroupDialog(final Context ctx) {
                             }
                         });
             } catch (Throwable ignored) {}
+            // onAttachedToWindow: 每个 View 挂载到窗口时刷新字体(覆盖后动态创建的面板/菜单 TextView)
+            try {
+                XposedHelpers.findAndHookMethod("android.view.View", cl, "onAttachedToWindow",
+                        new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam param) {
+                                try {
+                                    android.view.View v = (android.view.View) param.thisObject;
+                                    if (v == null) return;
+                                    if (sAppContext == null || !FontHelper.shouldApply(sAppContext)) return;
+                                    if (sFontTypeface != null) {
+                                        if (v instanceof android.widget.TextView) {
+                                            if (!sFontTinted.containsKey(v)) applyFontToTextView((android.widget.TextView) v);
+                                        } else {
+                                            applyFontRecursive(v, sFontTypeface);
+                                        }
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+            } catch (Throwable ignoredAtw) {}
             XposedBridge.log("[SBPlus] global font hook installed");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] global font hook failed: " + t);
@@ -5349,6 +5575,29 @@ private void showUaGroupDialog(final Context ctx) {
                 for (int i = 0; i < vg.getChildCount(); i++) {
                     applyFontRecursive(vg.getChildAt(i), tf);
                 }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 强制同步: setTypeface hook 内每次校验, 若 tv 当前字体不是我们的则设回。用“本次设置级”防递归锁。 */
+    private final java.util.Set<Object> sTvSettingFonts = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+    private void applyFontForce(android.widget.TextView tv) {
+        try {
+            if (tv == null) return;
+            // 本次 setTypeface 正在执行(嵌套 hook), 防无限递归
+            if (sTvSettingFonts.contains(tv)) return;
+            if (sAppContext == null || !FontHelper.shouldApply(sAppContext)) return;
+            if (sFontTypeface == null) return;
+            String p = FontHelper.selectedPath(sAppContext);
+            if (p == null || !p.equals(fontPathCache)) { ensureFontLoadedAsync(); return; }
+            android.graphics.Typeface cur = null;
+            try { cur = tv.getTypeface(); } catch (Throwable ignored) {}
+            if (cur == sFontTypeface) return; // 已是我们的字体, 不动
+            sTvSettingFonts.add(tv);
+            try {
+                tv.setTypeface(sFontTypeface);
+            } finally {
+                sTvSettingFonts.remove(tv);
             }
         } catch (Throwable ignored) {}
     }
@@ -6548,8 +6797,6 @@ private void showUaGroupDialog(final Context ctx) {
         return pref;
     }
 
-    /** 资源嗅探开关:控制地址栏 🔍 图标。 */
-    /** 「资源嗅探」纯入口(前面无开关/勾选按钮):点击进入资源嗅探子页。 */
     private Object buildSniffSwitch(Context ctx, ClassLoader cl) {
         try {
             Class<?> switchPrefCls = XposedHelpers.findClass(
@@ -6664,9 +6911,9 @@ private void showUaGroupDialog(final Context ctx) {
             bindPreferenceClick(parallelPref, cl, new Runnable() { @Override public void run() { editNumber(ctx, "download_parallel", 2, 1, 10, parallelPref); } });
             XposedHelpers.callMethod(screen, "addPreference", parallelPref);
 
-            // 打开下载列表
+            // 下载管理
             final Object listPref = buildPreferenceCustom(ctx, cl);
-            XposedHelpers.callMethod(listPref, "setTitle", T("打开下载列表", "Open download list"));
+            XposedHelpers.callMethod(listPref, "setTitle", T("下载管理", "Download manager"));
             XposedHelpers.callMethod(listPref, "setSummary", T("查看下载状态、打开文件、删除", "View status, open files, delete"));
             XposedHelpers.callMethod(listPref, "setKey", "sbplus_dl_list");
             bindPreferenceClick(listPref, cl, new Runnable() { @Override public void run() {
@@ -9220,6 +9467,8 @@ private void showUaGroupDialog(final Context ctx) {
 
     /** 网页字体: 页面加载完成后注入 @font-face + 全局字体族(三星引擎真实回调)。 */
     private void injectWebFont(Object tabEventHandlerObj, String url) {
+        // 安全版: 尝试 @font-face 引用字体文件。base64 data URI 对 10MB+ 中文字体注入会 OOM/闪退, 故回退到 file://
+        // (file:// 可能被引擎拦; 此注入为尽力而为, 不注入也绝不崩溃)。
         try {
             android.content.Context ctx = sAppContext;
             if (ctx == null || !FontHelper.shouldApply(ctx)) return;
@@ -9229,17 +9478,24 @@ private void showUaGroupDialog(final Context ctx) {
             if (tab == null) return;
             Object realTab = XposedHelpers.callMethod(tab, "getTab");
             if (realTab == null) return;
-            String css = "@font-face{font-family:'SBPlusFont';src:url('file://" + fp + "');}" +
-                    "*{font-family:'SBPlusFont' !important}input,textarea{font-family:'SBPlusFont' !important}";
-            final String js = "(function(){" +
-                    "var e=document.getElementById('sbplusFont');" +
-                    "if(e){e.parentNode.removeChild(e);}" +
+            int sbsize = 0;
+            try { sbsize = new java.io.File(fp).length() > 3_000_000 ? 1 : 0; } catch (Throwable ignored) {}
+            if (sbsize != 0) { // 字体过大: 放弃 base64 注入, 避免 OOM
+                XposedBridge.log("[SBPlus] web font skipped (too large " + fp.length() + ")");
+                return;
+            }
+            String css = "@font-face{font-family:\"SBPlusFont\";src:url(\"file://" + fp + "\");}" +
+                    "*{font-family:\"SBPlusFont\" !important}input,textarea{font-family:\"SBPlusFont\" !important}";
+            String js = "(function(){" +
+                    "try{var e=document.getElementById('sbplusFont');" +
+                    "if(e){e.parentNode.removeChild(e);}}" +
+                    "catch(err){}" +
                     "var s=document.createElement('style');s.id='sbplusFont';" +
                     "s.textContent='" + css + "';" +
                     "(document.head||document.documentElement).appendChild(s);" +
                     "})();";
             evaluateJsWithResult(realTab, js, null);
-            XposedBridge.log("[SBPlus] web font injected path=" + fp);
+            XposedBridge.log("[SBPlus] web font injected (safe) path=" + fp);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] injectWebFont error: " + t);
         }

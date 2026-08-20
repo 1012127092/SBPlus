@@ -93,12 +93,38 @@ public final class FontHelper {
         } catch (Throwable ignored) { return false; }
     }
 
+    // ===== base64 缓存(供网页注入 data URI) =====
+    private static volatile String sBase64;
+    private static volatile String sBase64Key;
+    /** 同步读取选中字体文件并 base64 编码(带缓存)。超大文件会耗时——调用方应在后台线程执行。 */
+    public static String base64OfSelected(Context ctx) {
+        try {
+            String p = selectedPath(ctx);
+            if (p == null || p.isEmpty()) return null;
+            if (sBase64 != null && p.equals(sBase64Key)) return sBase64;
+            File f = new File(p);
+            if (!f.exists()) return null;
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            java.io.InputStream in = new java.io.FileInputStream(f);
+            byte[] buf = new byte[65536];
+            int r;
+            while ((r = in.read(buf)) > 0) bos.write(buf, 0, r);
+            in.close();
+            String b64 = android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP);
+            synchronized (FontHelper.class) {
+                sBase64 = b64;
+                sBase64Key = p;
+            }
+            XposedBridgeLog("base64 ready len=" + b64.length());
+            return b64;
+        } catch (Throwable t) { XposedBridgeLog("base64 err: " + t); return null; }
+    }
+
     /** 当前选中字体的绝对路径，无则空。 */
     public static String selectedPath(Context ctx) {
         String n = selectedName(ctx);
         if (n == null || n.isEmpty()) return "";
-        File f = new File(dir(ctx), n);
-        return f.exists() ? f.getAbsolutePath() : "";
+        File f = new File(dir(ctx), n);        return f.exists() ? f.getAbsolutePath() : "";
     }
 
     /** 是否应用（开关开且选中文件存在）。 */
