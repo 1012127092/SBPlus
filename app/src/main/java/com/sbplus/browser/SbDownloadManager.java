@@ -105,6 +105,35 @@ public class SbDownloadManager {
         return list;
     }
 
+    private static final java.util.Set<String> CANCELLED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** 标记任务取消(中断下载循环 + 关通知). */
+    public static void cancel(Context ctx, String id) {
+        try {
+            if (id != null) CANCELLED.add(id);
+        } catch (Throwable ignored) {}
+        try {
+            if (ctx == null) return;
+            NotificationManager nm = nm(ctx);
+            if (nm != null) nm.cancel(notifId(id));
+        } catch (Throwable ignored) {}
+    }
+
+    /** 任务是否被取消. */
+    public static boolean isCancelled(String id) {
+        return id != null && CANCELLED.contains(id);
+    }
+
+    /** 任务是否仍存在于列表(被删除=false). */
+    public static boolean exists(String id) {
+        return id != null && TASKS.containsKey(id);
+    }
+
+    /** 清除取消标记. */
+    public static void clearCancelled(String id) {
+        if (id != null) CANCELLED.remove(id);
+    }
+
     public static synchronized Task remove(String id) {
         Task t = TASKS.remove(id);
         if (t != null) ORDER.remove(id);
@@ -135,6 +164,14 @@ public class SbDownloadManager {
     public static void post(Context ctx, Task t) {
         try {
             if (ctx == null || t == null) return;
+            // 任务已被删除/取消 -> 确保关闭其通知, 不再发送
+            if (!TASKS.containsKey(t.id)) {
+                try {
+                    NotificationManager nmx = nm(ctx);
+                    if (nmx != null) nmx.cancel(notifId(t.id));
+                } catch (Throwable ignored) {}
+                return;
+            }
             ensureChannel(ctx);
             NotificationManager nm = nm(ctx);
             if (nm == null) return;
@@ -201,13 +238,7 @@ public class SbDownloadManager {
         } catch (Throwable ignored) {}
     }
 
-    public static void cancel(Context ctx, String id) {
-        try {
-            if (ctx == null) return;
-            NotificationManager nm = nm(ctx);
-            if (nm != null) nm.cancel(notifId(id));
-        } catch (Throwable ignored) {}
-    }
+
 
     public static void clearAll(Context ctx) {
         try {

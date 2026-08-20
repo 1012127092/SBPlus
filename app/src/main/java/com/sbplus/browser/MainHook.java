@@ -42,13 +42,13 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
  */
 public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
-    /** 当前 hook 实例（供静态 JS 桥回调调用实例方法）。 */
+    /** 当前 hook 实例(供静态 JS 桥回调调用实例方法)。 */
     public static volatile MainHook sInstance;
 
 
-    // ================= 多语言（跟随系统语言） =================
-    // 浏览器进程读不到模块的 strings.xml 资源，因此用内置中英双语字典，
-    // 根据系统 Locale 返回对应语言。默认英文，中文返回中文。
+    // ================= 多语言(跟随系统语言) =================
+    // 浏览器进程读不到模块的 strings.xml 资源,因此用内置中英双语字典,
+    // 根据系统 Locale 返回对应语言。默认英文,中文返回中文。
     private static String T(String zh, String en) {
         try {
             String lang = java.util.Locale.getDefault().getLanguage();
@@ -59,7 +59,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
         return en;
     }
 
-    // 三语言版本：zh/en/ja
+    // 三语言版本:zh/en/ja
     private static String T3(String zh, String en, String ja) {
         try {
             String lang = java.util.Locale.getDefault().getLanguage();
@@ -72,8 +72,11 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     }
 
 
+    private static volatile boolean sInThemeText = false;
+
     // Global application Context (captured from SBrowserApplication.onCreate).
     private static volatile Context sAppContext;
+    private static volatile int sBgDumpCount = 0;
     private static volatile android.app.Activity sCurrentActivity;
 
     private static final String SBROWSER_PACKAGE = "com.sec.android.app.sbrowser";
@@ -112,8 +115,8 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_ENABLE_BLOCK_UPDATE = "enable_block_update";
     private static final String KEY_ENABLE_VIDEO_BG = "enable_video_bg";
     private static final String KEY_VIDEO_BG_PATH = "video_bg_path";
-    // 模块自身版本号（编译期确定，连 app/build.gradle 的 versionName）。
-    // 浏览器进程无法加载 BuildConfig，这里作为 prefs 缺失时的兜底。
+    // 模块自身版本号(编译期确定,连 app/build.gradle 的 versionName)。
+    // 浏览器进程无法加载 BuildConfig,这里作为 prefs 缺失时的兜底。
     private static final String APP_VERSION = "2.3";
     private static final String KEY_ENABLE_HOME_CLEAR_TEXT = "enable_home_clear_text";
     private static final String KEY_ENABLE_HOME_MOVE_BTN = "enable_home_move_btn";
@@ -121,7 +124,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String KEY_ENABLE_SNIFF = "enable_sniff";
     private static final String KEY_DISABLED_USERSCRIPTS = "disabled_userscripts";
 
-    /** 当前详情页绑定的脚本文件名（供 setChecked hook 写回 prefs）。 */
+    /** 当前详情页绑定的脚本文件名(供 setChecked hook 写回 prefs)。 */
     private static String sDetailFileName = null;
     private static final int REQUEST_USERSCRIPT_PICK = 61002;
     private static final String KEY_USERSCRIPT_SOURCES = "userscript_sources";
@@ -132,21 +135,21 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String DEFAULT_IDM_PLUS_PACKAGE = "idm.internet.download.manager.plus";
 
     private static final String[][] PRESET_DOWNLOADERS = new String[][]{
-            {T("ADM（高级下载管理器）", "ADM (Advanced Download Manager)"), DEFAULT_ADM_PACKAGE},
-            {T("1DM（Internet Download Manager）", "1DM (Internet Download Manager)"), DEFAULT_1DM_PACKAGE},
-            {T("IDM+（Internet Download Manager Plus）", "IDM+ (Internet Download Manager Plus)"), DEFAULT_IDM_PLUS_PACKAGE},
+            {T("ADM(高级下载管理器)", "ADM (Advanced Download Manager)"), DEFAULT_ADM_PACKAGE},
+            {T("1DM(Internet Download Manager)", "1DM (Internet Download Manager)"), DEFAULT_1DM_PACKAGE},
+            {T("IDM+(Internet Download Manager Plus)", "IDM+ (Internet Download Manager Plus)"), DEFAULT_IDM_PLUS_PACKAGE},
     };
 
     // User-Agent presets for the "浏览器标识" (UA override) feature.
     // label -> full UA string.
     private static final String[][] PRESET_UAS = new String[][]{
-            {T("桌面 Chrome（Windows）", "Desktop Chrome (Windows)"), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
-            {T("Android Chrome（手机）", "Android Chrome (Mobile)"), "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"},
+            {T("桌面 Chrome(Windows)", "Desktop Chrome (Windows)"), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
+            {T("Android Chrome(手机)", "Android Chrome (Mobile)"), "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"},
             {"iPhone Safari", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"},
     };
 
-    // 随机浏览器标识：每次启动随机刷新的 UA 池（覆盖手机/电脑 × 多系统 × 多浏览器）。
-    // Android 9~17、iOS 15.0~18.2、Windows/macOS/Linux；浏览器含 Chrome/Firefox/Edge/Safari/Opera/Vivaldi/Brave/UC 等。
+    // 随机浏览器标识:每次启动随机刷新的 UA 池(覆盖手机/电脑 × 多系统 × 多浏览器)。
+    // Android 9~17、iOS 15.0~18.2、Windows/macOS/Linux;浏览器含 Chrome/Firefox/Edge/Safari/Opera/Vivaldi/Brave/UC 等。
         // UA 随机池分组元数据: {组名, 起始索引, 结束索引(不含)}。与下方 RANDOM_UAS 注释分组一一对应。
     private static final String[][] UA_GROUPS = new String[][]{
             {T3("Android 手机 (Chrome)","Android Phone (Chrome)","Androidスマホ (Chrome)"), "0", "16"},
@@ -157,7 +160,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             {T3("桌面 Linux","Desktop Linux","デスクトップ Linux"), "51", "55"},
     };
 private static final String[] RANDOM_UAS = new String[]{
-            // —— Android 手机 ——
+            // -- Android 手机 --
             "Mozilla/5.0 (Linux; Android 9; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36",
             "Mozilla/5.0 (Linux; Android 9; SM-A505F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Mobile Safari/537.36",
             "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36",
@@ -182,7 +185,7 @@ private static final String[] RANDOM_UAS = new String[]{
             "Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36 Vivaldi/6.6.3271.48",
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36 Brave/1.63.169",
             "Mozilla/5.0 (Linux; U; Android 12; zh-CN; SM-A525F) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/100.0.4896.58 UCBrowser/15.0.0.1234 Mobile Safari/537.36",
-            // —— iPhone / iPad ——
+            // -- iPhone / iPad --
             "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
             "Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1",
             "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
@@ -195,7 +198,7 @@ private static final String[] RANDOM_UAS = new String[]{
             "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/130.0 Mobile/15E148 Safari/605.1.15",
             "Mozilla/5.0 (iPad; CPU OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
             "Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-            // —— 桌面 Windows ——
+            // -- 桌面 Windows --
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -206,22 +209,22 @@ private static final String[] RANDOM_UAS = new String[]{
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 OPR/85.0.4341.75",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Vivaldi/6.6.3271.48",
             "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            // —— 桌面 macOS ——
+            // -- 桌面 macOS --
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-            // —— 桌面 Linux ——
+            // -- 桌面 Linux --
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 OPR/86.0.4363.32",
     };
 
-    // 主设置页（settings_fragment.xml）的所有可屏蔽项目：preference key -> 中文标题。
-    // key 以 "@" 开头的是特殊项（非 preference）：@search = 搜索框、@update_card = 更新提示卡片。
+    // 主设置页(settings_fragment.xml)的所有可屏蔽项目:preference key -> 中文标题。
+    // key 以 "@" 开头的是特殊项(非 preference):@search = 搜索框、@update_card = 更新提示卡片。
     private static final String[][] SETTINGS_ITEMS = new String[][]{
             {"@search", T("顶部的搜索", "Top search bar")},
             {"@update_card", T("更新提示卡片", "Update notice card")},
@@ -290,7 +293,7 @@ private static final String[] RANDOM_UAS = new String[]{
     private static final java.util.Map<String, android.widget.RadioButton> sRadioButtons =
             new java.util.concurrent.ConcurrentHashMap<>();
 
-    // 油猴脚本注入去重：realTab -> 已注入的 URL（避免 onLoadFinished 重复触发重复注入）。
+    // 油猴脚本注入去重:realTab -> 已注入的 URL(避免 onLoadFinished 重复触发重复注入)。
     private static final java.util.WeakHashMap<Object, String> sInjectedUrls =
             new java.util.WeakHashMap<>();
 
@@ -305,25 +308,25 @@ private static final String[] RANDOM_UAS = new String[]{
     private static volatile android.widget.EditText sUaCustomEditText;
     private static volatile String sPrevUa;
 
-    // 精简设置页：每项的 CheckBox（key -> checkbox），用于回显勾选状态。
+    // 精简设置页:每项的 CheckBox(key -> checkbox),用于回显勾选状态。
     private static final java.util.Map<String, android.widget.CheckBox> sCleanCheckBoxes =
             new java.util.concurrent.ConcurrentHashMap<String, android.widget.CheckBox>();
 
     // Whether the downloader picker sub-page is currently the shown page (tracked by us, since
     // Samsung's getTopFragment() keys off back-stack count which is wrong for backstack-less pages).
     private static volatile boolean sInPickerPage;
-    private static volatile String sCurrentPickerPage; // 精确记录当前子页，用于返回逻辑（详情/列表往返）
-    // 油猴脚本菜单：追踪当前页面注入的脚本（url -> 已注入的脚本名列表）和当前 tab 对象。
+    private static volatile String sCurrentPickerPage; // 精确记录当前子页,用于返回逻辑(详情/列表往返)
+    // 油猴脚本菜单:追踪当前页面注入的脚本(url -> 已注入的脚本名列表)和当前 tab 对象。
     private static final java.util.Map<String, java.util.List<String>> sActiveScriptsByUrl = new java.util.HashMap<String, java.util.List<String>>();
     private static volatile Object sCurrentRealTab;
     private static volatile String sCurrentUrl;
-    private static final java.util.Map<String, String> requireCache = new java.util.HashMap<String, String>(); // @require 库缓存：url -> js 内容
-    private static final java.util.Map<String, String> resourceCache = new java.util.HashMap<String, String>(); // @resource 资源缓存：name -> 内容
+    private static final java.util.Map<String, String> requireCache = new java.util.HashMap<String, String>(); // @require 库缓存:url -> js 内容
+    private static final java.util.Map<String, String> resourceCache = new java.util.HashMap<String, String>(); // @resource 资源缓存:name -> 内容
     private static volatile boolean sRegionPageActive;
-    // 资源嗅探状态：JS 回调写入，主线程等待读取
+    // 资源嗅探状态:JS 回调写入,主线程等待读取
     private static volatile String sSniffedMediaJson = null;
     private static volatile boolean sSniffPending = false;
-    /** 网络层嗅探收集的媒体 URL 列表（线程安全）。 */
+    /** 网络层嗅探收集的媒体 URL 列表(线程安全)。 */
     private static final java.util.Set<String> sNetworkSniffedUrls = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<String>());
     private static volatile android.app.Activity sSniffActivity = null;
     private static final Object sSniffLock = new Object();
@@ -371,6 +374,45 @@ private static final String[] RANDOM_UAS = new String[]{
         hookUserscript(lpparam.classLoader);
         hookUserscriptToolbar(lpparam.classLoader);
     hookNetworkSniff(lpparam.classLoader);
+        hookThemeHook(lpparam.classLoader);
+
+        // ===== 临时诊断: 定位"页面背景变蓝"来源 (hook setColorFilter 蓝色) =====
+        try {
+            final int[] diagCount = { 0 };
+            XposedHelpers.findAndHookMethod("android.graphics.drawable.Drawable", lpparam.classLoader,
+                "setColorFilter", int.class, android.graphics.PorterDuff.Mode.class,
+                new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (diagCount[0] > 60) return;
+                        try {
+                            int col = ((Integer) param.args[0]).intValue();
+                            if (col == 0xFF03A9F4) {
+                                Object d = param.thisObject;
+                                String dn = d.getClass().getName();
+                                if (dn.contains("BitmapDrawable") || dn.contains("LayerDrawable")
+                                        || dn.contains("GradientDrawable") || dn.contains("ColorDrawable")) {
+                                    diagCount[0]++;
+                                    XposedBridge.log("[SBPlus] DIAG-BLUE setColorFilter on " + dn + " (" + diagCount[0] + ")");
+                                    if (diagCount[0] <= 6) {
+                                        java.lang.StackTraceElement[] st = Thread.currentThread().getStackTrace();
+                                        StringBuilder sb2 = new StringBuilder("[SBPlus] DIAG-BLUE stack:");
+                                        int n = 0;
+                                        for (java.lang.StackTraceElement e : st) {
+                                            if (e.getClassName().startsWith("com.sbplus")) {
+                                                sb2.append(" -> " + e.getClassName().substring(e.getClassName().lastIndexOf('.')+1) + "." + e.getMethodName() + ":" + e.getLineNumber());
+                                                if (n++ > 5) break;
+                                            }
+                                        }
+                                        XposedBridge.log(sb2.toString());
+                                    }
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+        } catch (Throwable e) {
+            XposedBridge.log("[SBPlus] DIAG hook fail: " + e);
+        }
     }
 
     private static void copyFile(java.io.File src, java.io.File dst) throws Exception {
@@ -386,7 +428,7 @@ private static final String[] RANDOM_UAS = new String[]{
      * (1) Prevent NullPointerException in RadioPreferenceGroup.onAttached when the group was
      * constructed with a null AttributeSet (mEntries/mEntryValues are null, but onAttached
      * iterates mEntries.length). (2) Persist the selected downloader when the user taps a
-     * radio — RadioPreferenceGroup.setChecked(key) is the mutual-exclusion entry point, so we
+     * radio - RadioPreferenceGroup.setChecked(key) is the mutual-exclusion entry point, so we
      * read the tapped key there and save the matching package.
      */
     private void hookRadioGroup(ClassLoader cl) {
@@ -629,7 +671,7 @@ private static final String[] RANDOM_UAS = new String[]{
 
     /**
      * Hook Preference.onBindViewHolder so we can inject an inline EditText into the
-     * "自定义下载器" row (key = sbplus_dl_custom) — no dialog, direct on-row input.
+     * "自定义下载器" row (key = sbplus_dl_custom) - no dialog, direct on-row input.
      */
     private void hookInlineEdit(ClassLoader cl) {
         try {
@@ -655,6 +697,11 @@ private static final String[] RANDOM_UAS = new String[]{
                     } catch (Throwable t) {
                         XposedBridge.log("[SBPlus] decoratePickerRow error: " + t);
                     }
+                    try {
+                        applySettingsRowBg(param.thisObject, param.args[0]);
+                    } catch (Throwable t) {
+                        XposedBridge.log("[SBPlus] applySettingsRowBg error: " + t);
+                    }
                 }
             });
             XposedBridge.log("[SBPlus] onBindViewHolder hooked");
@@ -664,22 +711,45 @@ private static final String[] RANDOM_UAS = new String[]{
     }
 
     /** Decorate a picker row: preset rows get a radio dot; the custom row gets an EditText. */
+    /** 设置页栏目背景: 对设置页的 preference 行背景上色(S_SETTINGS_BG)。 */
+    private void applySettingsRowBg(Object preference, Object holder) {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || !isThemeActive()) return;
+            int bg = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_SETTINGS_BG);
+            if (bg == -1) return;
+            Object itemView = XposedHelpers.getObjectField(holder, "itemView");
+            if (!(itemView instanceof android.view.View)) return;
+            if (!isInSettingsScreen((android.view.View) itemView)) return;
+            android.view.View root = (android.view.View) itemView;
+            // 只对"圆角栏目块"上色: root 的 SeslRippleDrawable(圆角背景)
+            // 跳过栏目标题行(ColorDrawable / AppCompatTextView)= 横条, 保持原样
+            try {
+                android.graphics.drawable.Drawable d = root.getBackground();
+                if (d == null) return;
+                String dcls = d.getClass().getName();
+                boolean isRounded = dcls.contains("Sesl") || dcls.contains("Ripple") || dcls.contains("Rounded");
+                if (!isRounded) return; // 普通 ColorDrawable = 横条/标题, 跳过
+                try { d.setTint(bg); } catch (Throwable ignoredT) {}
+                try { d.setColorFilter(new android.graphics.PorterDuffColorFilter(bg, android.graphics.PorterDuff.Mode.SRC_IN)); } catch (Throwable ignoredC) {}
+                root.invalidate();
+            } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {}
+    }
+
     private void decoratePickerRow(Object preference, Object holder) {
         try {
             String key = (String) XposedHelpers.callMethod(preference, "getKey");
             if (key == null) return;
 
             if (key.startsWith("sbplus_dl_")) {
+                // 下载方式/线程数/任务数/打开下载列表 等普通条目: 不再注入圆点(旧的单选残留已废弃)
                 Object itemView = XposedHelpers.getObjectField(holder, "itemView");
                 if (!(itemView instanceof android.view.View)) return;
-                android.view.View root = (android.view.View) itemView;
-
+                // 仅"自定义下载器"行保留内联编辑(不带圆点)
                 if ("sbplus_dl_custom".equals(key)) {
-                    // Custom row also gets a radio dot (left) + an inline EditText (right).
-                    injectRadioDot(root, key);
+                    android.view.View root = (android.view.View) itemView;
                     injectInlineEdit(root, key);
-                } else {
-                    injectRadioDot(root, key);
                 }
             } else if (key.startsWith("sbplus_region_")) {
                 Object itemView = XposedHelpers.getObjectField(holder, "itemView");
@@ -722,7 +792,7 @@ private static final String[] RANDOM_UAS = new String[]{
                     injectRadioDot(root, key);
                 }
             } else if ("sbplus_userscript_detail_enable".equals(key)) {
-                // 详情页“启用脚本”开关：onBindViewHolder 渲染时强制同步存储状态，
+                // 详情页"启用脚本"开关:onBindViewHolder 渲染时强制同步存储状态,
                 // 修复 SwitchPreferenceCustom 在 addPreference 前 setChecked 不刷新 UI 的问题
                 try {
                     Object itemView = XposedHelpers.getObjectField(holder, "itemView");
@@ -744,7 +814,7 @@ private static final String[] RANDOM_UAS = new String[]{
                 if (!(itemView instanceof android.view.View)) return;
                 android.view.View root = (android.view.View) itemView;
                 injectCleanCheckBox(root, key);
-                // 压缩行高 + 字号，让 23 项尽量一屏放下。
+                // 压缩行高 + 字号,让 23 项尽量一屏放下。
                 try {
                     float d = root.getResources().getDisplayMetrics().density;
                     android.view.View title = root.findViewById(android.R.id.title);
@@ -875,7 +945,7 @@ private static final String[] RANDOM_UAS = new String[]{
                 wf.removeAllViews();
 
                 final android.widget.EditText edit = new android.widget.EditText(root.getContext());
-                edit.setHint(T("输入包名，如 com.dv.adm", "Enter package name, e.g. com.dv.adm"));
+                edit.setHint(T("输入包名,如 com.dv.adm", "Enter package name, e.g. com.dv.adm"));
                 edit.setSingleLine(true);
                 edit.setTextSize(14f);
                 edit.setPadding(dp(root.getContext(), 8), 0, dp(root.getContext(), 8), 0);
@@ -1122,8 +1192,8 @@ private static final String[] RANDOM_UAS = new String[]{
                         }
                     });
 
-            // 离开地区页时复位 sRegionPageActive，避免返回后在其它页面误触发滚动补偿。
-            // 注：onDestroyView 在新版三星里可能被移到父类/改名，单独容错，失败不影响其余 hook。
+            // 离开地区页时复位 sRegionPageActive,避免返回后在其它页面误触发滚动补偿。
+            // 注:onDestroyView 在新版三星里可能被移到父类/改名,单独容错,失败不影响其余 hook。
             try {
             XposedHelpers.findAndHookMethod(prefFrag, "onDestroyView",
                     new XC_MethodHook() {
@@ -1150,11 +1220,11 @@ private static final String[] RANDOM_UAS = new String[]{
             XposedBridge.log("[SBPlus] submenu hook failed: " + t);
         }
 
-        // 精简设置页：两列网格。三星在 onCreateLayoutManager 里创建默认
-        // LinearLayoutManager，只有在这里替换才不会被后续覆盖。
+        // 精简设置页:两列网格。三星在 onCreateLayoutManager 里创建默认
+        // LinearLayoutManager,只有在这里替换才不会被后续覆盖。
         try {
-            // onCreateLayoutManager 定义在父类 H2/A（PreferenceFragmentCompat 的混淆名），
-            // 不在 PreferenceFragmentCustom 自身，必须 hook 父类。
+            // onCreateLayoutManager 定义在父类 H2/A(PreferenceFragmentCompat 的混淆名),
+            // 不在 PreferenceFragmentCustom 自身,必须 hook 父类。
             Class<?> prefFragCls = findPreferenceParent(cl);
             if (prefFragCls == null) {
                 XposedBridge.log("[SBPlus] onCreateLayoutManager skipped: parent not found");
@@ -1197,8 +1267,8 @@ private static final String[] RANDOM_UAS = new String[]{
             if (PAGE_REGION_PICKER.equals(page)) {
                 sRegionPageActive = true;
             }
-            // 长列表/选择器子页：统一底部加 padding，避免最后一项被底部栏遮挡。
-            // （除 region_picker 外，它走 collapseAppBar 顶部折叠方案，不叠加 bottom padding）
+            // 长列表/选择器子页:统一底部加 padding,避免最后一项被底部栏遮挡。
+            // (除 region_picker 外,它走 collapseAppBar 顶部折叠方案,不叠加 bottom padding)
             if (isBottomPadPage(page)) {
                 applyListBottomPadding(frag);
                 return;
@@ -1224,7 +1294,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 需要底部 padding 的长列表/选择器子页（region_picker 走 collapseAppBar，不在此列）。 */
+    /** 需要底部 padding 的长列表/选择器子页(region_picker 走 collapseAppBar,不在此列)。 */
     private boolean isBottomPadPage(String page) {
         if (page == null) return false;
         return PAGE_DOWNLOADER_PICKER.equals(page)
@@ -1237,7 +1307,7 @@ private static final String[] RANDOM_UAS = new String[]{
                 || PAGE_USERSCRIPT_LIST.equals(page);
     }
 
-    /** 给列表页的 RecyclerView 底部加 padding，确保最后一项能完整滚出（不被底部栏遮挡）。 */
+    /** 给列表页的 RecyclerView 底部加 padding,确保最后一项能完整滚出(不被底部栏遮挡)。 */
     private void applyListBottomPadding(Object frag) {
         try {
             Object rvObj = XposedHelpers.callMethod(frag, "getListView");
@@ -1325,7 +1395,7 @@ private static final String[] RANDOM_UAS = new String[]{
         if (screen == null) {
             // PreferenceManager.createPreferenceScreen(Context) is obfuscated to H2/F#a(Context).
             Object pm = XposedHelpers.callMethod(frag, "getPreferenceManager");
-            // createPreferenceScreen 被混淆成 a(Context) 等名，用多候选回退自适应
+            // createPreferenceScreen 被混淆成 a(Context) 等名,用多候选回退自适应
             Object newScreen = callMethodByCandidates(pm,
                     new String[]{"createPreferenceScreen", "a", "b", "c"},
                     new Class<?>[]{Context.class}, new Object[]{ctx});
@@ -1389,7 +1459,7 @@ private static final String[] RANDOM_UAS = new String[]{
             boolean addedUserscript = (Boolean) XposedHelpers.callMethod(screen, "addPreference", userscriptPref);
             XposedBridge.log("[SBPlus] userscript item injected: " + addedUserscript);
 
-            // 「资源嗅探」作为可点击进入子页的入口（带右侧指示竖线箭头）。
+            // 「资源嗅探」作为可点击进入子页的入口(带右侧指示竖线箭头)。
             Object sniffPref = buildSniffSwitch(ctx, cl);
             boolean addedSniff = (Boolean) XposedHelpers.callMethod(screen, "addPreference", sniffPref);
             XposedBridge.log("[SBPlus] sniff item injected: " + addedSniff);
@@ -1402,7 +1472,7 @@ private static final String[] RANDOM_UAS = new String[]{
             boolean addedGrid = (Boolean) XposedHelpers.callMethod(screen, "addPreference", gridPref);
             XposedBridge.log("[SBPlus] grid menu item injected: " + addedGrid);
 
-            // —— 主页美化入口 ——
+            // -- 主页美化入口 --
             try {
                 Class<?> homePrefCls = XposedHelpers.findClass(
                         "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
@@ -1458,7 +1528,7 @@ private static final String[] RANDOM_UAS = new String[]{
             boolean addedBlockUpdate = (Boolean) XposedHelpers.callMethod(screen, "addPreference", blockUpdatePref);
             XposedBridge.log("[SBPlus] block update item injected: " + addedBlockUpdate);
 
-            // —— 书签管理入口 ——
+            // -- 书签管理入口 --
             final Context bmFinalCtx = ctx;
             try {
                 Class<?> bmPrefCls = XposedHelpers.findClass(
@@ -1466,7 +1536,7 @@ private static final String[] RANDOM_UAS = new String[]{
                 Object bmPref = XposedHelpers.newInstance(bmPrefCls, new Class[]{Context.class}, ctx);
                 XposedHelpers.callMethod(bmPref, "setTitle", T("书签管理", "Bookmark Manager"));
                 XposedHelpers.callMethod(bmPref, "setKey", "sbplus_bookmark_manager");
-                XposedHelpers.callMethod(bmPref, "setSummary", T("导入 / 导出书签（Chrome/Edge/Firefox 通用）", "Import / export bookmarks (Chrome/Edge/Firefox)"));
+                XposedHelpers.callMethod(bmPref, "setSummary", T("导入 / 导出书签(Chrome/Edge/Firefox 通用)", "Import / export bookmarks (Chrome/Edge/Firefox)"));
                 bindPreferenceClick(bmPref, cl, new Runnable() { public void run() { showBookmarkManagerDialog(bmFinalCtx); } });
                 XposedHelpers.callMethod(screen, "addPreference", bmPref);
                 XposedBridge.log("[SBPlus] bookmark manager item injected");
@@ -1474,7 +1544,7 @@ private static final String[] RANDOM_UAS = new String[]{
                 XposedBridge.log("[SBPlus] bookmark manager inject error: " + t);
             }
 
-            // —— 版本号（自动探测更新）——
+            // -- 版本号(自动探测更新)--
             final Context verFinalCtx = ctx;
             try {
                 Class<?> verPrefCls = XposedHelpers.findClass(
@@ -1483,23 +1553,23 @@ private static final String[] RANDOM_UAS = new String[]{
                 XposedHelpers.callMethod(verPref, "setTitle", T("版本号", "Version"));
                 XposedHelpers.callMethod(verPref, "setKey", "sbplus_version");
                 String localVer = readModuleVersion();
-                XposedHelpers.callMethod(verPref, "setSummary", T("当前 ", "Current ") + localVer + T("（自动检测更新中…）", " (checking for updates…)"));
+                XposedHelpers.callMethod(verPref, "setSummary", T("当前 ", "Current ") + localVer + T("(自动检测更新中...)", " (checking for updates...)"));
                 bindPreferenceClick(verPref, cl, new Runnable() { public void run() { checkUpdateInteractive(verFinalCtx); } });
                 XposedHelpers.callMethod(screen, "addPreference", verPref);
-                // 后台自动检测最新版本，有新版本则在 summary 提示
+                // 后台自动检测最新版本,有新版本则在 summary 提示
                 final String localVerF = localVer;
                 new Thread(new Runnable() { public void run() {
                     try {
                         String remote = checkLatestVersionOnline();
                         if (remote != null && versionNewer(remote, localVerF)) {
                             String disp = stripV(remote);
-                            final String msg = T("当前 ", "Current ") + localVerF + T("，有新版 ", ", new version ") + disp + T("，点击更新", ". Tap to update");
+                            final String msg = T("当前 ", "Current ") + localVerF + T(",有新版 ", ", new version ") + disp + T(",点击更新", ". Tap to update");
                             android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
                             main.post(new Runnable() { public void run() {
                                 try { XposedHelpers.callMethod(verPref, "setSummary", msg); } catch (Throwable ignored) {}
                             }});
                         } else {
-                            final String msg = T("当前 ", "Current ") + localVerF + T("（已是最新）", " (up to date)");
+                            final String msg = T("当前 ", "Current ") + localVerF + T("(已是最新)", " (up to date)");
                             android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
                             main.post(new Runnable() { public void run() {
                                 try { XposedHelpers.callMethod(verPref, "setSummary", msg); } catch (Throwable ignored) {}
@@ -1512,7 +1582,7 @@ private static final String[] RANDOM_UAS = new String[]{
                 XposedBridge.log("[SBPlus] version item inject error: " + t);
             }
 
-            // —— 项目地址 ——
+            // -- 项目地址 --
             final Context projFinalCtx = ctx;
             try {
                 Class<?> projPrefCls = XposedHelpers.findClass(
@@ -1530,7 +1600,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 从模块 prefs 读版本号（MainActivity 写入），读不到则用编译期常量 APP_VERSION。 */
+    /** 从模块 prefs 读版本号(MainActivity 写入),读不到则用编译期常量 APP_VERSION。 */
     private String readModuleVersion() {
         try {
             XSharedPreferences xp = new XSharedPreferences(MODULE_PACKAGE, PREFS_NAME);
@@ -1553,7 +1623,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 查询 GitHub 最新 release 的 tag（如 v2.1），失败返回 null。 */
+    /** 查询 GitHub 最新 release 的 tag(如 v2.1),失败返回 null。 */
     private String checkLatestVersionOnline() {
         java.net.HttpURLConnection c = null;
         try {
@@ -1582,7 +1652,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 手动检测更新：后台查 GitHub 最新 release，有更新弹确认框。 */
+    /** 手动检测更新:后台查 GitHub 最新 release,有更新弹确认框。 */
     private void checkUpdateInteractive(final Context ctx) {
         final String local = readModuleVersion();
         new Thread(new Runnable() {
@@ -1626,29 +1696,29 @@ private static final String[] RANDOM_UAS = new String[]{
                 android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
                 main.post(new Runnable() { @Override public void run() {
                     if (fErr != null) {
-                        android.widget.Toast.makeText(ctx, T("检测失败：", "Check failed: ") + fErr, android.widget.Toast.LENGTH_LONG).show();
+                        android.widget.Toast.makeText(ctx, T("检测失败:", "Check failed: ") + fErr, android.widget.Toast.LENGTH_LONG).show();
                         return;
                     }
                     boolean newer = versionNewer(fTag, fLocal);
                     if (newer) {
                         showUpdateDialog(ctx, fTag, fBody, fApk);
                     } else {
-                        android.widget.Toast.makeText(ctx, T("已是最新版本（", "Already up to date (") + fTag + T("）", ")"), android.widget.Toast.LENGTH_SHORT).show();
+                        android.widget.Toast.makeText(ctx, T("已是最新版本(", "Already up to date (") + fTag + T(")", ")"), android.widget.Toast.LENGTH_SHORT).show();
                     }
                 }});
             }
         }).start();
     }
 
-    /** 弹更新确认框，确认后浏览器打开下载地址。 */
+    /** 弹更新确认框,确认后浏览器打开下载地址。 */
     private void showUpdateDialog(final Context ctx, String tag, String body, final String apkUrl) {
         try {
             String note = body;
-            if (note == null || note.trim().isEmpty()) note = T("（无更新说明）", " (no release notes)");
-            if (note.length() > 500) note = note.substring(0, 500) + "…";
+            if (note == null || note.trim().isEmpty()) note = T("(无更新说明)", " (no release notes)");
+            if (note.length() > 500) note = note.substring(0, 500) + "...";
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
-            b.setTitle(T("发现新版本：", "New version: ") + tag);
-            b.setMessage(T("当前版本：", "Current version: ") + readModuleVersion() + "\n\n" + note);
+            b.setTitle(T("发现新版本:", "New version: ") + tag);
+            b.setMessage(T("当前版本:", "Current version: ") + readModuleVersion() + "\n\n" + note);
             b.setPositiveButton(T("下载更新", "Download update"), new android.content.DialogInterface.OnClickListener() {
                 @Override public void onClick(android.content.DialogInterface d, int w) {
                     String url = (apkUrl != null && !apkUrl.isEmpty())
@@ -1670,7 +1740,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 剥离 tag 前导的 'v'，用于展示（如 v2.0 -> 2.0）。 */
+    /** 剥离 tag 前导的 'v',用于展示(如 v2.0 -> 2.0)。 */
     private String stripV(String s) {
         if (s == null) return "";
         String r = s.trim();
@@ -1704,7 +1774,7 @@ private static final String[] RANDOM_UAS = new String[]{
     /**
      * Fill the downloader picker sub-page: 3 preset downloader rows (radio dots) + a custom
      * inline-package row. Radio dots and the inline EditText are injected in the
-     * onBindViewHolder hook (decoratePickerRow) — pure code, no XML inflation.
+     * onBindViewHolder hook (decoratePickerRow) - pure code, no XML inflation.
      */
     private void injectDownloaderPicker(Context ctx, ClassLoader cl, Object screen) {
         final String current = downloaderPackage();
@@ -1722,7 +1792,7 @@ private static final String[] RANDOM_UAS = new String[]{
             XposedHelpers.callMethod(screen, "addPreference", pref);
         }
 
-        // Custom downloader row — inline EditText injected in onBindViewHolder.
+        // Custom downloader row - inline EditText injected in onBindViewHolder.
         Object custom = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(custom, "setTitle", T("自定义下载器", "Custom Downloader"));
         XposedHelpers.callMethod(custom, "setKey", "sbplus_dl_custom");
@@ -1736,7 +1806,7 @@ private static final String[] RANDOM_UAS = new String[]{
 
     /** Fill the region picker sub-page: 17 country rows (radio dots), mirroring the
      *  downloader picker exactly (PreferenceCustom rows + injectRadioDot in onBindViewHolder).
-     *  No ScrollView / custom layout — Samsung's own RecyclerView handles scrolling, theming,
+     *  No ScrollView / custom layout - Samsung's own RecyclerView handles scrolling, theming,
      *  rounding and backgrounds. */
     private void injectRegionPicker(Context ctx, ClassLoader cl, Object screen) {
         final String current = regionCode();
@@ -1886,7 +1956,7 @@ private static final String[] RANDOM_UAS = new String[]{
     private void showCustomDownloaderDialog(final android.app.Activity act) {
         final Context ctx = act;
         final android.widget.EditText input = new android.widget.EditText(ctx);
-        input.setHint(T("输入包名，例如 com.dv.adm", "Enter package name, e.g. com.dv.adm"));
+        input.setHint(T("输入包名,例如 com.dv.adm", "Enter package name, e.g. com.dv.adm"));
         input.setSingleLine(true);
         input.setText(downloaderPackage());
         int pad = dp(ctx, 16);
@@ -1966,7 +2036,7 @@ private static final String[] RANDOM_UAS = new String[]{
         return (int) (v * ctx.getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    /** 弹窗内多行文本的最大可用宽度（px）：屏幕宽度的 85%。 */
+    /** 弹窗内多行文本的最大可用宽度(px):屏幕宽度的 85%。 */
     private int screenPopupMaxWidth(Context ctx) {
         int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
         return (int) (screenW * 0.85f);
@@ -1993,7 +2063,7 @@ private static final String[] RANDOM_UAS = new String[]{
 
         ClassLoader cl = fragment.getClass().getClassLoader();
 
-        // SBPlus main entry — a plain tappable row (like "Homepage" or "Search engine")
+        // SBPlus main entry - a plain tappable row (like "Homepage" or "Search engine")
         // that navigates into a real sub-menu page.
         Class<?> prefCustomCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
@@ -2027,7 +2097,7 @@ private static final String[] RANDOM_UAS = new String[]{
 
         XposedHelpers.callMethod(pref, "setTitle", T("启用外部下载器", "Enable external downloader"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_external_downloader");
-        XposedHelpers.callMethod(pref, "setSummary", T("下载转交给第三方下载器（ADM/1DM/IDM+）", "Forward downloads to a third-party manager (ADM/1DM/IDM+)"));
+        XposedHelpers.callMethod(pref, "setSummary", T("下载转交给第三方下载器(ADM/1DM/IDM+)", "Forward downloads to a third-party manager (ADM/1DM/IDM+)"));
         XposedHelpers.callMethod(pref, "setChecked", isBridgeEnabled());
 
         // Must be selectable so performClick() routes into onClick() + onPreferenceTreeClick
@@ -2115,7 +2185,7 @@ private static final String[] RANDOM_UAS = new String[]{
 
         XposedHelpers.callMethod(pref, "setTitle", T("启用网格菜单", "Enable grid menu"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_grid_menu");
-        XposedHelpers.callMethod(pref, "setSummary", T("更多菜单改为两行×5列网格，左右翻页", "More menu as a 2-row x 5-col grid, swipe to switch pages"));
+        XposedHelpers.callMethod(pref, "setSummary", T("更多菜单改为两行×5列网格,左右翻页", "More menu as a 2-row x 5-col grid, swipe to switch pages"));
         XposedHelpers.callMethod(pref, "setChecked", isGridMenuEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
 
@@ -2283,7 +2353,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 随机浏览器标识：每次启动随机刷新 UA。 */
+    /** 随机浏览器标识:每次启动随机刷新 UA。 */
     private boolean isRandomUaEnabled() {
         try {
             if (sAppContext != null) {
@@ -2303,7 +2373,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 随机挑选一个 UA（每次启动调用一次，模拟“每次启动随机刷新”）。 */
+    /** 随机挑选一个 UA(每次启动调用一次,模拟"每次启动随机刷新")。 */
     private String randomUa() {
         try {
             java.util.Random rnd = new java.util.Random();
@@ -2323,7 +2393,7 @@ private static final String[] RANDOM_UAS = new String[]{
             if (brws.isEmpty()) brws.add("chrome");
 
             String plat = plats.get(rnd.nextInt(plats.size()));
-            // 过滤浏览器（iOS 只 Safari，Android 无 Safari）
+            // 过滤浏览器(iOS 只 Safari,Android 无 Safari)
             java.util.List<String> validBrw = new java.util.ArrayList<>();
             for (String b : brws) {
                 if ("ios".equals(plat)) {
@@ -2432,7 +2502,7 @@ private static final String[] RANDOM_UAS = new String[]{
     }
 
 
-    /** 该分类是否有用户手动编辑过的 UA 列表（区别于内置 fallback 区间）。 */
+    /** 该分类是否有用户手动编辑过的 UA 列表(区别于内置 fallback 区间)。 */
     private boolean hasEditedGroup(int gi) {
         try {
             if (sAppContext != null) {
@@ -2443,7 +2513,7 @@ private static final String[] RANDOM_UAS = new String[]{
         return false;
     }
 
-    /** 按 BetterVia 思路动态合成 UA：平台->浏览器->模板填充随机成分。 */
+    /** 按 BetterVia 思路动态合成 UA:平台->浏览器->模板填充随机成分。 */
     private String buildDynamicUa(int gi, java.util.Random rnd) {
         try {
             if (gi == 0 || gi == 1) return buildAndroidUa(gi == 1, rnd);
@@ -2458,7 +2528,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** Android UA：Chrome/Edge 模板随机版本号；Firefox 模板随机主版本。 */
+    /** Android UA:Chrome/Edge 模板随机版本号;Firefox 模板随机主版本。 */
     private String buildAndroidUa(boolean otherBrowsers, java.util.Random rnd) {
         try {
             String[] models = {"SM-G9910","SM-S9080","SM-S9180","SM-G9960","SM-S9010","SM-A5360",
@@ -2476,12 +2546,12 @@ private static final String[] RANDOM_UAS = new String[]{
             int build = 3000 + rnd.nextInt(2000);      // 3000..4999
             int patch = 100 + rnd.nextInt(200);        // 100..299
             if (!otherBrowsers) {
-                // 分类0：Chrome
+                // 分类0:Chrome
                 return "Mozilla/5.0 (Linux; Android " + ver + "; " + model +
                         ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + "." + minor +
                         "." + build + "." + patch + " Mobile Safari/537.36";
             }
-            // 分类1：随机 Chrome/Edge/Firefox/Opera
+            // 分类1:随机 Chrome/Edge/Firefox/Opera
             int which = rnd.nextInt(4);
             if (which == 0) {
                 return "Mozilla/5.0 (Linux; Android " + ver + "; " + model +
@@ -2503,7 +2573,7 @@ private static final String[] RANDOM_UAS = new String[]{
         } catch (Throwable t) { return null; }
     }
 
-    /** iOS UA：Safari 模板随机 iOS 版本与设备。 */
+    /** iOS UA:Safari 模板随机 iOS 版本与设备。 */
     private String buildIosUa(java.util.Random rnd) {
         try {
             String[] vers = {"15.6.1","16.0","16.7.2","17.0","17.4","17.5","18.0","18.1","18.2","18.3","18.4"};
@@ -2517,7 +2587,7 @@ private static final String[] RANDOM_UAS = new String[]{
         } catch (Throwable t) { return null; }
     }
 
-    /** 桌面 UA：Windows/macOS/Linux 模板 + Chrome/Edge/Firefox 随机版本。 */
+    /** 桌面 UA:Windows/macOS/Linux 模板 + Chrome/Edge/Firefox 随机版本。 */
     private String buildDesktopUa(String plat, java.util.Random rnd) {
         try {
             int major = 90 + rnd.nextInt(60);
@@ -2543,7 +2613,7 @@ private static final String[] RANDOM_UAS = new String[]{
         } catch (Throwable t) { return null; }
     }
 
-    /** 读取某分类最终生效的 UA 列表：用户编辑覆盖优先，否则用内置静态数组区间。 */
+    /** 读取某分类最终生效的 UA 列表:用户编辑覆盖优先,否则用内置静态数组区间。 */
     private java.util.List<String> loadGroupUas(int gi) {
         java.util.List<String> list = new java.util.ArrayList<String>();
         try {
@@ -2557,7 +2627,7 @@ private static final String[] RANDOM_UAS = new String[]{
                     if (!list.isEmpty()) return list;
                 }
             }
-            // 兜底：内置静态数组 [start,end)
+            // 兜底:内置静态数组 [start,end)
             if (gi >= 0 && gi < UA_GROUPS.length) {
                 int s = Integer.parseInt(UA_GROUPS[gi][1]);
                 int e = Integer.parseInt(UA_GROUPS[gi][2]);
@@ -2568,7 +2638,7 @@ private static final String[] RANDOM_UAS = new String[]{
         return list;
     }
 
-    /** 保存某分类用户编辑后的 UA 列表（每行一条，空列表则清除覆盖、回退内置）。 */
+    /** 保存某分类用户编辑后的 UA 列表(每行一条,空列表则清除覆盖、回退内置)。 */
     private void saveGroupUas(int gi, java.util.List<String> list) {
         try {
             if (sAppContext != null) {
@@ -2657,7 +2727,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    // ---- 精简设置页（屏蔽设置项） ----
+    // ---- 精简设置页(屏蔽设置项) ----
 
     private boolean isCleanSettingsEnabled() {
         try {
@@ -2709,7 +2779,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 切换某一项：勾选=加入屏蔽，取消=移除。 */
+    /** 切换某一项:勾选=加入屏蔽,取消=移除。 */
     private void toggleHiddenSetting(String key, boolean hidden) {
         java.util.Set<String> set = hiddenSettings();
         if (hidden) set.add(key); else set.remove(key);
@@ -2753,7 +2823,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 主开关：精简设置页。 */
+    /** 主开关:精简设置页。 */
     private Object buildCleanSettingsSwitch(Context ctx, ClassLoader cl) {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
@@ -2824,7 +2894,7 @@ private static final String[] RANDOM_UAS = new String[]{
         return pref;
     }
 
-    /** 主开关：屏蔽更新（清除更新通知/弹窗 + 阻断更新检查网络连接 + 屏蔽升级组件）。 */
+    /** 主开关:屏蔽更新(清除更新通知/弹窗 + 阻断更新检查网络连接 + 屏蔽升级组件)。 */
     private Object buildBlockUpdateSwitch(Context ctx, ClassLoader cl) {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
@@ -2904,7 +2974,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 主页美化：去除主页搜索框内文字。 */
+    /** 主页美化:去除主页搜索框内文字。 */
     private boolean isHomeClearTextEnabled() {
         try {
             if (sAppContext != null) {
@@ -2924,7 +2994,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 主页美化：移动“添加快捷方式”按钮到主页设置旁。 */
+    /** 主页美化:移动添加快捷方式按钮到主页设置旁。 */
     private boolean isHomeMoveBtnEnabled() {
         try {
             if (sAppContext != null) {
@@ -2974,7 +3044,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 主开关：主页视频背景。 */
+    /** 主开关:主页视频背景。 */
     private Object buildVideoBgSwitch(Context ctx, ClassLoader cl) {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
@@ -3047,7 +3117,607 @@ private static final String[] RANDOM_UAS = new String[]{
         return pref;
     }
 
-    /** 主页美化子页：视频背景 / 去搜索框文字 / 移动添加快捷方式按钮。 */
+    /** 主页美化子页:视频背景 / 去搜索框文字 / 移动添加快捷方式按钮。 */
+    // ================= 自定义主题色(替换莫奈) =================
+    private void hookThemeHook(ClassLoader cl) {
+        try {
+            // 全局文字改色: 设置页/主页文字按 slot
+            XposedHelpers.findAndHookMethod("android.widget.TextView", cl,
+                "setText", CharSequence.class, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        applyTextColor(param.thisObject);
+                    }
+                });
+            // setTextColor 直接钩: 覆盖走 ColorStateList / 样式 的小字
+            try {
+                XposedHelpers.findAndHookMethod("android.widget.TextView", cl,
+                    "setTextColor", int.class, new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                if (sInThemeText) return;
+                                if (!(param.thisObject instanceof android.widget.TextView)) return;
+                                android.widget.TextView tv = (android.widget.TextView) param.thisObject;
+                                int c = themeTextColorFor(tv);
+                                if (c == -1 || c == tv.getCurrentTextColor()) return;
+                                sInThemeText = true;
+                                try { tv.setTextColor(c); } finally { sInThemeText = false; }
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+            } catch (Throwable ignored) {}
+            // View 挂载兜底: 遍历时也套用主题色
+            XposedHelpers.findAndHookMethod("android.view.View", cl,
+                "onAttachedToWindow", new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        if (param.thisObject instanceof android.widget.TextView) applyTextColor(param.thisObject);
+                    }
+                });
+            // 绘制兜底: 设置页文字被三星重设成蓝/默认色时强制 correction
+            try {
+                            final java.util.Set<String> dumpBlueSeen = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            final java.util.Set<String> dumpProbe = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            try {
+                XposedHelpers.findAndHookMethod("android.widget.TextView", cl,
+                    "onDraw", android.graphics.Canvas.class, new XC_MethodHook() {
+                        @Override protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                if (sInThemeText) return;
+                                Object o = param.thisObject;
+                                if (!(o instanceof android.widget.TextView)) return;
+                                android.widget.TextView tvd = (android.widget.TextView) o;
+                                android.content.Context ctxd = sAppContext;
+                                if (ctxd == null) return;
+                                String txtD = "";
+                                try { CharSequence tt = tvd.getText(); if (tt!=null) txtD = tt.toString(); } catch (Throwable ignored) {}
+                                int curD;
+                                try { curD = tvd.getCurrentTextColor(); } catch (Throwable e2) { return; }
+                                // tabs_icon(底部工具栏页面数) 强制用 S_HOME_ICON 色
+                                {
+                                    int tid = tvd.getId();
+                                    String tname = null;
+                                    try { tname = tvd.getResources().getResourceEntryName(tid); } catch (Throwable ignored) {}
+                                    if ("tabs_icon".equals(tname)) {
+                                        android.content.Context tctx = sAppContext;
+                                        int icol = (tctx != null) ? ThemeColorHelper.getSlot(tctx, ThemeColorHelper.S_HOME_ICON) : -1;
+                                        if (icol != -1 && curD != icol) {
+                                            sInThemeText = true;
+                                            try { tvd.setTextColor(icol); } finally { sInThemeText = false; }
+                                        }
+                                        // 页面图标: tabs_icon 的 background(标签图形) 染 S_HOME_ICON 色(与数字统一)
+                                        if (icol != -1) {
+                                            android.graphics.drawable.Drawable tbg = tvd.getBackground();
+                                            if (tbg != null) {
+                                                tbg.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN);
+                                            }
+                                        }
+                                        // 诊断: dump 父布局(action_tabs)结构, 定位"页面图标"
+                                        try {
+                                            android.view.ViewParent par = tvd.getParent();
+                                            if (par instanceof android.view.ViewGroup) {
+                                                android.view.ViewGroup pg = (android.view.ViewGroup) par;
+                                                XposedBridge.log("[SBPlus] TABS parent=" + par.getClass().getName() + " bg=" + (pg.getBackground()!=null?pg.getBackground().getClass().getSimpleName():"null") + " children=" + pg.getChildCount());
+                                                for (int ci=0; ci<pg.getChildCount(); ci++) {
+                                                    android.view.View cv = pg.getChildAt(ci);
+                                                    String cidn="";
+                                                    try { cidn = cv.getResources().getResourceEntryName(cv.getId()); } catch (Throwable ignoredX) {}
+                                                    String bid="bg="+(cv.getBackground()!=null?cv.getBackground().getClass().getSimpleName():"null");
+                                                    String draw = "";
+                                                    if (cv instanceof android.widget.ImageView) {
+                                                        android.graphics.drawable.Drawable dd = ((android.widget.ImageView)cv).getDrawable();
+                                                        draw = "drawable="+(dd!=null?dd.getClass().getSimpleName():"null");
+                                                    }
+                                                    XposedBridge.log("[SBPlus] TABS child" + ci + " id=" + cidn + " cls=" + cv.getClass().getSimpleName() + " " + bid + " " + draw);
+                                                }
+                                            }
+                                        } catch (Throwable ignoredT) {}
+                                        return;
+                                    }
+                                }
+                                // 探测: 只打印一次每条文字(不设色), 确认 hook 运行
+                                if (dumpProbe.add(Integer.toHexString(System.identityHashCode(o)))) {
+                                    String txtP = "";
+                                    try { CharSequence tp = tvd.getText(); if (tp!=null) txtP = tp.toString(); } catch (Throwable ignoredP) {}
+                                    XposedBridge.log("[SBPlus] DRAW cur=#" + Integer.toHexString(curD) + " cls=" + o.getClass().getName() + " txt=" + txtP);
+                                }
+                                int rr=(curD>>16)&0xff, gg=(curD>>8)&0xff, bb=curD&0xff;
+                                if (bb > 90 && bb > (rr+40) && bb > (gg+40) && txtD.length()>0) {
+                                    String id = Integer.toHexString(System.identityHashCode(o));
+                                    if (dumpBlueSeen.add(id)) {
+                                        float spD=0;
+                                        try { spD = tvd.getTextSize()/tvd.getResources().getDisplayMetrics().scaledDensity; } catch (Throwable ignored) {}
+                                        XposedBridge.log("[SBPlus] BLUE " + spD + "sp cur=#" + Integer.toHexString(curD)
+                                            + " act=" + curActivityName(tvd) + " cls=" + o.getClass().getName()
+                                            + " txt=" + txtD);
+                                    }
+                                }
+                                boolean inS = isInSettingsScreen(tvd);
+                                if (!inS) return;
+                                int targetD = themeTextColorFor(tvd);
+                                if (targetD == -1) return;
+                                sInThemeText = true;
+                                try {
+                                    tvd.setTextColor(targetD);
+                                    try { tvd.setLinkTextColor(targetD); } catch (Throwable ignoredL) {}
+                                    try { tvd.getPaint().setColor(targetD); } catch (Throwable ignoredP) {}
+                                    try { tvd.invalidate(); } catch (Throwable ignoredI) {}
+                                } finally { sInThemeText = false; }
+                                // 无条件再触发一次重绘以确保强制
+                                try { tvd.postInvalidate(); } catch (Throwable ignoredQ) {}
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+            } catch (Throwable ignored2) {}
+
+            } catch (Throwable ignored2) {}
+            // getTextColors: 三星值文字用 ColorStateList 渲染, 直接覆盖其解析
+            try {
+                XposedHelpers.findAndHookMethod("android.widget.TextView", cl,
+                    "getTextColors", new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                if (sInThemeText) return;
+                                Object o = param.thisObject;
+                                if (!(o instanceof android.widget.TextView)) return;
+                                android.widget.TextView tvv = (android.widget.TextView) o;
+                                android.content.Context ctx = sAppContext;
+                                if (ctx == null || !isThemeActive()) return;
+                                if (!isInSettingsScreen(tvv)) return;
+                                int t = themeTextColorFor(tvv);
+                                if (t == -1) return;
+                                param.setResult(new android.content.res.ColorStateList(
+                                    new int[][]{ new int[]{} }, new int[]{ t }));
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+            } catch (Throwable ignored2b) {}
+            // 主页图标(S_HOME_ICON): 给浏览器 UI 图标(含三星 Toolbar/AppCompat 家族)染主题色
+            // 标准 ImageView + AppCompat 家族 + 三星 Toolbar 自定义图标, 都 hook setImageDrawable/setImageResource
+            String[][] iconHooks = {
+                {"android.widget.ImageView", "setImageDrawable", "drawable"},
+                {"android.widget.ImageView", "setImageResource", "res"},
+                {"androidx.appcompat.widget.AppCompatImageView", "setImageDrawable", "drawable"},
+                {"androidx.appcompat.widget.AppCompatImageButton", "setImageDrawable", "drawable"},
+                {"androidx.appcompat.widget.AppCompatImageButton", "setImageResource", "res"},
+            };
+            for (String[] h : iconHooks) {
+                try {
+                    XposedHelpers.findAndHookMethod(h[0], cl,
+                        h[1], (h[2].equals("res") ? int.class : (Class<?>) android.graphics.drawable.Drawable.class),
+                        new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                tintHomeIcon(param.thisObject);
+                            }
+                        });
+                } catch (Throwable ignored) {}
+            }
+            // 三星 Toolbar 自定义图标类(重写 setImageDrawable 不调父类): 按类名 hook 其 setImageDrawable
+            for (String tn : new String[]{
+                "com.sec.android.app.sbrowser.common.widget.ToolbarImageButton",
+                "com.sec.android.app.sbrowser.common.widget.ToolbarImageView"}) {
+                try {
+                    XposedHelpers.findAndHookMethod(tn, cl,
+                        "setImageDrawable", android.graphics.drawable.Drawable.class,
+                        new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                tintHomeIcon(param.thisObject);
+                            }
+                        });
+                } catch (Throwable ignored) {}
+            }
+
+            // onDraw 兜底: 任何浏览器 UI ImageView 重绘时都确保染主题色(覆盖动态菜单图标)
+            try {
+                XposedHelpers.findAndHookMethod("android.widget.ImageView", cl, "onDraw",
+                    android.graphics.Canvas.class,
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                Object o = param.thisObject;
+                                if (o instanceof android.widget.ImageView) {
+                                    ensureIconTint((android.widget.ImageView) o);
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+            } catch (Throwable ignored) {}
+            // 开关三色
+            try {
+                XposedHelpers.findAndHookMethod("androidx.appcompat.widget.SwitchCompat", cl,
+                    "setChecked", boolean.class, new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            applySwitchColor(param.thisObject);
+                        }
+                    });
+            } catch (Throwable ignored) {}
+            // 探测: 记录真实 WebViewClient 类名(三星 override onPageFinished 不调 super)
+            try {
+                XposedHelpers.findAndHookMethod("android.webkit.WebView", cl,
+                    "setWebViewClient", android.webkit.WebViewClient.class,
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                if (param.args.length>0 && param.args[0]!=null)
+                                    XposedBridge.log("[SBPlus] WebViewClient cls=" + param.args[0].getClass().getName());
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+            } catch (Throwable ignored) {}
+            // 网页文字/背景: CSS 注入 (S_WEB_TEXT / S_WEB_BG)
+            try {
+                XposedHelpers.findAndHookMethod(android.webkit.WebViewClient.class,
+                    "onPageFinished", android.webkit.WebView.class, String.class,
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                XposedBridge.log("[SBPlus] onPageFinished fired url=" + (param.args.length>1?String.valueOf(param.args[1]):""));
+                                if (!isThemeActive()) return;
+                                Object wv = param.args[0];
+                                if (!(wv instanceof android.webkit.WebView)) return;
+                                android.content.Context ctx = sAppContext;
+                                if (ctx == null) return;
+                                int wtext = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_WEB_TEXT);
+                                int wbg = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_WEB_BG);
+                                if (wtext == -1 && wbg == -1) return;
+                                String css = buildWebThemeCss(wtext, wbg);
+                                final android.webkit.WebView fwv = (android.webkit.WebView) wv;
+                                try {
+                                    fwv.evaluateJavascript("(function(){" +
+                                        "var e=document.getElementById('sbplusTheme');" +
+                                        "if(e){e.parentNode.removeChild(e);}" +
+                                        "var s=document.createElement('style');s.id='sbplusTheme';" +
+                                        "s.textContent='" + css + "';" +
+                                        "(document.head||document.documentElement).appendChild(s);" +
+                                        "})();", null);
+                                } catch (Throwable e2) {
+                                    try { fwv.loadUrl("javascript:(function(){" +
+                                        "var s=document.createElement('style');s.id='sbplusTheme';" +
+                                        "s.textContent='" + css + "';" +
+                                        "(document.head||document.documentElement).appendChild(s);" +
+                                        "})();"); } catch (Throwable ignored3) {}
+                                }
+                                XposedBridge.log("[SBPlus] web theme injected text=#" + Integer.toHexString(wtext)
+                                    + " bg=#" + Integer.toHexString(wbg));
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+            } catch (Throwable ignoredW) {}
+            XposedBridge.log("[SBPlus] theme hook registered");
+            try {
+                android.content.Context dctx = sAppContext;
+                if (dctx != null) {
+                    XposedBridge.log("[SBPlus] SLOTS master=" + isThemeMasterEnabled() + " active=" + isThemeActive());
+                    for (int si = 0; si <= ThemeColorHelper.S_SWITCH_OFF; si++) {
+                        int sv = ThemeColorHelper.getSlot(dctx, si);
+                        XposedBridge.log("[SBPlus] SLOT[" + si + "]=" + (si==ThemeColorHelper.S_HOME_ICON?"HOME_ICON":si==ThemeColorHelper.S_HOME_TEXT?"HOME_TEXT":si==ThemeColorHelper.S_SETTINGS_TITLE?"SETTINGS_TITLE":si==ThemeColorHelper.S_SETTINGS_DESC?"SETTINGS_DESC":si==ThemeColorHelper.S_SETTINGS_BG?"SETTINGS_BG":si==ThemeColorHelper.S_WEB_TEXT?"WEB_TEXT":si==ThemeColorHelper.S_WEB_BG?"WEB_BG":si==ThemeColorHelper.S_SWITCH_ON?"SWITCH_ON":si==ThemeColorHelper.S_SWITCH_THUMB?"SWITCH_THUMB":"SWITCH_OFF") + "=#" + Integer.toHexString(sv));
+                    }
+                }
+            } catch (Throwable ignoredS) {}
+
+            // Dialog.show hook: 弹窗出现时强制染色工具栏图标
+            try {
+                XposedHelpers.findAndHookMethod(android.app.Dialog.class, "show", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            android.app.Dialog dlg = (android.app.Dialog) param.thisObject;
+                            android.view.Window w = dlg.getWindow();
+                            if (w != null && w.getDecorView() != null) {
+                                final android.view.View root = w.getDecorView().getRootView();
+                                root.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        forceApplyAllToolbarIcons(root);
+                                    }
+                                }, 300);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+                XposedBridge.log("[SBPlus] Dialog.show hooked for icon tinting");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] Dialog.show hook failed: " + t);
+            }
+
+            // PopupWindow hook: 弹窗出现时强制染色工具栏图标
+            try {
+                XposedHelpers.findAndHookMethod(android.widget.PopupWindow.class, "showAsDropDown",
+                        android.view.View.class, int.class, int.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            android.widget.PopupWindow pw = (android.widget.PopupWindow) param.thisObject;
+                            android.view.View cv = pw.getContentView();
+                            if (cv != null) {
+                                final android.view.View root = cv.getRootView();
+                                root.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        forceApplyAllToolbarIcons(root);
+                                    }
+                                }, 300);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+                XposedHelpers.findAndHookMethod(android.widget.PopupWindow.class, "showAtLocation",
+                        android.view.View.class, int.class, int.class, int.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        try {
+                            android.widget.PopupWindow pw = (android.widget.PopupWindow) param.thisObject;
+                            android.view.View cv = pw.getContentView();
+                            if (cv != null) {
+                                final android.view.View root = cv.getRootView();
+                                root.postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        forceApplyAllToolbarIcons(root);
+                                    }
+                                }, 300);
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+                });
+                XposedBridge.log("[SBPlus] PopupWindow hooks registered for icon tinting");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] PopupWindow hook failed: " + t);
+            }
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] theme hook err: " + t); }
+    }
+
+        private String buildWebThemeCss(int text, int bg) {
+        StringBuilder sb = new StringBuilder();
+        if (text != -1) {
+            String t = String.format("%06X", text & 0xFFFFFF);
+            sb.append("*{color:#").append(t).append("!important;}");
+        }
+        if (bg != -1) {
+            String b = String.format("%06X", bg & 0xFFFFFF);
+            // 统一背景: 清空各层元素背景, 露出 body 的统一主题背景色
+            sb.append("*{background-color:transparent!important;}");
+            sb.append("html,body{background-color:#").append(b).append("!important;}");
+        }
+        return sb.toString();
+    }
+
+private boolean isThemeMasterEnabled() {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null) return false;
+            return ctx.getSharedPreferences("sbplus_prefs", android.content.Context.MODE_PRIVATE)
+                    .getBoolean("theme_color_enabled", false);
+        } catch (Throwable t) { return false; }
+    }
+
+    private boolean isThemeActive() {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null) return false;
+            if (!isThemeMasterEnabled()) return false;
+            for (int s = 0; s < ThemeColorHelper.S_SWITCH_OFF + 1; s++) {
+                if (ThemeColorHelper.getSlot(ctx, s) != -1) return true;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private void applyTextColor(Object obj) {
+        try {
+            if (!(obj instanceof android.widget.TextView)) return;
+            android.widget.TextView tv = (android.widget.TextView) obj;
+            int c = themeTextColorFor(tv);
+            if (c == -1 || c == tv.getCurrentTextColor()) return;
+            tv.setTextColor(c);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 设置页: 标题(>=13sp)用标题色, 说明用说明色; 非设置页用主页文字色. 未设置返回 -1. */
+    private int themeTextColorFor(android.view.View v) {
+        android.content.Context ctx = sAppContext;
+        if (ctx == null) return -1;
+        if (!isThemeActive()) return -1;
+        boolean settings = isInSettingsScreen(v);
+        if (v instanceof android.widget.TextView) {
+            float sp;
+            try {
+                sp = ((android.widget.TextView) v).getTextSize()
+                        / v.getResources().getDisplayMetrics().scaledDensity;
+            } catch (Throwable e) { sp = 14f; }
+            int out;
+            // 特例: 底部工具栏"页面数"(tabs_icon)用 S_HOME_ICON 色(与工具栏图标统一)
+            int vid = v.getId();
+            String vn = null;
+            try { vn = v.getResources().getResourceEntryName(vid); } catch (Throwable ignored) {}
+            if ("tabs_icon".equals(vn)) {
+                out = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+            } else if (settings) {
+                out = sp >= 13f
+                        ? ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_SETTINGS_TITLE)
+                        : ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_SETTINGS_DESC);
+            } else {
+                out = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_TEXT);
+            }
+            if (out != -1) {
+                String txt = "";
+                try { CharSequence t = ((android.widget.TextView) v).getText(); if (t!=null) txt = t.toString(); } catch (Throwable ignored) {}
+                int grav = -1;
+                try { grav = ((android.widget.TextView) v).getGravity(); } catch (Throwable ignored2) {}
+                String cls = v.getClass().getSimpleName();
+                int cur = 0;
+                try { cur = ((android.widget.TextView) v).getCurrentTextColor(); } catch (Throwable ignored2) {}
+                XposedBridge.log("[SBPlus] themeText " + (settings?"SET":"HOME") + " " + sp + "sp grav=" + grav + " cls=" + cls + " cur=#" + Integer.toHexString(cur) + " '" + txt + "' -> #" + Integer.toHexString(out));
+            } else if (settings) {
+                // 设置页有文字但未命中: 也打印, 便于排查蓝色小字
+                String txt = "";
+                try { CharSequence t = ((android.widget.TextView) v).getText(); if (t!=null) txt = t.toString(); } catch (Throwable ignored) {}
+                if (txt != null && txt.length() > 0) {
+                    int cur = 0; float sp0=0;
+                    try { cur = ((android.widget.TextView) v).getCurrentTextColor(); sp0 = ((android.widget.TextView) v).getTextSize()/((android.widget.TextView) v).getResources().getDisplayMetrics().scaledDensity; } catch (Throwable ignored2) {}
+                    XposedBridge.log("[SBPlus] themeText-MISS SET " + sp0 + "sp cur=#" + Integer.toHexString(cur) + " '" + txt + "'");
+                }
+            } else if (!settings) {
+                // 非设置页: 定位蓝色小字
+                String txt = "";
+                try { CharSequence t = ((android.widget.TextView) v).getText(); if (t!=null) txt = t.toString(); } catch (Throwable ignored) {}
+                int cur = 0; float sp0=0;
+                try { cur = ((android.widget.TextView) v).getCurrentTextColor(); sp0 = ((android.widget.TextView) v).getTextSize()/((android.widget.TextView) v).getResources().getDisplayMetrics().scaledDensity; } catch (Throwable ignored2) {}
+                // 蓝色系文字(蓝明显强) 即打印
+                int r0=(cur>>16)&0xff, g0=(cur>>8)&0xff, b0=cur&0xff;
+                if (b0 > 90 && b0 > (r0+40) && b0 > (g0+40)) {
+                    String act="";
+                    try {
+                        android.content.Context cw = v.getContext();
+                        while (cw != null) {
+                            if (cw instanceof android.app.Activity) { act = cw.getClass().getName(); break; }
+                            if (cw instanceof android.content.ContextWrapper) cw = ((android.content.ContextWrapper) cw).getBaseContext();
+                            else break;
+                        }
+                    } catch (Throwable ignored3) {}
+                    XposedBridge.log("[SBPlus] themeText-BLUE " + sp0 + "sp cur=#" + Integer.toHexString(cur) + " act=" + act + " class=" + v.getClass().getName() + " '" + txt + "'");
+                }
+            }
+            return out;
+        }
+        return settings ? ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_SETTINGS_TITLE)
+                        : ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_TEXT);
+    }
+
+    /** 沿 view 的 context 链判断是否处于设置页(Activity 类名含 settings/preference). */
+    private String curActivityName(android.view.View v) {
+        try {
+            android.content.Context cw = v.getContext();
+            while (cw != null) {
+                if (cw instanceof android.app.Activity) return cw.getClass().getName();
+                if (cw instanceof android.content.ContextWrapper) cw = ((android.content.ContextWrapper) cw).getBaseContext();
+                else break;
+            }
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    private boolean isInSettingsScreen(android.view.View v) {
+        try {
+            android.content.Context c = v.getContext();
+            while (c != null) {
+                if (c instanceof android.app.Activity) {
+                    String n = c.getClass().getName().toLowerCase();
+                    if (n.contains("setting") || n.contains("preference")) return true;
+                    return false;
+                }
+                if (c instanceof android.content.ContextWrapper) {
+                    c = ((android.content.ContextWrapper) c).getBaseContext();
+                } else break;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    /** 判断是否浏览器工具栏/菜单图标(SBrowserMainActivity 内), 位于非设置页. */
+    private boolean isHomeScreen(android.view.View v) {
+        try {
+            // 排除主页背景层级(背景 ImageView/纹理/QuickAccess 不应染色)
+            try {
+                android.view.ViewParent pp0 = v.getParent();
+                while (pp0 != null) {
+                    String pn0 = pp0.getClass().getName().toLowerCase();
+                    if (pn0.contains("custombackground") || pn0.contains("quickaccess")
+                            || pn0.contains("videoview") || pn0.contains("textureview")
+                            || pn0.contains("reelbackground") || pn0.contains("mainlayoutbackground")) return false;
+                    pp0 = pp0.getParent();
+                }
+            } catch (Throwable ignored) {}
+            android.content.Context c = v.getContext();
+            while (c != null) {
+                if (c instanceof android.app.Activity) {
+                    String n = c.getClass().getName().toLowerCase();
+                    if (n.contains("setting") || n.contains("preference")
+                            || n.contains("download") || n.contains("sniff")
+                            || n.contains("userscript")) return false;
+                    if (n.contains("sbrowser") || n.contains("sbrowsermain")) return true;
+                    return false;
+                }
+                if (c instanceof android.content.ContextWrapper) {
+                    c = ((android.content.ContextWrapper) c).getBaseContext();
+                } else break;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    /** 是否浏览器 UI 图标(排除设置页/主页背景/专用页; 覆盖工具栏+菜单等). */
+    private boolean isBrowserUiIcon(android.view.View v) {
+        try {
+            // 排除背景类 id (大图背景, 绝不染)
+            try {
+                String vidn = v.getResources().getResourceEntryName(v.getId());
+                if (vidn.contains("background") || vidn.equals("custom_background")
+                        || vidn.contains("backdrop") || vidn.contains("wallpaper")) return false;
+            } catch (Throwable ignoredV) {}
+            // 排除主页背景层级
+            try {
+                android.view.ViewParent pp0 = v.getParent();
+                while (pp0 != null) {
+                    String pn0 = pp0.getClass().getName().toLowerCase();
+                    if (pn0.contains("custombackground") || pn0.contains("quickaccess")
+                            || pn0.contains("videoview") || pn0.contains("textureview")
+                            || pn0.contains("reelbackground") || pn0.contains("mainlayoutbackground")) return false;
+                    pp0 = pp0.getParent();
+                }
+            } catch (Throwable ignored) {}
+            android.content.Context c = v.getContext();
+            while (c != null) {
+                if (c instanceof android.app.Activity) {
+                    String n = c.getClass().getName().toLowerCase();
+                    if (n.contains("setting") || n.contains("preference")
+                            || n.contains("download") || n.contains("sniff")
+                            || n.contains("userscript") || n.contains("sites")
+                            || n.contains("bookmark") || n.contains("history")) return false;
+                    // 仅拦浏览器自身包
+                    if (n.contains("sbrowser")) return true;
+                    return false;
+                }
+                if (c instanceof android.content.ContextWrapper) {
+                    c = ((android.content.ContextWrapper) c).getBaseContext();
+                } else break;
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    /** 主页图标 -> S_HOME_ICON. 未设置返回 -1. */
+    private int themeHomeIconColor() {
+        android.content.Context ctx = sAppContext;
+        if (ctx == null || !isThemeActive()) return -1;
+        return ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+    }
+
+    /** 开关三色应用. */
+    private void applySwitchColor(Object sw) {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || sw == null) return;
+            if (!isThemeActive()) return;
+            int on = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_SWITCH_ON);
+            int off = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_SWITCH_OFF);
+            int thumb = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_SWITCH_THUMB);
+            if (on == -1 && off == -1 && thumb == -1) return;
+            int onCol = on == -1 ? 0xFF3E91FF : on;
+            int offCol = off == -1 ? 0xFF3A3A3E : off;
+            android.content.res.ColorStateList track = new android.content.res.ColorStateList(
+                new int[][]{
+                    new int[]{ android.R.attr.state_checked },
+                    new int[]{}
+                },
+                new int[]{ onCol, offCol });
+            try { sw.getClass().getMethod("setTrackTintList", android.content.res.ColorStateList.class).invoke(sw, track); } catch (Throwable ignored) {}
+            if (thumb != -1) {
+                android.content.res.ColorStateList tl = new android.content.res.ColorStateList(
+                    new int[][]{ new int[]{} }, new int[]{ thumb });
+                try { sw.getClass().getMethod("setThumbTintList", android.content.res.ColorStateList.class).invoke(sw, tl); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+    }
+
     private void injectHomeBeautify(Context ctx, ClassLoader cl, Object screen) {
         Object videoBgPref = buildVideoBgSwitch(ctx, cl);
         XposedHelpers.callMethod(screen, "addPreference", videoBgPref);
@@ -3058,17 +3728,20 @@ private static final String[] RANDOM_UAS = new String[]{
         Object moveBtnPref = buildHomeMoveBtnSwitch(ctx, cl);
         XposedHelpers.callMethod(screen, "addPreference", moveBtnPref);
 
-        XposedBridge.log("[SBPlus] home beautify page injected");
+        Object themeEntry = ThemeColorHelper.buildEntry(ctx, cl);
+        if (themeEntry != null) { XposedHelpers.callMethod(screen, "addPreference", themeEntry); }
+
+        XposedBridge.log("[SBPlus] home beautify page injected (theme color)");
     }
 
-    /** 开关：去除主页搜索框内文字（“搜索或输入网址”）。 */
+    /** 开关:去除主页搜索框内文字(搜索或输入网址)。 */
     private Object buildHomeClearTextSwitch(Context ctx, ClassLoader cl) {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(pref, "setTitle", T("去除搜索框内文字", "Remove search box text"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_home_clear_text");
-        XposedHelpers.callMethod(pref, "setSummary", T("隐藏主页搜索框里的“搜索或输入网址”提示文字", "Hide the \"Search or type URL\" hint in the search box"));
+        XposedHelpers.callMethod(pref, "setSummary", T("隐藏主页搜索框里的搜索或输入网址提示文字", "Hide the \"Search or type URL\" hint in the search box"));
         XposedHelpers.callMethod(pref, "setChecked", isHomeClearTextEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
 
@@ -3095,14 +3768,14 @@ private static final String[] RANDOM_UAS = new String[]{
         return pref;
     }
 
-    /** 开关：移动“添加快捷方式”按钮到主页设置旁。 */
+    /** 开关:移动添加快捷方式按钮到主页设置旁。 */
     private Object buildHomeMoveBtnSwitch(Context ctx, ClassLoader cl) {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
         Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(pref, "setTitle", T("移动添加快捷方式按钮", "Move \"add shortcut\" button"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_home_move_btn");
-        XposedHelpers.callMethod(pref, "setSummary", T("把“添加快捷方式”按钮移到主页设置左边并统一大小", "Move the add-shortcut button next to homepage settings and unify its size"));
+        XposedHelpers.callMethod(pref, "setSummary", T("把添加快捷方式按钮移到主页设置左边并统一大小", "Move the add-shortcut button next to homepage settings and unify its size"));
         XposedHelpers.callMethod(pref, "setChecked", isHomeMoveBtnEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
 
@@ -3129,7 +3802,7 @@ private static final String[] RANDOM_UAS = new String[]{
         return pref;
     }
 
-    /** 视频背景选择子页：显示当前视频文件 + 选择入口 + 使用提示。 */
+    /** 视频背景选择子页:显示当前视频文件 + 选择入口 + 使用提示。 */
     private void injectVideoBgPicker(Context ctx, ClassLoader cl, Object screen) {
         Class<?> prefCustomCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
@@ -3143,11 +3816,11 @@ private static final String[] RANDOM_UAS = new String[]{
         XposedHelpers.callMethod(status, "setSummary", cur.isEmpty() ? T("尚未选择视频", "No video selected yet") : cur);
         XposedHelpers.callMethod(screen, "addPreference", status);
 
-        // 选择视频文件行（跳转到文件管理器）。
+        // 选择视频文件行(跳转到文件管理器)。
         Object choose = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(choose, "setTitle", T("选择视频文件", "Choose video file"));
         XposedHelpers.callMethod(choose, "setKey", "sbplus_videobg_choose");
-        XposedHelpers.callMethod(choose, "setSummary", T("通过系统文件管理器选择（建议 mp4）", "Pick via the system file picker (mp4 recommended)"));
+        XposedHelpers.callMethod(choose, "setSummary", T("通过系统文件管理器选择(建议 mp4)", "Pick via the system file picker (mp4 recommended)"));
         bindVideoBgChooseClick(choose, cl);
         XposedHelpers.callMethod(screen, "addPreference", choose);
 
@@ -3155,7 +3828,7 @@ private static final String[] RANDOM_UAS = new String[]{
         Object clear = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(clear, "setTitle", T("清除视频", "Clear video"));
         XposedHelpers.callMethod(clear, "setKey", "sbplus_videobg_clear");
-        XposedHelpers.callMethod(clear, "setSummary", T("只清设置，保留视频文件", "Only clear the setting, keep the video file"));
+        XposedHelpers.callMethod(clear, "setSummary", T("只清设置,保留视频文件", "Only clear the setting, keep the video file"));
         bindVideoBgClearClick(clear, cl);
         XposedHelpers.callMethod(screen, "addPreference", clear);
 
@@ -3170,7 +3843,7 @@ private static final String[] RANDOM_UAS = new String[]{
         XposedBridge.log("[SBPlus] video bg picker injected");
     }
 
-    /** 选择视频：启动系统文件选择器（ACTION_OPEN_DOCUMENT，只选视频）。 */
+    /** 选择视频:启动系统文件选择器(ACTION_OPEN_DOCUMENT,只选视频)。 */
     private void bindVideoBgChooseClick(Object pref, ClassLoader cl) {
         try {
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
@@ -3243,7 +3916,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 删除已复制到 Movies/SBPlus 的所有视频文件（含历史重命名残留），并清掉当前设置。 */
+    /** 删除已复制到 Movies/SBPlus 的所有视频文件(含历史重命名残留),并清掉当前设置。 */
     private void bindVideoBgDeleteClick(Object pref, ClassLoader cl) {
         try {
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
@@ -3277,7 +3950,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 通过 MediaStore 删除 Movies/SBPlus 目录下所有 SBPlus 视频（含 (1) 等重命名），返回删除数量。 */
+    /** 通过 MediaStore 删除 Movies/SBPlus 目录下所有 SBPlus 视频(含 (1) 等重命名),返回删除数量。 */
     private int deleteVideoBgFiles(Context ctx) {
         int deleted = 0;
         try {
@@ -3300,7 +3973,7 @@ private static final String[] RANDOM_UAS = new String[]{
                     cur.close();
                 }
             }
-            // 2) 兜底：直接删除物理目录下遗漏的 .mp4 文件（可能存在未入库的残留）。
+            // 2) 兜底:直接删除物理目录下遗漏的 .mp4 文件(可能存在未入库的残留)。
             java.io.File dir = new java.io.File(
                     java.io.File.separator + "storage" + java.io.File.separator + "emulated"
                             + java.io.File.separator + "0" + java.io.File.separator + "Movies"
@@ -3321,7 +3994,7 @@ private static final String[] RANDOM_UAS = new String[]{
         return deleted;
     }
 
-    /** 填充精简设置页：列出所有设置项，每项一个 CheckBox，两列网格显示。 */
+    /** 填充精简设置页:列出所有设置项,每项一个 CheckBox,两列网格显示。 */
     private void injectCleanSettingsPicker(Context ctx, ClassLoader cl, Object screen, Object frag) {
         Class<?> prefCustomCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
@@ -3337,7 +4010,7 @@ private static final String[] RANDOM_UAS = new String[]{
         XposedBridge.log("[SBPlus] clean settings picker injected (" + SETTINGS_ITEMS.length + " items)");
     }
 
-    /** 点击某项：切换勾选状态 + 更新 CheckBox 显示。 */
+    /** 点击某项:切换勾选状态 + 更新 CheckBox 显示。 */
     private void bindCleanRowClick(Object pref, ClassLoader cl, final String key, final String title, final Object screen) {
         try {
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
@@ -3372,7 +4045,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 在精简设置行注入 CheckBox（替代 radio dot）。 */
+    /** 在精简设置行注入 CheckBox(替代 radio dot)。 */
     private void injectCleanCheckBox(final android.view.View root, final String prefKey) {
         try {
             android.view.View iconFrame = root.findViewById(android.R.id.icon_frame);
@@ -3382,7 +4055,7 @@ private static final String[] RANDOM_UAS = new String[]{
             } else {
                 target = (android.view.ViewGroup) root;
             }
-            // 清空 target 里已有的 CheckBox/RadioButton，避免 onBindViewHolder 复用导致叠加两个框。
+            // 清空 target 里已有的 CheckBox/RadioButton,避免 onBindViewHolder 复用导致叠加两个框。
             if (target.getChildCount() > 0) {
                 for (int i = target.getChildCount() - 1; i >= 0; i--) {
                     android.view.View c = target.getChildAt(i);
@@ -3410,7 +4083,7 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 三星 Sesl checkbox drawable 查找（失败返回 0）。 */
+    /** 三星 Sesl checkbox drawable 查找(失败返回 0)。 */
     private int resolveSeslCheckboxDrawable(android.content.Context ctx) {
         try {
             android.content.res.Resources r = ctx.getResources();
@@ -3436,7 +4109,7 @@ private static final String[] RANDOM_UAS = new String[]{
 
         XposedHelpers.callMethod(pref, "setTitle", T("浏览器标识", "Browser identity (UA)"));
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_ua_override");
-        XposedHelpers.callMethod(pref, "setSummary", T("伪装 User-Agent（桌面 Chrome / 手机 / iPhone / 自定义）", "Spoof User-Agent (Desktop Chrome / Mobile / iPhone / Custom)"));
+        XposedHelpers.callMethod(pref, "setSummary", T("伪装 User-Agent(桌面 Chrome / 手机 / iPhone / 自定义)", "Spoof User-Agent (Desktop Chrome / Mobile / iPhone / Custom)"));
         XposedHelpers.callMethod(pref, "setChecked", isUaEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try {
@@ -3505,11 +4178,11 @@ private static final String[] RANDOM_UAS = new String[]{
         Class<?> prefCustomCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
 
-        // 随机浏览器标识（单选行，与下方 preset 互斥）
+        // 随机浏览器标识(单选行,与下方 preset 互斥)
         Object randomRow = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(randomRow, "setTitle", T("随机浏览器标识", "Random UA"));
         XposedHelpers.callMethod(randomRow, "setKey", "sbplus_ua_random");
-        XposedHelpers.callMethod(randomRow, "setSummary", T("每次启动随机刷新 UA（覆盖多平台/多系统/多浏览器）", "Randomize UA on each start (multi-platform)"));
+        XposedHelpers.callMethod(randomRow, "setSummary", T("每次启动随机刷新 UA(覆盖多平台/多系统/多浏览器)", "Randomize UA on each start (multi-platform)"));
         bindUaRandomClick(randomRow, cl, screen);
         XposedHelpers.callMethod(screen, "addPreference", randomRow);
 
@@ -3524,7 +4197,7 @@ private static final String[] RANDOM_UAS = new String[]{
             XposedHelpers.callMethod(screen, "addPreference", pref);
         }
 
-        // 自定义 UA：点选后 inline 输入框可编辑固定 UA
+        // 自定义 UA:点选后 inline 输入框可编辑固定 UA
         boolean isCustomUa = !isPresetUa(current) && current.length() > 0;
         Object custom = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(custom, "setTitle", T("自定义 UA", "Custom UA"));
@@ -3604,11 +4277,11 @@ private static final String[] RANDOM_UAS = new String[]{
         }
     }
 
-    /** 弹出“随机浏览器标识”选项对话框：勾选参与随机的分类 + 管理自定义 UA。 */
-    
+    /** 弹出"随机浏览器标识"选项对话框:勾选参与随机的分类 + 管理自定义 UA。 */
+
     // ========== BetterVia-style Random UA helpers ==========
     private boolean getUaPlatEnabled(String plat) {
-        return processPrefs(sAppContext).getBoolean("sbplus_ua_plat_" + plat, 
+        return processPrefs(sAppContext).getBoolean("sbplus_ua_plat_" + plat,
             "android".equals(plat) || "ios".equals(plat));
     }
     private void setUaPlatEnabled(String plat, boolean v) {
@@ -3639,7 +4312,7 @@ private static final String[] RANDOM_UAS = new String[]{
     }
 
 private void showUaGroupDialog(final Context ctx) {
-        // BetterVia 风格：平台checkbox + 浏览器checkbox + 参数编辑框
+        // BetterVia 风格:平台checkbox + 浏览器checkbox + 参数编辑框
         try {
             final android.widget.LinearLayout ll = new android.widget.LinearLayout(ctx);
             ll.setOrientation(android.widget.LinearLayout.VERTICAL);
@@ -3699,7 +4372,7 @@ private void showUaGroupDialog(final Context ctx) {
 
             // === 参数编辑区 ===
             android.widget.TextView tvParam = new android.widget.TextView(ctx);
-            tvParam.setText(T("参数配置（逗号分隔）", "Parameters (comma-separated)"));
+            tvParam.setText(T("参数配置(逗号分隔)", "Parameters (comma-separated)"));
             tvParam.setTextSize(14);
             tvParam.setTextColor(0xFF666666);
             tvParam.setPadding(0, dp(ctx, 12), 0, dp(ctx, 6));
@@ -3717,7 +4390,7 @@ private void showUaGroupDialog(final Context ctx) {
             // 桌面 OS tokens
             addEditRow(ctx, ll, T("桌面 OS", "Desktop OS"),
                 getUaParam("desktop_tokens", "Windows NT 10.0; Win64; x64,Macintosh; Intel Mac OS X 10_15_7,X11; Linux x86_64"), "desktop_tokens");
-            // Chrome 版本范围（主版本号）
+            // Chrome 版本范围(主版本号)
             addEditRow(ctx, ll, T("Chrome 版本范围", "Chrome Version Range"),
                 getUaParam("chrome_range", "90-150"), "chrome_range");
 
@@ -3742,7 +4415,7 @@ private void showUaGroupDialog(final Context ctx) {
                     // 参数已在 addEditRow 的 TextWatcher 中实时保存
                     saveRandomUaEnabled(true);
                     try {
-                        android.widget.Toast.makeText(ctx, T("已保存：下次启动随机生效", "Saved: takes effect on next start"),
+                        android.widget.Toast.makeText(ctx, T("已保存:下次启动随机生效", "Saved: takes effect on next start"),
                                 android.widget.Toast.LENGTH_SHORT).show();
                     } catch (Throwable ignored) {}
                     XposedBridge.log("[SBPlus] BetterVia-style UA config saved");
@@ -3790,7 +4463,7 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
 
-    /** 弹出某分类的多行 UA 编辑框：每行一条，可增删改，保存后记住。 */
+    /** 弹出某分类的多行 UA 编辑框:每行一条,可增删改,保存后记住。 */
     private void showGroupUaEditor(final Context ctx, final int gi) {
         try {
             final java.util.List<String> cur = new java.util.ArrayList<String>(loadGroupUas(gi));
@@ -3807,7 +4480,7 @@ private void showUaGroupDialog(final Context ctx) {
             input.setHorizontallyScrolling(false);
             input.setTextColor(0xFF333333);
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
-            b.setTitle(UA_GROUPS[gi][0] + T(" - 编辑 UA（每行一条）", " - edit UAs (one per line)"));
+            b.setTitle(UA_GROUPS[gi][0] + T(" - 编辑 UA(每行一条)", " - edit UAs (one per line)"));
             b.setView(input);
             b.setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
                 @Override
@@ -3829,7 +4502,7 @@ private void showUaGroupDialog(final Context ctx) {
             box.removeAllViews();
             if (customs.isEmpty()) {
                 android.widget.TextView none = new android.widget.TextView(ctx);
-                none.setText(T("（暂无自定义 UA）", "(no custom UA)"));
+                none.setText(T("(暂无自定义 UA)", "(no custom UA)"));
                 none.setTextColor(0xFFBBBBBB);
                 none.setTextSize(13);
                 box.addView(none);
@@ -3911,7 +4584,7 @@ private void showUaGroupDialog(final Context ctx) {
      * view. Fully self-managed (scroll + mutual exclusion + persistence), avoiding Samsung's
      * broken PreferenceGroup attach flow that caused duplicate rows and shared check states.
      */
-    
+
     private int dp(Context ctx, float v) {
         return (int) (v * ctx.getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -3926,9 +4599,9 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /**
-     * 自适应：取得三星 PreferenceFragmentCustom 的父类。
-     * PreferenceFragmentCustom 继承被混淆的 androidx PreferenceFragmentCompat（旧版本叫 H2.A），
-     * 不写死混淆名，通过明文类名动态取 superclass，随浏览器版本自动适配。
+     * 自适应:取得三星 PreferenceFragmentCustom 的父类。
+     * PreferenceFragmentCustom 继承被混淆的 androidx PreferenceFragmentCompat(旧版本叫 H2.A),
+     * 不写死混淆名,通过明文类名动态取 superclass,随浏览器版本自动适配。
      */
     private Class<?> findPreferenceParent(ClassLoader cl) {
         try {
@@ -3946,8 +4619,8 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /**
-     * 自适应：对目标对象按候选方法名列表调用，返回第一个成功结果。
-     * 替换像 PreferenceManager#a(Context) 这种被混淆的方法名，候选顺序标准名优先再试混淆名。
+     * 自适应:对目标对象按候选方法名列表调用,返回第一个成功结果。
+     * 替换像 PreferenceManager#a(Context) 这种被混淆的方法名,候选顺序标准名优先再试混淆名。
      */
     private Object callMethodByCandidates(Object target, String[] candidates,
                                           Class<?>[] argTypes, Object[] args) {
@@ -3978,7 +4651,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 手动导航到脚本详情子页（传脚本文件名）。 */
+    /** 手动导航到脚本详情子页(传脚本文件名)。 */
     private void navigateToUserscriptDetail(android.app.Activity act, String fileName) {
         try {
             android.os.Bundle args = new android.os.Bundle();
@@ -4165,9 +4838,9 @@ private void showUaGroupDialog(final Context ctx) {
      * and navigator.userAgent reports the spoofed value.
      */
         /**
-     * UA override: 浏览器标识 开关开启时，在 SBrowserCommandLine.initialize() 完成后，
-     * 追加 Chromium 标准 switch "user-agent"（TerraceCommandLine.appendSwitchWithValue），
-     * 完整替换 UA（而不是三星 csc-feature-user-agent 的拼接）。需重启浏览器后生效。
+     * UA override: 浏览器标识 开关开启时,在 SBrowserCommandLine.initialize() 完成后,
+     * 追加 Chromium 标准 switch "user-agent"(TerraceCommandLine.appendSwitchWithValue),
+     * 完整替换 UA(而不是三星 csc-feature-user-agent 的拼接)。需重启浏览器后生效。
      */
     private void hookUaOverride(ClassLoader cl) {
         try {
@@ -4209,13 +4882,13 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 屏蔽更新：阻断更新检查入口 + 追加官方 disable-update-dialog switch（屏蔽弹窗）。 */
+    /** 屏蔽更新:阻断更新检查入口 + 追加官方 disable-update-dialog switch(屏蔽弹窗)。 */
     private void hookBlockUpdate(ClassLoader cl) {
         try {
             Class<?> updateMgr = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.stub.UpdateManager", cl);
 
-            // 自动检查入口（页面加载完成后自动检查）。
+            // 自动检查入口(页面加载完成后自动检查)。
             XposedHelpers.findAndHookMethod(updateMgr, "checkUpdateAtLoadFinishedIfAvailable",
                     android.app.Activity.class, new XC_MethodHook() {
                         @Override
@@ -4243,7 +4916,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] block update hook failed: " + t);
         }
 
-        // 兜底：阻断底层商店检查（Galaxy Store / Google Play 的网络 AIDL 调用）。
+        // 兜底:阻断底层商店检查(Galaxy Store / Google Play 的网络 AIDL 调用)。
         try {
             Class<?> stubUtil = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.common.stub.StubUtil", cl);
@@ -4271,7 +4944,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] stub update network hook failed: " + t);
         }
 
-        // 屏蔽设置页顶部「更新应用程序」卡片（独立于精简设置页开关）。
+        // 屏蔽设置页顶部「更新应用程序」卡片(独立于精简设置页开关)。
         try {
             Class<?> utils = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.settings.utils.SettingsUtils", cl);
@@ -4287,7 +4960,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] block update card hook failed: " + t);
         }
 
-        // 屏蔽「关于」页更新按钮：把 UPDATE 状态降级为 NO_UPDATE，更新按钮永不显示。
+        // 屏蔽「关于」页更新按钮:把 UPDATE 状态降级为 NO_UPDATE,更新按钮永不显示。
         try {
             Class<?> stateCls = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.settings.AboutFragment$State", cl);
@@ -4313,7 +4986,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] about update button hook failed: " + t);
         }
 
-        // 彻底禁止应用升级：阻断跳转商店（callAppStore）。
+        // 彻底禁止应用升级:阻断跳转商店(callAppStore)。
         try {
             Class<?> stubUtil2 = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.common.stub.StubUtil", cl);
@@ -4329,7 +5002,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] callAppStore hook failed: " + t);
         }
 
-        // 屏蔽「关于」红点：hasNewUpdate 返回 false，设置页徽标不再计入更新。
+        // 屏蔽「关于」红点:hasNewUpdate 返回 false,设置页徽标不再计入更新。
         try {
             Class<?> utils2 = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.settings.utils.SettingsUtils", cl);
@@ -4345,7 +5018,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] hasNewUpdate hook failed: " + t);
         }
 
-        // 屏蔽「更多」/「设置」入口的聚合红点（getSettingsBadgeCount 累加更新+AI+隐私等各类提示）。
+        // 屏蔽「更多」/「设置」入口的聚合红点(getSettingsBadgeCount 累加更新+AI+隐私等各类提示)。
         try {
             Class<?> utils3 = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.settings.utils.SettingsUtils", cl);
@@ -4361,7 +5034,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] getSettingsBadgeCount hook failed: " + t);
         }
 
-        // 屏蔽「更多」按钮小红点：强制 updateOptionMenuBadgeVisibility 的参数为 0。
+        // 屏蔽「更多」按钮小红点:强制 updateOptionMenuBadgeVisibility 的参数为 0。
         try {
             Class<?> toolbarLayout = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.toolbar.ToolbarButtonLayout", cl);
@@ -4394,13 +5067,13 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /**
-     * 主页视频背景：
-     *  (1) 在浏览器设置页里选择视频后，startActivityForResult 的结果回到
-     *      SettingsActivity.onActivityResult，我们在这里拿到 content:// URI，
-     *      把视频复制到公共目录（/sdcard/SBPlus/video_bg.mp4），存下绝对路径。
-     *  (2) 主页背景 View（QuickAccessCustomBackground）是 QuickAccessMainLayout 的第一个
-     *      子 View（ImageView）。开关开启且路径有效时，叠一个 VideoView 到它上面循环
-     *      静音播放，同时亮起 dim_layer 遮罩以保证内容可读。
+     * 主页视频背景:
+     *  (1) 在浏览器设置页里选择视频后,startActivityForResult 的结果回到
+     *      SettingsActivity.onActivityResult,我们在这里拿到 content:// URI,
+     *      把视频复制到公共目录(/sdcard/SBPlus/video_bg.mp4),存下绝对路径。
+     *  (2) 主页背景 View(QuickAccessCustomBackground)是 QuickAccessMainLayout 的第一个
+     *      子 View(ImageView)。开关开启且路径有效时,叠一个 VideoView 到它上面循环
+     *      静音播放,同时亮起 dim_layer 遮罩以保证内容可读。
      */
     private void hookVideoBackground(ClassLoader cl) {
         // (1) SettingsActivity.onActivityResult -> 接收选中的视频 URI 并复制到公共目录。
@@ -4487,7 +5160,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
 
         // (2) QuickAccessCustomBackground.onFinishInflate(View$OnLayoutChangeListener, Runnable)
-        //     -> 三星自定义方法（非标准 View.onFinishInflate），在背景 View 置为 VISIBLE 时调用，
+        //     -> 三星自定义方法(非标准 View.onFinishInflate),在背景 View 置为 VISIBLE 时调用,
         //        是叠加 VideoView 的最佳时机。
         try {
             Class<?> bgCls = XposedHelpers.findClass(
@@ -4501,6 +5174,32 @@ private void showUaGroupDialog(final Context ctx) {
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 attachVideoBackground(param.thisObject);
+                                dumpHomeIcons(param.thisObject);
+                                // 强制染色底部工具栏图标(用 Activity 整个窗口 decor view)
+                                final android.view.View bg = (android.view.View) param.thisObject;
+                                final android.app.Activity act = sCurrentActivity;
+                                if (act != null && act.getWindow() != null
+                                        && act.getWindow().getDecorView() != null) {
+                                    final android.view.View root = act.getWindow().getDecorView();
+                                    root.postDelayed(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            forceApplyAllToolbarIcons(root);
+                                        }
+                                    }, 1000);
+                                    root.postDelayed(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            forceApplyAllToolbarIcons(root);
+                                        }
+                                    }, 2500);
+                                    root.postDelayed(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            forceApplyAllToolbarIcons(root);
+                                        }
+                                    }, 4000);
+                                }
                             } catch (Throwable t) {
                                 XposedBridge.log("[SBPlus] attachVideoBackground error: " + t);
                             }
@@ -4511,7 +5210,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] video bg view hook failed: " + t);
         }
 
-        // (3) 主页 UI 改造：移动T("添加快捷方式", "Add shortcut")按钮 + 搜索框透明化。
+        // (3) 主页 UI 改造:移动T("添加快捷方式", "Add shortcut")按钮 + 搜索框透明化。
         try {
             applyQuickAccessUiTweaks(cl);
             XposedBridge.log("[SBPlus] quickaccess ui tweaks applied");
@@ -4520,7 +5219,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 把选中的视频 content URI 通过 MediaStore 插到公共 Video 集合，返回可访问的 content URI（失败返回 null）。 */
+    /** 把选中的视频 content URI 通过 MediaStore 插到公共 Video 集合,返回可访问的 content URI(失败返回 null)。 */
     private String copyVideoToPublicDir(android.content.Context ctx, android.net.Uri uri) {
         java.io.InputStream in = null;
         java.io.OutputStream out = null;
@@ -4529,7 +5228,7 @@ private void showUaGroupDialog(final Context ctx) {
             in = cr.openInputStream(uri);
             if (in == null) return null;
 
-            // 先把源视频整个读入内存，拿到真实长度（用于后续正确写入 SIZE 元数据）。
+            // 先把源视频整个读入内存,拿到真实长度(用于后续正确写入 SIZE 元数据)。
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             byte[] tmp = new byte[65536];
             int r;
@@ -4538,7 +5237,7 @@ private void showUaGroupDialog(final Context ctx) {
             in = null;
             byte[] videoBytes = bos.toByteArray();
 
-            // 插入公共 Video 集合，显式写入 SIZE 与时长无关的关键元数据。
+            // 插入公共 Video 集合,显式写入 SIZE 与时长无关的关键元数据。
             android.content.ContentValues cv = new android.content.ContentValues();
             cv.put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, "SBPlus_video_bg.mp4");
             cv.put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4");
@@ -4560,13 +5259,13 @@ private void showUaGroupDialog(final Context ctx) {
             out.close();
             out = null;
 
-            // 清除 pending 标记，再次确认 SIZE 已正确。
+            // 清除 pending 标记,再次确认 SIZE 已正确。
             android.content.ContentValues done = new android.content.ContentValues();
             done.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0);
             done.put(android.provider.MediaStore.Video.Media.SIZE, videoBytes.length);
             cr.update(outUri, done, null, null);
 
-            // 反查真实文件绝对路径（_data），返回给播放层直接 setVideoPath。
+            // 反查真实文件绝对路径(_data),返回给播放层直接 setVideoPath。
             android.database.Cursor cur = cr.query(outUri,
                     new String[]{android.provider.MediaStore.Video.Media.DATA}, null, null, null);
             if (cur != null) {
@@ -4589,9 +5288,9 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 主页 UI 改造：需求1——把T("添加快捷方式", "Add shortcut")按钮移到"主页设置"左边并统一大小；需求2——"搜索或输入网址"横线透明化。 */
+    /** 主页 UI 改造:需求1--把T("添加快捷方式", "Add shortcut")按钮移到"主页设置"左边并统一大小;需求2--搜索或输入网址横线透明化。 */
     private void applyQuickAccessUiTweaks(ClassLoader cl) {
-        // ---- 需求2：搜索框（假地址栏）透明化 ----
+        // ---- 需求2:搜索框(假地址栏)透明化 ----
         try {
             Class<?> dummyBar = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.quickaccess.ui.page.QuickAccessDummyUrlBar", cl);
@@ -4602,7 +5301,7 @@ private void showUaGroupDialog(final Context ctx) {
                             try {
                                 final android.view.View bar = (android.view.View) param.thisObject;
                                 if (!isHomeClearTextEnabled()) return;
-                                // 延后执行两步，防止 viewmodel/observer 重置样式
+                                // 延后执行两步,防止 viewmodel/observer 重置样式
                                 android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
                                 h.post(new Runnable() { @Override public void run() {
                                     applyDummyBarTransparent(bar);
@@ -4620,7 +5319,7 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] dummy url bar hook failed: " + t);
         }
 
-        // ---- 需求1：在"主页设置"按钮左边插入等大的T("添加快捷方式", "Add shortcut")按钮，并隐藏网格里的原添加格子 ----
+        // ---- 需求1:在"主页设置"按钮左边插入等大的T("添加快捷方式", "Add shortcut")按钮,并隐藏网格里的原添加格子 ----
         try {
             Class<?> mainLayout = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.quickaccess.ui.page.QuickAccessMainLayout", cl);
@@ -4647,11 +5346,11 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 在主页根 View 上：把T("添加快捷方式", "Add shortcut")按钮插到"主页设置"按钮左边，隐藏原网格添加格子。 */
+    /** 在主页根 View 上:把T("添加快捷方式", "Add shortcut")按钮插到"主页设置"按钮左边,隐藏原网格添加格子。 */
     private void rearrangeQuickAccessButtons(android.view.View root) {
         int mgmtId = resId("general_management", "id");
         int addContainerId = resId("add_view_container", "id");
-        // 原“添加”格子的图标（layer-list：圆底 + “+”号，自带 tint）：按深/浅色主题选择
+        // 原"添加"格子的图标(layer-list:圆底 + "+"号,自带 tint):按深/浅色主题选择
         int addIconRes = resId("quickaccess_tap_to_add_drawable", "drawable");
         int addIconResDark = resId("quickaccess_tap_to_add_drawable_dark_mode", "drawable");
         boolean dark = isDarkTheme();
@@ -4679,8 +5378,8 @@ private void showUaGroupDialog(final Context ctx) {
             return;
         }
         android.view.ViewGroup mgmtParent = (android.view.ViewGroup) parent;
-        // mgmt 的父容器（通常 wrap_content 的 RelativeLayout）在 header 的 LinearLayout 里；
-        // 若 mgmt 父是 RelativeLayout，则新按钮要插到它的父（LinearLayout）中、mgmt 父之前，
+        // mgmt 的父容器(通常 wrap_content 的 RelativeLayout)在 header 的 LinearLayout 里;
+        // 若 mgmt 父是 RelativeLayout,则新按钮要插到它的父(LinearLayout)中、mgmt 父之前,
         // 否则 LEFT_OF 规则会把按钮压成 0 宽。
         android.view.ViewGroup insertTarget;
         int insertIndex;
@@ -4701,8 +5400,8 @@ private void showUaGroupDialog(final Context ctx) {
         if (size <= 0) size = mgmt.getWidth();
         if (size <= 0) size = (int) (24 * sAppContext.getResources().getDisplayMetrics().density);
 
-        // 新按钮：放在与 mgmt 同级的容器里（mgmt 通常在 RelativeLayout 内，插到它左边）。
-        // 用 mgmt 的 context 创建（保留 Activity 主题，避免图标/ripple 无 tint），并复制其图标与尺寸。
+        // 新按钮:放在与 mgmt 同级的容器里(mgmt 通常在 RelativeLayout 内,插到它左边)。
+        // 用 mgmt 的 context 创建(保留 Activity 主题,避免图标/ripple 无 tint),并复制其图标与尺寸。
         android.content.Context mgmtCtx = mgmt.getContext();
         android.widget.ImageButton addBtn = new android.widget.ImageButton(mgmtCtx);
         addBtn.setContentDescription(T("添加快捷方式", "Add shortcut"));
@@ -4722,12 +5421,12 @@ private void showUaGroupDialog(final Context ctx) {
             }
         });
 
-        // 若插到 LinearLayout：给按钮设置与 mgmt 相同的尺寸，并垂直居中，右边距与“主页设置↔头像”间距一致
+        // 若插到 LinearLayout:给按钮设置与 mgmt 相同的尺寸,并垂直居中,右边距与"主页设置↔头像"间距一致
         if (insertTarget instanceof android.widget.LinearLayout) {
             android.widget.LinearLayout ll = (android.widget.LinearLayout) insertTarget;
             android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(size, size);
             lp.gravity = android.view.Gravity.CENTER_VERTICAL;
-            // 主页设置与头像之间是 account 的 marginStart(10dip)，新按钮与主页设置也用同样的右边距
+            // 主页设置与头像之间是 account 的 marginStart(10dip),新按钮与主页设置也用同样的右边距
             lp.setMarginEnd((int) (10 * sAppContext.getResources().getDisplayMetrics().density));
             addBtn.setLayoutParams(lp);
             ll.addView(addBtn, insertIndex);
@@ -4735,7 +5434,7 @@ private void showUaGroupDialog(final Context ctx) {
             android.widget.RelativeLayout rl = (android.widget.RelativeLayout) insertTarget;
             android.widget.RelativeLayout.LayoutParams lp = new android.widget.RelativeLayout.LayoutParams(size, size);
             if (insertIndex == rl.indexOfChild(mgmt)) {
-                // 直接在 mgmt 之前（左侧）
+                // 直接在 mgmt 之前(左侧)
                 lp.addRule(android.widget.RelativeLayout.LEFT_OF, mgmt.getId());
                 lp.addRule(android.widget.RelativeLayout.ALIGN_TOP, mgmt.getId());
                 lp.addRule(android.widget.RelativeLayout.ALIGN_BOTTOM, mgmt.getId());
@@ -4756,12 +5455,12 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 保留搜索框背景与放大镜，只清空提示文字、去掉 elevation 阴影（保留框/图标/点击热区）。 */
+    /** 保留搜索框背景与放大镜,只清空提示文字、去掉 elevation 阴影(保留框/图标/点击热区)。 */
     private void applyDummyBarTransparent(android.view.View bar) {
         if (bar == null) return;
         try {
-            // 只清空提示文字（“搜索或输入网址”），完全保留搜索框的默认外观：
-            // 背景框（mCardBlurView.foreground）、放大镜、外层柔和阴影（ShadowDrawHelper 8dp elevation）
+            // 只清空提示文字(搜索或输入网址),完全保留搜索框的默认外观:
+            // 背景框(mCardBlurView.foreground)、放大镜、外层柔和阴影(ShadowDrawHelper 8dp elevation)
             if (bar instanceof android.view.ViewGroup) {
                 android.view.ViewGroup g = (android.view.ViewGroup) bar;
                 for (int i = 0; i < g.getChildCount(); i++) {
@@ -4786,7 +5485,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 触发T("添加快捷方式", "Add shortcut")：反射调用 QuickAccessIconRecyclerAdapter.showAddShortcutDialog()（真正入口）。 */
+    /** 触发T("添加快捷方式", "Add shortcut"):反射调用 QuickAccessIconRecyclerAdapter.showAddShortcutDialog()(真正入口)。 */
     private void triggerAddShortcut(android.view.View root) {
         try {
             Object adapter = findIconRecyclerAdapter(root);
@@ -4803,7 +5502,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 在 root 视图树中查找 QuickAccessIconRecyclerAdapter（主页图标网格的适配器）。 */
+    /** 在 root 视图树中查找 QuickAccessIconRecyclerAdapter(主页图标网格的适配器)。 */
     private Object findIconRecyclerAdapter(android.view.View root) {
         try {
             if (root instanceof android.view.ViewGroup) {
@@ -4842,7 +5541,534 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 在 QuickAccessCustomBackground 所在父容器叠加 SurfaceView+MediaPlayer，循环播放背景视频。 */
+    /** 在 QuickAccessCustomBackground 所在父容器叠加 SurfaceView+MediaPlayer,循环播放背景视频。 */
+    /** 遍历某 View 子树, 打印底部区域(屏幕下半部)的 ImageView 图标信息. */
+    private void dumpBottomIcons(android.view.View root) {
+        try {
+            java.util.List<android.view.View> ivs = new java.util.ArrayList<>();
+            collectImageViews(root, ivs);
+            XposedBridge.log("[SBPlus] BOTICON dump: total ImageView=" + ivs.size());
+            android.graphics.Rect vr = new android.graphics.Rect();
+            root.getGlobalVisibleRect(vr);
+            int h = root.getHeight();
+            for (android.view.View v : ivs) {
+                int[] xy = new int[2];
+                try { v.getLocationOnScreen(xy); } catch (Throwable ignored) { continue; }
+                // 打印所有, 区分底部
+                String tag = (h > 0 && xy[1] > h / 2) ? "BOTTOM" : "top   ";
+                String ref = "";
+                try { ref = v.getResources().getResourceName(v.getId()); } catch (Throwable ignored) { ref = "id=" + v.getId(); }
+                String dcls = "";
+                try {
+                    android.graphics.drawable.Drawable d = ((android.widget.ImageView) v).getDrawable();
+                    dcls = d == null ? "null" : d.getClass().getSimpleName();
+                } catch (Throwable ignored) {}
+                XposedBridge.log("[SBPlus] BOTICON " + tag + " cls=" + v.getClass().getSimpleName()
+                        + " y=" + xy[1] + " " + ref + " drawable=" + dcls);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 给 TextView 的 compound drawable 图标染上 S_HOME_ICON 主题色. */
+    private void tintCompoundDrawables(Object tvObj) {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || !isThemeActive()) return;
+            int icol = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+            if (icol == -1) return;
+            if (!(tvObj instanceof android.widget.TextView)) return;
+            android.widget.TextView tv = (android.widget.TextView) tvObj;
+            if (!isBrowserUiIcon(tv)) return;
+            android.graphics.drawable.Drawable[] dr = tv.getCompoundDrawables();
+            for (android.graphics.drawable.Drawable d : dr) {
+                if (d != null) { try { d.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN); } catch (Throwable ignored) {} }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 强制染色所有底部工具栏图标(无论是否已染,每次都重新染,覆盖三星重置). */
+    private void dumpThemeSlots(android.content.Context ctx) {
+        try {
+            int[] slots = { ThemeColorHelper.S_HOME_ICON, ThemeColorHelper.S_HOME_TEXT,
+                ThemeColorHelper.S_SETTINGS_TITLE, ThemeColorHelper.S_SETTINGS_DESC,
+                ThemeColorHelper.S_SETTINGS_BG, ThemeColorHelper.S_WEB_TEXT,
+                ThemeColorHelper.S_WEB_BG, ThemeColorHelper.S_SWITCH_ON,
+                ThemeColorHelper.S_SWITCH_THUMB, ThemeColorHelper.S_SWITCH_OFF };
+            StringBuilder sb = new StringBuilder("[SBPlus] SLOTS");
+            for (int s : slots) {
+                int v = ThemeColorHelper.getSlot(ctx, s);
+                sb.append(" [" + s + "=" + (v==-1?"unset":("#"+Integer.toHexString(v))) + "]");
+            }
+            XposedBridge.log(sb.toString());
+        } catch (Throwable ignored) {}
+    }
+
+    private void forceApplyAllToolbarIcons(android.view.View root) {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || !isThemeActive()) return;
+            dumpThemeSlots(ctx);
+            int icol = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+            if (icol == -1) return;
+            String[] targetIds = {
+                "action_backward", "action_forward", "action_home", "action_bookmarks",
+                "bottombar_option_menu", "bottombar_browsing_assist",
+                "navigation_bar_item_icon_view", "news_feed_tab_add_button_icon"
+            };
+            java.util.Set<String> targets = new java.util.HashSet<>();
+            for (String t : targetIds) targets.add(t);
+            // 遍历所有 View(不只 ImageView),按 id 匹配
+            java.util.List<android.view.View> allViews = new java.util.ArrayList<>();
+            collectAllViews(root, allViews);
+            int done = 0;
+            java.util.Set<String> found = new java.util.HashSet<>();
+            for (android.view.View v : allViews) {
+                String idName = "";
+                try { idName = v.getResources().getResourceEntryName(v.getId()); } catch (Throwable ignored) { continue; }
+                if (!targets.contains(idName)) continue;
+                found.add(idName);
+                // "添加快捷方式"图标: 只染中间+号, 外环保持原色 -> 用 tintAddButtonPlus 反射拆 path
+                if ("news_feed_tab_add_button_icon".equals(idName)) {
+                    if (v instanceof android.widget.ImageView) {
+                        tintAddButtonPlus((android.widget.ImageView) v, icol);
+                    }
+                    continue;
+                }
+                // 尝试染色: 这些 target id 是工具栏图标按钮(非背景), 直接染 drawable
+                if (v instanceof android.widget.ImageView) {
+                    try {
+                        android.widget.ImageView iv = (android.widget.ImageView) v;
+                        android.graphics.drawable.Drawable d = iv.getDrawable();
+                        if (d != null) {
+                            iv.setImageTintList(android.content.res.ColorStateList.valueOf(icol));
+                            iv.setImageTintMode(android.graphics.PorterDuff.Mode.SRC_IN);
+                            d.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN);
+                            done++;
+                        }
+                    } catch (Throwable ignored) {}
+                }
+                // 非 ImageView 一律不染 background(避免页面级背景被染)
+            }
+            // 报告找到和未找到的
+            java.util.Set<String> missing = new java.util.HashSet<>(targets);
+            missing.removeAll(found);
+            XposedBridge.log("[SBPlus] forceApply: " + done + " tinted, found=" + found + ", missing=" + missing);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 遍历所有 View (递归). */
+    private void collectAllViews(android.view.View v, java.util.List<android.view.View> out) {
+        if (v == null) return;
+        out.add(v);
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectAllViews(g.getChildAt(i), out);
+            }
+        }
+    }
+
+    /** 按 id 匹配底部工具栏图标并染上 S_HOME_ICON 主题色. */
+    private void applyToolbarIconTint(android.view.View root) {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || !isThemeActive()) return;
+            int icol = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+            if (icol == -1) return;
+            String[] targetIds = {
+                "action_backward", "action_forward", "action_home", "action_bookmarks",
+                "bottombar_option_menu", "bottombar_browsing_assist",
+                "navigation_bar_item_icon_view", "news_feed_tab_add_button_icon"
+            };
+            java.util.Set<String> targets = new java.util.HashSet<>();
+            for (String t : targetIds) targets.add(t);
+            java.util.List<android.view.View> ivs = new java.util.ArrayList<>();
+            collectImageViews(root, ivs);
+            int done = 0;
+            for (android.view.View v : ivs) {
+                if (!(v instanceof android.widget.ImageView)) continue;
+                String idName = "";
+                try { idName = v.getResources().getResourceEntryName(v.getId()); } catch (Throwable ignored) { continue; }
+                if (!targets.contains(idName)) continue;
+                try {
+                    // 这些 target id 本身就是工具栏图标按钮(非背景), 直接染即可
+                    ((android.widget.ImageView) v).setImageTintList(android.content.res.ColorStateList.valueOf(icol));
+                    ((android.widget.ImageView) v).setImageTintMode(android.graphics.PorterDuff.Mode.SRC_IN);
+                    android.graphics.drawable.Drawable d = ((android.widget.ImageView) v).getDrawable();
+                    if (d != null) {
+                        d.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN);
+                    }
+                    done++;
+                } catch (Throwable ignored) {}
+            }
+            XposedBridge.log("[SBPlus] BOTICON applyTint icol=" + icol + " tinted=" + done);
+        } catch (Throwable ignored) {}
+    }
+
+    private void collectImageViews(android.view.View v, java.util.List<android.view.View> out) {
+        if (v == null) return;
+        if (v instanceof android.widget.ImageView) out.add(v);
+        if (v instanceof android.view.ViewGroup) {
+            android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) collectImageViews(g.getChildAt(i), out);
+        }
+    }
+
+    /** 从当前主页背景 View 找到 Activity 根视图并 dump 底部图标. */
+    private void dumpHomeIcons(Object bg) {
+        try {
+            if (!(bg instanceof android.view.View)) return;
+            android.view.View v = (android.view.View) bg;
+            android.content.Context c = v.getContext();
+            while (c != null && !(c instanceof android.app.Activity)) {
+                if (c instanceof android.content.ContextWrapper) c = ((android.content.ContextWrapper) c).getBaseContext();
+                else break;
+            }
+            if (c instanceof android.app.Activity) {
+                android.app.Activity a = (android.app.Activity) c;
+                final android.view.View root = a.getWindow().getDecorView();
+                final android.view.View parent = v;
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            XposedBridge.log("[SBPlus] BOTICON root=" + root.getClass().getName());
+                            android.view.View rv = (android.view.View) parent.getRootView();
+                            dumpBottomIcons(rv);
+                            applyToolbarIconTint(rv);
+                        } catch (Throwable ignored) {}
+                    }
+                }, 1200);
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            android.view.View rv2 = (android.view.View) parent.getRootView();
+                            applyToolbarIconTint(rv2);
+                        } catch (Throwable ignored) {}
+                    }
+                }, 2600);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 已染主题色的 ImageView 记录(懒染色: 只在未染/被覆盖时重染, 避免每帧重复导致卡顿). */
+    private static java.util.WeakHashMap<android.widget.ImageView, Boolean> sIconTinted = new java.util.WeakHashMap<>();
+
+    /** 懒染色: 若该图标尚未染成 S_HOME_ICON(或被三星覆盖回原色)则重染; 否则跳过省性能. */
+    private void ensureIconTint(android.widget.ImageView iv) {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || !isThemeActive()) return;
+            int icol = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+            if (icol == -1) return;
+            if (!isBrowserUiIcon(iv)) {
+                // 诊断:浏览助手为何被跳过
+                try {
+                    String idn = iv.getResources().getResourceEntryName(iv.getId());
+                    if (idn.equals("bottombar_browsing_assist")) {
+                        XposedBridge.log("[SBPlus] ICDIAG bottombar_browsing_assist REJECTED by isBrowserUiIcon");
+                    }
+                } catch (Throwable ignored) {}
+                return;
+            }
+            try {
+                android.graphics.drawable.Drawable d = iv.getDrawable();
+                // 诊断+保护: 大尺寸/位图背景不染(避免背景图被染蓝); onDraw 时 view 宽高可能为0, 用 drawable intrinsic 判断
+                try {
+                    android.graphics.drawable.Drawable curd = iv.getDrawable();
+                    if (curd != null) {
+                        int iw = curd.getIntrinsicWidth();
+                        int ih = curd.getIntrinsicHeight();
+                        if (iw > 220 || ih > 220) {
+                            String idn = "";
+                            try { idn = iv.getResources().getResourceEntryName(iv.getId()); } catch (Throwable ignored) {}
+                            XposedBridge.log("[SBPlus] BGBIG2 skip id=" + idn + " intrinsic=" + iw + "x" + ih + " drawable=" + curd.getClass().getSimpleName());
+                            return;
+                        }
+                    }
+                } catch (Throwable ignoredDim) {}
+                if (d != null) {
+                    // 校验 drawable 当前 colorFilter 色值: 若已是主题色则跳过(省性能)
+                    android.graphics.ColorFilter cf = d.getColorFilter();
+                    if (cf instanceof android.graphics.PorterDuffColorFilter) {
+                        int cur = reflectColorFilterColor(cf);
+                        if (cur == icol) {
+                            return; // 已染且未被覆盖
+                        }
+                    }
+                }
+                iv.setImageTintList(android.content.res.ColorStateList.valueOf(icol));
+                iv.setImageTintMode(android.graphics.PorterDuff.Mode.SRC_IN);
+                if (d != null) {
+                    // onDraw 时 view 已有真实渲染尺寸: 尺寸大(背景)跳过, 小(图标)染
+                    try {
+                        int w = iv.getWidth();
+                        int h = iv.getHeight();
+                        if (w > 240 || h > 240) {
+                            String idn = "";
+                            try { idn = iv.getResources().getResourceEntryName(iv.getId()); } catch (Throwable ignored) {}
+                            XposedBridge.log("[SBPlus] BGBIG-render skip id=" + idn + " w=" + w + " h=" + h + " drawable=" + d.getClass().getSimpleName());
+                            return;
+                        }
+                    } catch (Throwable ignoredDim) {}
+                                            {
+                            String idn = "";
+                            try { idn = iv.getResources().getResourceEntryName(iv.getId()); } catch (Throwable ignored) {}
+                            XposedBridge.log("[SBPlus] IC-TINT icol=" + Integer.toHexString(icol) + " id=" + idn + " class=" + iv.getClass().getSimpleName()
+                                    + " w=" + iv.getWidth() + " h=" + iv.getHeight() + " dr=" + d.getClass().getSimpleName()
+                                    + " ctx=" + (iv.getContext()!=null?iv.getContext().getClass().getName():"null"));
+                        }
+                        d.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN);
+                } else {
+                    // drawable=null,尝试染 background (浏览助手等特殊图标)
+                    android.graphics.drawable.Drawable bg = iv.getBackground();
+                    if (bg != null) {
+                        bg.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN);
+                    }
+                }
+                sIconTinted.put(iv, java.lang.Boolean.TRUE);
+            } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {}
+    }
+
+    /** 反射取 PorterDuffColorFilter 的颜色值(编译期无 getColor 才用反射). */
+    private int reflectColorFilterColor(android.graphics.ColorFilter cf) {
+        try {
+            java.lang.reflect.Method m = cf.getClass().getMethod("getColor");
+            m.setAccessible(true);
+            return ((Integer) m.invoke(cf)).intValue();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** 无条件强制染色任何相对小的图标 ImageView (仅当主题激活; 不依赖 isBrowserUiIcon 判断, drawable+background 都染). */
+    private void forceTintImageView(android.widget.ImageView iv) {
+        try {
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || !isThemeActive()) return;
+            int icol = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+            if (icol == -1) return;
+            // 跳过核心背景图片(避免误染大图)
+            if (!isBrowserUiIcon(iv)) return;
+            // 尺寸保护: 大尺寸 view 是背景/大图, 不是图标, 跳过(避免页面背景被染)
+            try {
+                int w = iv.getWidth();
+                int h = iv.getHeight();
+                if (w > 240 || h > 240) return;
+            } catch (Throwable ignoredDim) {}
+            // 特例: "添加快捷方式"图标只染中间 + 号, 外环保持原色
+            int vid = iv.getId();
+            String vidn = null;
+            try { vidn = iv.getResources().getResourceEntryName(vid); } catch (Throwable ignored) {}
+            if ("news_feed_tab_add_button_icon".equals(vidn)) {
+                tintAddButtonPlus(iv, icol);
+                return;
+            }
+            iv.setImageTintList(android.content.res.ColorStateList.valueOf(icol));
+            iv.setImageTintMode(android.graphics.PorterDuff.Mode.SRC_IN);
+            android.graphics.drawable.Drawable d = iv.getDrawable();
+            if (d != null) d.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN);
+            android.graphics.drawable.Drawable bg = iv.getBackground();
+            if (bg != null) {
+                // 背景是纯色/位移背景(非图形图标)时跳过, 只染小而明确的图标背景
+                String bgn = bg.getClass().getSimpleName().toLowerCase();
+                if (!bgn.contains("ripple") && !bgn.contains("statelist") && !bgn.contains("inset")
+                        && !bgn.contains("gradient") && !bgn.contains("bitmap")) {
+                    bg.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 只染"添加快捷方式"图标中间的 + 号(外环/圆保持原色). 先反射 dump vector 内部 path 结构. */
+    private void tintAddButtonPlus(android.widget.ImageView iv, int icol) {
+        try {
+            android.graphics.drawable.Drawable d = iv.getDrawable();
+            if (d == null) return;
+            XposedBridge.log("[SBPlus] ADDBTN cls=" + d.getClass().getName());
+            java.lang.reflect.Method dumpM = null;
+            try {
+                dumpM = android.graphics.drawable.Drawable.class.getDeclaredMethod("getConstantState");
+            } catch (Throwable ignored) {}
+            // 反射访问 VectorDrawable 内部树 (VGroup/VFullPath)
+            try {
+                Object state = null;
+                try {
+                    java.lang.reflect.Method gcs = android.graphics.drawable.Drawable.class.getDeclaredMethod("getConstantState");
+                    gcs.setAccessible(true);
+                    state = gcs.invoke(d);
+                    XposedBridge.log("[SBPlus] ADDBTN state=" + (state==null?"null":state.getClass().getName()));
+                } catch (Throwable e) {
+                    XposedBridge.log("[SBPlus] ADDBTN state fail=" + e);
+                }
+                Object root = null;
+                // 从 state 找字段: mTree(VGroup) / mVGTargets 等
+                if (state != null) {
+                    for (java.lang.reflect.Field f : getAllFields(state.getClass())) {
+                        try {
+                            f.setAccessible(true);
+                            Object val = f.get(state);
+                            if (val != null && val.getClass().getName().contains("VGroup")) {
+                                root = val; XposedBridge.log("[SBPlus] ADDBTN tree field=" + f.getName()); break;
+                            }
+                        } catch (Throwable ignoredF) {}
+                    }
+                }
+                if (root == null) {
+                    // 直接在当前 drawable 对象上找 VGroup 字段
+                    for (java.lang.reflect.Field f : getAllFields(d.getClass())) {
+                        try {
+                            f.setAccessible(true);
+                            Object val = f.get(d);
+                            if (val != null && val.getClass().getName().contains("VGroup")) { root = val; break; }
+                        } catch (Throwable ignoredF) {}
+                    }
+                }
+                if (root == null) {
+                    XposedBridge.log("[SBPlus] ADDBTN tree not found");
+                } else {
+                    XposedBridge.log("[SBPlus] ADDBTN root=" + root.getClass().getName());
+                    dumpVectorNode(root, "", 0);
+                }
+            } catch (Throwable e) {
+                XposedBridge.log("[SBPlus] ADDBTN refl fail=" + e);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private java.util.List<java.lang.reflect.Field> getAllFields(Class<?> c) {
+        java.util.List<java.lang.reflect.Field> out = new java.util.ArrayList<>();
+        Class<?> cur = c;
+        while (cur != null && cur != Object.class) {
+            try { java.util.Collections.addAll(out, cur.getDeclaredFields()); } catch (Throwable ignored) {}
+            cur = cur.getSuperclass();
+        }
+        return out;
+    }
+
+    private void dumpVectorNode(Object node, String indent, int depth) {
+        if (node == null || depth > 10) return;
+        try {
+            String cls = node.getClass().getSimpleName();
+            StringBuilder sb = new StringBuilder("[SBPlus] ADDBTN " + indent + cls);
+            if (cls.contains("VFullPath")) {
+                for (java.lang.reflect.Field f : getAllFields(node.getClass())) {
+                    String n = f.getName();
+                    if (n.equals("mFillColor") || n.equals("mStrokeColor") || n.equals("mStrokeWidth") || n.equals("mFillAlpha")
+                            || n.equals("mFillType") || n.equals("mTrimPathStart") || n.equals("mTrimPathEnd")) {
+                        f.setAccessible(true);
+                        try {
+                            Object val = f.get(node);
+                            if (val instanceof int[]) {
+                                int[] ia = (int[]) val;
+                                sb.append(" " + n + "=#[0x" + (ia.length>0?Integer.toHexString(ia[0]):"?") + "]len" + ia.length);
+                            } else {
+                                sb.append(" " + n + "=" + val);
+                            }
+                        } catch (Throwable ignoredE) {}
+                    }
+                }
+                // 若上面没匹配到任何字段, 打印前几个 int/long 字段名兜底定位
+                boolean any = sb.indexOf("mFillColor")>0 || sb.indexOf("mStrokeColor")>0 || sb.indexOf("mFillType")>0 || sb.indexOf("mTrimPathStart")>0 || sb.indexOf("mStrokeWidth")>0;
+                if (!any) {
+                    int cnt=0;
+                    for (java.lang.reflect.Field f : getAllFields(node.getClass())) {
+                        if (cnt>=10) break;
+                        Class<?> t = f.getType();
+                        if (t==int.class || t==long.class || t==float.class || t==boolean.class || t==int[].class) {
+                            try { f.setAccessible(true); Object v=f.get(node); sb.append(" {"+f.getName()+"="+ (v instanceof int[] ? "arr" : v) +"}"); cnt++; } catch (Throwable ignoredE) {}
+                        }
+                    }
+                }
+            } else {
+                for (java.lang.reflect.Field f : getAllFields(node.getClass())) {
+                    if (f.getName().equals("mBaseWidth") || f.getName().equals("mBaseHeight")) {
+                        f.setAccessible(true);
+                        try { sb.append(" " + f.getName() + "=" + f.get(node)); } catch (Throwable ignoredE) {}
+                    }
+                }
+            }
+            XposedBridge.log(sb.toString());
+            // 只递归子节点字段(值是 VGroup/VFullPath 或含它们的数组/list)
+            for (java.lang.reflect.Field f : getAllFields(node.getClass())) {
+                Object val = null;
+                try { f.setAccessible(true); val = f.get(node); } catch (Throwable ignoredF) { continue; }
+                if (val == null) continue;
+                if (val.getClass().getName().contains("VGroup") || val.getClass().getName().contains("VFullPath")) {
+                    dumpVectorNode(val, indent+"  ", depth+1);
+                } else if (val instanceof java.util.List) {
+                    for (Object child : (java.util.List<?>) val) {
+                        if (child != null && (child.getClass().getName().contains("VGroup") || child.getClass().getName().contains("VFullPath"))) {
+                            dumpVectorNode(child, indent+"  ", depth+1);
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 给浏览器 UI 图标染上 S_HOME_ICON 主题色(返回 true 表示已染). */
+    private boolean tintHomeIcon(Object viewObj) {
+        try {
+            if (sInThemeText) return false;
+            android.content.Context ctx = sAppContext;
+            if (ctx == null || !isThemeActive()) return false;
+            int icol = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+            if (icol == -1) return false;
+            if (!(viewObj instanceof android.view.View)) return false;
+            android.view.View vv = (android.view.View) viewObj;
+            if (!(vv instanceof android.widget.ImageView)) return false;
+            if (!isBrowserUiIcon(vv)) return false;
+            // 尺寸保护: 背景图/大图不染(避免书签/历史/启动页背景被染蓝).
+            // 注意: hook 触发时 view 宽高可能为0, 改用 drawable 自身 intrinsic 尺寸判断.
+            try {
+                android.graphics.drawable.Drawable dd0 = ((android.widget.ImageView) vv).getDrawable();
+                if (dd0 != null) {
+                    int iw = dd0.getIntrinsicWidth();
+                    int ih = dd0.getIntrinsicHeight();
+                    if (iw > 220 || ih > 220) {
+                        XposedBridge.log("[SBPlus] BGBIG3 skip intrinsic " + iw + "x" + ih + " drawable=" + dd0.getClass().getSimpleName());
+                        return false;
+                    }
+                }
+            } catch (Throwable ignoredDim) {}
+            // 特例: "添加快捷方式"图标只染中间+号, 外环保持原色
+            try {
+                String vidn = vv.getResources().getResourceEntryName(vv.getId());
+                if ("news_feed_tab_add_button_icon".equals(vidn)) {
+                    int icol2 = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
+                    tintAddButtonPlus((android.widget.ImageView) vv, icol2);
+                    return true;
+                }
+            } catch (Throwable ignoredN) {}
+            android.graphics.drawable.Drawable d = ((android.widget.ImageView) vv).getDrawable();
+            // 类型过滤: setImageDrawable hook 触发时 view 无渲染尺寸, 无法区分图标/背景, 只染明确图标类型
+            // (Vector/StateList/Inset 等). Bitmap/Layer 可能是背景大图, 一律不染(由渲染尺寸的方法处理小图标 Bitmap).
+            boolean iconLike = false;
+            if (d != null) {
+                String dn = d.getClass().getName();
+                iconLike = dn.contains("VectorDrawable") || dn.contains("StateListDrawable")
+                        || dn.contains("InsetDrawable") || dn.contains("AnimatedVectorDrawable")
+                        || dn.contains("MaskDrawable") || dn.contains("RotateDrawable");
+                if (!iconLike) {
+                    XposedBridge.log("[SBPlus] BGBIG4 skip(type) " + d.getClass().getSimpleName() + " " + d.getIntrinsicWidth() + "x" + d.getIntrinsicHeight());
+                    return false;
+                }
+            } else {
+                return false;
+            }
+            try {
+                ((android.widget.ImageView) vv).setImageTintList(android.content.res.ColorStateList.valueOf(icol));
+                ((android.widget.ImageView) vv).setImageTintMode(android.graphics.PorterDuff.Mode.SRC_IN);
+            } catch (Throwable ignored) {}
+            if (d != null) {
+                try { d.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN); } catch (Throwable ignored) {}
+            }
+            return true;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
     private void attachVideoBackground(Object bgViewObj) {
         try {
             if (!(bgViewObj instanceof android.view.View)) return;
@@ -4856,7 +6082,7 @@ private void showUaGroupDialog(final Context ctx) {
             android.view.ViewGroup parent = (android.view.ViewGroup) bg.getParent();
             if (parent == null) return;
 
-            // 清掉旧的 TextureView，避免重复叠加。
+            // 清掉旧的 TextureView,避免重复叠加。
             try {
                 for (int i = parent.getChildCount() - 1; i >= 0; i--) {
                     android.view.View c = parent.getChildAt(i);
@@ -4864,8 +6090,8 @@ private void showUaGroupDialog(final Context ctx) {
                 }
             } catch (Throwable ignored) {}
 
-            // TextureView 是普通 View，参与正常 View 层级绘制，不会被
-            // QuickAccessMainLayout 的不透明背景色盖住（SurfaceView 有此问题）。
+            // TextureView 是普通 View,参与正常 View 层级绘制,不会被
+            // QuickAccessMainLayout 的不透明背景色盖住(SurfaceView 有此问题)。
             final android.view.TextureView tv = new android.view.TextureView(bg.getContext());
             final android.media.MediaPlayer mp = new android.media.MediaPlayer();
 
@@ -4915,7 +6141,7 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
 
-    // ============ 油猴脚本（Userscript）支持 ============
+    // ============ 油猴脚本(Userscript)支持 ============
 
     private boolean isSniffEnabled() {
         try {
@@ -4944,14 +6170,14 @@ private void showUaGroupDialog(final Context ctx) {
     private void saveUserscriptEnabled(boolean enabled) {
         try {
             if (sAppContext != null) processPrefs(sAppContext).edit().putBoolean(KEY_ENABLE_USERSCRIPT, enabled).commit();
-            // 关闭总开关时，立即尝试移除已注入的地址栏油猴图标（若当前 Activity 可用）
+            // 关闭总开关时,立即尝试移除已注入的地址栏油猴图标(若当前 Activity 可用)
             if (!enabled) removeUserscriptToolbarButtonFromCurrent();
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] save userscript enabled error: " + t);
         }
     }
 
-    /** 从当前可见 Activity 的 view 树中移除地址栏油猴图标（幂等）。 */
+    /** 从当前可见 Activity 的 view 树中移除地址栏油猴图标(幂等)。 */
     private void removeUserscriptToolbarButtonFromCurrent() {
         try {
             android.app.Activity act = sCurrentActivity;
@@ -4981,7 +6207,7 @@ private void showUaGroupDialog(final Context ctx) {
         } catch (Throwable ignored) {}
     }
 
-    /** 被禁用的脚本文件名集合（按 fileName 区分，不影响脚本文件本身）。 */
+    /** 被禁用的脚本文件名集合(按 fileName 区分,不影响脚本文件本身)。 */
     private java.util.Set<String> disabledUserscripts() {
         java.util.Set<String> set = new java.util.HashSet<String>();
         try {
@@ -5007,7 +6233,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 某个脚本文件是否启用（未在禁用列表即启用）。 */
+    /** 某个脚本文件是否启用(未在禁用列表即启用)。 */
     private boolean isUserscriptFileEnabled(String fileName) {
         return !disabledUserscripts().contains(fileName);
     }
@@ -5018,7 +6244,7 @@ private void showUaGroupDialog(final Context ctx) {
         saveDisabledUserscripts(set);
     }
 
-    /** 脚本目录：浏览器外部文件目录下的 userscripts/ */
+    /** 脚本目录:浏览器外部文件目录下的 userscripts/ */
     private java.io.File userscriptDir() {
         try {
             if (sAppContext == null) return null;
@@ -5031,7 +6257,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 主开关：油猴脚本。 */
+    /** 主开关:油猴脚本。 */
     private Object buildUserscriptSwitch(Context ctx, ClassLoader cl) {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
@@ -5040,7 +6266,7 @@ private void showUaGroupDialog(final Context ctx) {
         XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_userscript");
         java.io.File dir = userscriptDir();
         int count = countUserscripts(dir);
-        XposedHelpers.callMethod(pref, "setSummary", count > 0 ? (T("已加载 ", "Loaded ") + count + T(" 个脚本，目录: ", " scripts, dir: ") + (dir == null ? "?" : dir.getAbsolutePath())) : "脚本目录: " + (dir == null ? "未初始化" : dir.getAbsolutePath()));
+        XposedHelpers.callMethod(pref, "setSummary", count > 0 ? (T("已加载 ", "Loaded ") + count + T(" 个脚本,目录: ", " scripts, dir: ") + (dir == null ? "?" : dir.getAbsolutePath())) : "脚本目录: " + (dir == null ? "未初始化" : dir.getAbsolutePath()));
         XposedHelpers.callMethod(pref, "setChecked", isUserscriptEnabled());
         XposedHelpers.callMethod(pref, "setSelectable", true);
         try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
@@ -5105,19 +6331,40 @@ private void showUaGroupDialog(final Context ctx) {
         return pref;
     }
 
-    /** 资源嗅探开关：控制地址栏 🔍 图标。 */
-    /** 「资源嗅探」纯入口(前面无开关/勾选按钮)：点击进入资源嗅探子页。 */
+    /** 资源嗅探开关:控制地址栏 🔍 图标。 */
+    /** 「资源嗅探」纯入口(前面无开关/勾选按钮):点击进入资源嗅探子页。 */
     private Object buildSniffSwitch(Context ctx, ClassLoader cl) {
         try {
-            Class<?> prefCls = XposedHelpers.findClass(
-                    "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
-            Object pref = XposedHelpers.newInstance(prefCls, new Class[]{Context.class}, ctx);
+            Class<?> switchPrefCls = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+            Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
             XposedHelpers.callMethod(pref, "setTitle", T("资源嗅探", "Media Sniffer"));
             XposedHelpers.callMethod(pref, "setKey", "sbplus_sniff_settings");
-            XposedHelpers.callMethod(pref, "setSummary", T("嗅探音频/视频/图片并下载（含下载设置）", "Sniff audio/video/images & download (incl. download settings)"));
+            XposedHelpers.callMethod(pref, "setSummary", T("嗅探音频/视频/图片并下载(含下载设置)", "Sniff audio/video/images & download (incl. download settings)"));
+            XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
             XposedHelpers.callMethod(pref, "setSelectable", true);
             // 显示分隔线(竖线).
             try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+            // 开关变化 -> 保存启用状态
+            try {
+                Class<?> changeListener = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+                Object listener = java.lang.reflect.Proxy.newProxyInstance(cl, new Class[]{changeListener},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                            try {
+                                if (m.getName().equals("onPreferenceChange")) {
+                                    boolean en = args[1] instanceof Boolean && (Boolean) args[1];
+                                    saveSniffEnabled(en);
+                                    XposedBridge.log("[SBPlus] sniff switch -> " + en);
+                                    return Boolean.TRUE;
+                                }
+                            } catch (Throwable ignored) {}
+                            return Boolean.FALSE;
+                        }
+                    });
+                java.lang.reflect.Method set = pref.getClass().getMethod("setOnPreferenceChangeListener", changeListener);
+                set.invoke(pref, listener);
+            } catch (Throwable t) { XposedBridge.log("[SBPlus] sniff switch bind err: " + t); }
             // 点击 -> 进入「资源嗅探」子页.
             try {
                 Class<?> clickListenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
@@ -5172,13 +6419,9 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 资源嗅探子页：嗅探开关 + 下载方式 + 线程数/任务数 + 打开下载列表。 */
+    /** 资源嗅探子页:嗅探开关 + 下载方式 + 线程数/任务数 + 打开下载列表。 */
     private void injectSniffSettingsPicker(final Context ctx, final ClassLoader cl, Object screen) {
         try {
-            // 启用资源嗅探(开关在子页内)
-            Object sniffOn = buildEnableSniffSwitch(ctx, cl);
-            if (sniffOn != null) XposedHelpers.callMethod(screen, "addPreference", sniffOn);
-
             // 下载方式
             final Object modePref = buildPreferenceCustom(ctx, cl);
             XposedHelpers.callMethod(modePref, "setTitle", T("下载方式", "Download mode"));
@@ -5232,7 +6475,7 @@ private void showUaGroupDialog(final Context ctx) {
             Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
             XposedHelpers.callMethod(pref, "setTitle", T("启用资源嗅探", "Enable media sniffer"));
             XposedHelpers.callMethod(pref, "setKey", "sbplus_enable_sniff");
-            XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标，识别页面音频/视频/图片并下载", "Show sniffer icon in address bar"));
+            XposedHelpers.callMethod(pref, "setSummary", T("在地址栏显示嗅探图标,识别页面音频/视频/图片并下载", "Show sniffer icon in address bar"));
             XposedHelpers.callMethod(pref, "setChecked", isSniffEnabled());
             XposedHelpers.callMethod(pref, "setSelectable", true);
             try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
@@ -5275,7 +6518,7 @@ private void showUaGroupDialog(final Context ctx) {
             android.content.SharedPreferences sp = ctx.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE);
             String mode = sp.getString("dl_mode", "internal");
             XposedHelpers.callMethod(pref, "setSummary",
-                    "internal".equals(mode) ? T("内置下载器（多线程 + 转 MP4）", "Built-in (multi-thread + MP4)") : T("外部下载器（转交第三方）", "External downloader"));
+                    "internal".equals(mode) ? T("内置下载器(多线程 + 转 MP4)", "Built-in (multi-thread + MP4)") : T("外部下载器(转交第三方)", "External downloader"));
         } catch (Throwable ignored) {}
     }
     private void refreshThreadsSummary(Context ctx, Object pref) {
@@ -5295,8 +6538,8 @@ private void showUaGroupDialog(final Context ctx) {
         try {
             android.content.SharedPreferences sp = ctx.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE);
             final String cur = sp.getString("dl_mode", "internal");
-            String[] items = new String[]{ T("内置下载器（多线程+MP4，推荐）", "Built-in (recommended)"),
-                                           T("外部下载器（转交第三方）", "External downloader") };
+            String[] items = new String[]{ T("内置下载器(多线程+MP4,推荐)", "Built-in (recommended)"),
+                                           T("外部下载器(转交第三方)", "External downloader") };
             int idx = "external".equals(cur) ? 1 : 0;
             android.app.AlertDialog d = new android.app.AlertDialog.Builder(ctx)
                 .setTitle(T("下载方式", "Download mode"))
@@ -5324,7 +6567,7 @@ private void showUaGroupDialog(final Context ctx) {
             final int pad = (int)(16 * ctx.getResources().getDisplayMetrics().density);
             et.setPadding(pad, pad, pad, pad);
             new android.app.AlertDialog.Builder(ctx)
-                .setTitle((min<=10&&max<=10) ? T("任务数（1-10）", "Tasks (1-10)") : T("线程数（1-32）", "Threads (1-32)"))
+                .setTitle((min<=10&&max<=10) ? T("任务数(1-10)", "Tasks (1-10)") : T("线程数(1-32)", "Threads (1-32)"))
                 .setView(et)
                 .setPositiveButton(T("确定", "OK"), new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
@@ -5343,7 +6586,7 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
 
-    /** 嗅探开关变化时，立即从当前地址栏移除图标（启用则等下次布局重建自动出现）。 */
+    /** 嗅探开关变化时,立即从当前地址栏移除图标(启用则等下次布局重建自动出现)。 */
     private void applySniffSwitchIcon(final boolean enabled) {
         try {
             if (sCurrentActivity == null) return;
@@ -5366,7 +6609,7 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
 
-    /** 油猴脚本子页：脚本列表（启用/删除）+ 添加/更新/下载操作。 */
+    /** 油猴脚本子页:脚本列表(启用/删除)+ 添加/更新/下载操作。 */
     private void injectUserscriptPicker(Context ctx, ClassLoader cl, Object screen) {
         Class<?> prefCustomCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
@@ -5376,7 +6619,7 @@ private void showUaGroupDialog(final Context ctx) {
         java.io.File dir = userscriptDir();
         java.util.List<UserscriptMeta> metas = loadUserscripts();
 
-        // —— 操作区 ——
+        // -- 操作区 --
         Object addPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(addPref, "setTitle", T("添加脚本", "Add script"));
         XposedHelpers.callMethod(addPref, "setKey", "sbplus_userscript_add");
@@ -5394,14 +6637,14 @@ private void showUaGroupDialog(final Context ctx) {
         Object updatePref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(updatePref, "setTitle", T("更新所有脚本", "Update all scripts"));
         XposedHelpers.callMethod(updatePref, "setKey", "sbplus_userscript_update");
-        XposedHelpers.callMethod(updatePref, "setSummary", T("检测所有脚本的更新（需脚本声明 @updateURL/@downloadURL）", "Check for updates of all scripts (requires @updateURL/@downloadURL)"));
+        XposedHelpers.callMethod(updatePref, "setSummary", T("检测所有脚本的更新(需脚本声明 @updateURL/@downloadURL)", "Check for updates of all scripts (requires @updateURL/@downloadURL)"));
         bindPreferenceClick(updatePref, cl, new Runnable() { public void run() { updateAllUserscripts(); } });
         XposedHelpers.callMethod(screen, "addPreference", updatePref);
 
         Object dlPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(dlPref, "setTitle", T("下载脚本", "Download script"));
         XposedHelpers.callMethod(dlPref, "setKey", "sbplus_userscript_dl");
-        XposedHelpers.callMethod(dlPref, "setSummary", T("打开脚本源列表，选择网站后安装的 .user.js 会自动保存", "Open the source list; .user.js installed from the site is saved automatically"));
+        XposedHelpers.callMethod(dlPref, "setSummary", T("打开脚本源列表,选择网站后安装的 .user.js 会自动保存", "Open the source list; .user.js installed from the site is saved automatically"));
         bindPreferenceClick(dlPref, cl, new Runnable() { public void run() { openGreasyFork(); } });
         XposedHelpers.callMethod(screen, "addPreference", dlPref);
 
@@ -5412,7 +6655,7 @@ private void showUaGroupDialog(final Context ctx) {
         XposedHelpers.callMethod(dirPref, "setSummary", dir == null ? T("目录未初始化", "Directory not initialized") : dir.getAbsolutePath());
         XposedHelpers.callMethod(screen, "addPreference", dirPref);
 
-                // —— 脚本列表入口 ——
+                // -- 脚本列表入口 --
         Object listPref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(listPref, "setTitle", T("脚本列表 (", "Script list (") + metas.size() + ")");
         XposedHelpers.callMethod(listPref, "setKey", "sbplus_userscript_list");
@@ -5428,7 +6671,7 @@ private void showUaGroupDialog(final Context ctx) {
         XposedBridge.log("[SBPlus] userscript picker injected, scripts=" + metas.size());
     }
 
-    /** 脚本列表子页：列出所有已安装脚本，每行点击进入详情。 */
+    /** 脚本列表子页:列出所有已安装脚本,每行点击进入详情。 */
     private void injectUserscriptListPicker(Context ctx, ClassLoader cl, Object screen) {
         Class<?> prefCustomCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.PreferenceCustom", cl);
@@ -5462,7 +6705,7 @@ private void showUaGroupDialog(final Context ctx) {
         XposedBridge.log("[SBPlus] userscript list injected, scripts=" + metas.size());
     }
 
-    /** 脚本详情子页：启用开关 + 编辑 + 配置页 + 匹配规则 + 删除。 */
+    /** 脚本详情子页:启用开关 + 编辑 + 配置页 + 匹配规则 + 删除。 */
     private void injectUserscriptDetailPicker(Context ctx, ClassLoader cl, Object screen, String fileName) {
         sDetailFileName = fileName;
         Class<?> prefCustomCls = XposedHelpers.findClass(
@@ -5486,7 +6729,7 @@ private void showUaGroupDialog(final Context ctx) {
 
         final UserscriptMeta meta = target;
 
-        // 标题行（名字 + 版本 + 作者/描述）。
+        // 标题行(名字 + 版本 + 作者/描述)。
         Object titlePref = XposedHelpers.newInstance(prefCustomCls, new Class[]{Context.class}, ctx);
         XposedHelpers.callMethod(titlePref, "setTitle", meta.name);
         XposedHelpers.callMethod(titlePref, "setKey", "sbplus_userscript_detail_title");
@@ -5504,8 +6747,8 @@ private void showUaGroupDialog(final Context ctx) {
         XposedHelpers.callMethod(enPref, "setChecked", isUserscriptFileEnabled(meta.fileName));
         bindUserscriptEnableChange(enPref, cl, meta.fileName);
         XposedHelpers.callMethod(screen, "addPreference", enPref);
-        // 三星 SwitchPreferenceCustom 的 setChecked 在 RecyclerView 渲染前调用不刷新 UI，
-        // 延迟到渲染完成后强制重设一次，确保开关显示与存储状态一致
+        // 三星 SwitchPreferenceCustom 的 setChecked 在 RecyclerView 渲染前调用不刷新 UI,
+        // 延迟到渲染完成后强制重设一次,确保开关显示与存储状态一致
         final Object fEn = enPref;
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override public void run() {
@@ -5532,7 +6775,7 @@ private void showUaGroupDialog(final Context ctx) {
         bindPreferenceClick(exportPref, cl, new Runnable() { public void run() { exportUserscript(meta.fileName, meta.name); } });
         XposedHelpers.callMethod(screen, "addPreference", exportPref);
 
-        // 来源显示（真实记录 > @downloadURL > @homepageURL > 本地导入）。
+        // 来源显示(真实记录 > @downloadURL > @homepageURL > 本地导入)。
         String recordedSource = getSource(meta.fileName);
         String srcText = recordedSource;
         String srcUrl = null;
@@ -5582,7 +6825,7 @@ private void showUaGroupDialog(final Context ctx) {
         XposedBridge.log("[SBPlus] userscript detail injected: " + meta.name);
     }
 
-    /** 通用点击绑定：点击后执行 runnable。 */
+    /** 通用点击绑定:点击后执行 runnable。 */
     private void bindPreferenceClick(Object pref, ClassLoader cl, final Runnable action) {
         try {
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
@@ -5616,9 +6859,9 @@ private void showUaGroupDialog(final Context ctx) {
     /** 绑定脚本启用开关。 */
     private void bindUserscriptEnableChange(Object pref, ClassLoader cl, final String fileName) {
         try {
-            // 方案：实例级 onPreferenceChange 监听，仅在用户点击开关时写 prefs。
-            // 避免全局 setChecked hook：该 hook 会拦截所有 setChecked 调用（含初始化显示），
-            // 且每次进详情页都会重复安装，导致状态被反复覆盖（主页/设置状态不同步 bug）。
+            // 方案:实例级 onPreferenceChange 监听,仅在用户点击开关时写 prefs。
+            // 避免全局 setChecked hook:该 hook 会拦截所有 setChecked 调用(含初始化显示),
+            // 且每次进详情页都会重复安装,导致状态被反复覆盖(主页/设置状态不同步 bug)。
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
             Object changeListener = java.lang.reflect.Proxy.newProxyInstance(cl,
                     new Class[]{listenerType},
@@ -5687,12 +6930,12 @@ private void showUaGroupDialog(final Context ctx) {
         try {
             java.io.File dir = userscriptDir();
             if (dir == null || fileName == null || fileName.isEmpty()) {
-                toastOnMain(T("导出失败：脚本目录未初始化", "Export failed: script directory not initialized"));
+                toastOnMain(T("导出失败:脚本目录未初始化", "Export failed: script directory not initialized"));
                 return;
             }
             java.io.File src = new java.io.File(dir, fileName);
             if (!src.exists()) {
-                toastOnMain(T("导出失败：源文件不存在", "Export failed: source file not found"));
+                toastOnMain(T("导出失败:源文件不存在", "Export failed: source file not found"));
                 return;
             }
             java.io.File outDir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
@@ -5716,7 +6959,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 构建脚本摘要（描述 + 匹配规则数）。 */
+    /** 构建脚本摘要(描述 + 匹配规则数)。 */
     private String buildUserscriptSummary(UserscriptMeta meta) {
         int rules = meta.match.size() + meta.include.size();
         StringBuilder sum = new StringBuilder();
@@ -5728,7 +6971,7 @@ private void showUaGroupDialog(final Context ctx) {
         return sum.toString();
     }
 
-    /** 编辑已有脚本：加载其内容到编辑器，保存时覆盖原文件。 */
+    /** 编辑已有脚本:加载其内容到编辑器,保存时覆盖原文件。 */
     private void editUserscript(final String fileName) {
         try {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
@@ -5775,7 +7018,7 @@ private void showUaGroupDialog(final Context ctx) {
         };
     }
 
-    /** 读取自定义源（格式：每行 name|url）。 */
+    /** 读取自定义源(格式:每行 name|url)。 */
     private java.util.List<ScriptSource> customSources() {
         java.util.List<ScriptSource> list = new java.util.ArrayList<ScriptSource>();
         try {
@@ -5812,7 +7055,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 合并源列表：自定义在前，预置后。 */
+    /** 合并源列表:自定义在前,预置后。 */
     private java.util.List<ScriptSource> allSources() {
         java.util.List<ScriptSource> list = customSources();
         for (ScriptSource s : defaultSources()) list.add(s);
@@ -5825,7 +7068,7 @@ private void showUaGroupDialog(final Context ctx) {
             final java.util.List<ScriptSource> sources = allSources();
             final String[] names = new String[sources.size() + 1];
             for (int i = 0; i < sources.size(); i++) names[i] = sources.get(i).name;
-            names[sources.size()] = T("＋ 添加网址", "＋ Add URL");
+            names[sources.size()] = T("+ 添加网址", "+ Add URL");
             android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
             b.setTitle(T("选择脚本源", "Choose script source"));
             b.setItems(names, new android.content.DialogInterface.OnClickListener() {
@@ -5844,16 +7087,16 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 弹出添加网址对话框（名字 + 网址）。 */
+    /** 弹出添加网址对话框(名字 + 网址)。 */
     private void showAddSourceDialog(final android.app.Activity act) {
         try {
             android.widget.LinearLayout ll = new android.widget.LinearLayout(act);
             ll.setOrientation(android.widget.LinearLayout.VERTICAL);
             ll.setPadding(48, 24, 48, 8);
             final android.widget.EditText nameEt = new android.widget.EditText(act);
-            nameEt.setHint(T("名称（如：我的源）", "Name (e.g. My source)"));
+            nameEt.setHint(T("名称(如:我的源)", "Name (e.g. My source)"));
             final android.widget.EditText urlEt = new android.widget.EditText(act);
-            urlEt.setHint(T("网址（如：https://example.com/）", "URL (e.g. https://example.com/)"));
+            urlEt.setHint(T("网址(如:https://example.com/)", "URL (e.g. https://example.com/)"));
             urlEt.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_URI);
             ll.addView(nameEt);
             ll.addView(urlEt);
@@ -5894,7 +7137,7 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
 
-    /** 启动添加脚本（单一输入窗口，预置模板 + 保存前检测）。 */
+    /** 启动添加脚本(单一输入窗口,预置模板 + 保存前检测)。 */
     private void launchAddUserscript() {
         try {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
@@ -5905,12 +7148,12 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 脚本编辑对话框：全屏、内容可滚动，预置模板，点保存先校验再写入。 */
+    /** 脚本编辑对话框:全屏、内容可滚动,预置模板,点保存先校验再写入。 */
     private void showUserscriptEditorDialog(final android.app.Activity act) {
         showUserscriptEditorDialog(act, null, USERSCRIPT_TEMPLATE);
     }
 
-    /** 核心编辑器：新增（fileName=null）或编辑已有脚本（fileName=原文件名）。 */
+    /** 核心编辑器:新增(fileName=null)或编辑已有脚本(fileName=原文件名)。 */
     private void showUserscriptEditorDialog(final android.app.Activity act, final String fileName, final String initialContent) {
         try {
             final android.widget.EditText et = new android.widget.EditText(act);
@@ -5983,7 +7226,7 @@ private void showUaGroupDialog(final Context ctx) {
                     String content = et.getText().toString();
                     String err = validateUserscript(content);
                     if (err != null) {
-                        toastOnMain(T("脚本无效，未保存：", "Invalid script, not saved: ") + err);
+                        toastOnMain(T("脚本无效,未保存:", "Invalid script, not saved: ") + err);
                         return;
                     }
                     String fn;
@@ -6006,7 +7249,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 脚本模板（预置 ==UserScript== 头）。 */
+    /** 脚本模板(预置 ==UserScript== 头)。 */
     private static final String USERSCRIPT_TEMPLATE =
         "// ==UserScript==\n" +
         "// @name        我的脚本\n" +
@@ -6024,17 +7267,17 @@ private void showUaGroupDialog(final Context ctx) {
         "\n" +
         "})();\n";
 
-    /** 校验脚本：返回 null 表示合法，否则返回错误信息。 */
+    /** 校验脚本:返回 null 表示合法,否则返回错误信息。 */
     private String validateUserscript(String content) {
         if (content == null || content.trim().isEmpty()) return T("内容为空", "Content is empty");
-        // 必须以 ==UserScript== 开头（允许前导空白/注释）。
+        // 必须以 ==UserScript== 开头(允许前导空白/注释)。
         if (!content.contains("==UserScript==")) return T("缺少 ==UserScript== 声明头", "Missing ==UserScript== header");
         if (!content.contains("==/UserScript==")) return T("缺少 ==/UserScript== 结束标记", "Missing ==/UserScript== end marker");
         UserscriptMeta meta = UserscriptMeta.parse(content);
         if (meta == null || meta.name.isEmpty()) return T("缺少 @name", "Missing @name");
-        // 必须有至少一条匹配规则，否则邮箱般全站注入风险太高，强制要求。
+        // 必须有至少一条匹配规则,否则邮箱般全站注入风险太高,强制要求。
         if (meta.match.isEmpty() && meta.include.isEmpty()) return T("缺少 @match 或 @include 匹配规则", "Missing @match or @include rule");
-        // 至少有可执行代码（metadata 之后非空）。
+        // 至少有可执行代码(metadata 之后非空)。
         String after = meta.code;
         if (after == null || after.trim().isEmpty()) return T("没有可执行的脚本代码", "No executable script code");
         return null;
@@ -6046,7 +7289,7 @@ private void showUaGroupDialog(final Context ctx) {
             android.app.Activity act = sCurrentActivity != null ? sCurrentActivity : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null);
             if (act == null) { toastOnMain(T("无法获取界面环境", "Cannot get UI context")); return; }
             final android.widget.EditText et = new android.widget.EditText(act);
-            et.setHint(T("粘贴完整 .user.js 脚本内容（含 ==UserScript== 头）", "Paste the full .user.js content (with ==UserScript== header)"));
+            et.setHint(T("粘贴完整 .user.js 脚本内容(含 ==UserScript== 头)", "Paste the full .user.js content (with ==UserScript== header)"));
             et.setMinLines(8);
             et.setMaxLines(16);
             et.setGravity(android.view.Gravity.TOP);
@@ -6084,12 +7327,12 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 将脚本内容写入目录，返回文件名（自动按 @name 生成，冲突加序号）。 */
+    /** 将脚本内容写入目录,返回文件名(自动按 @name 生成,冲突加序号)。 */
     private String saveUserscriptContent(String content) {
         try {
             java.io.File dir = userscriptDir();
             if (dir == null) return null;
-            // 从内容解析名字，生成文件名。
+            // 从内容解析名字,生成文件名。
             UserscriptMeta meta = UserscriptMeta.parse(content);
             XposedBridge.log("[SBPlus] saveUserscript parsed name='" + meta.name + "' version=" + meta.version);
             String base = sanitizeFileName(meta.name.isEmpty() ? "script" : meta.name);
@@ -6106,7 +7349,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 覆盖已有脚本文件（编辑模式），返回文件名；失败返回 null。 */
+    /** 覆盖已有脚本文件(编辑模式),返回文件名;失败返回 null。 */
     private String overwriteUserscriptContent(String fileName, String content) {
         try {
             java.io.File dir = userscriptDir();
@@ -6122,7 +7365,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 文件名合法化（移除 Windows/Android 非法字符）。 */
+    /** 文件名合法化(移除 Windows/Android 非法字符)。 */
     private String sanitizeFileName(String name) {
         if (name == null) return "script";
         StringBuilder sb = new StringBuilder();
@@ -6141,7 +7384,7 @@ private void showUaGroupDialog(final Context ctx) {
         return r;
     }
 
-    /** 用 emoji 字符生成位图（用于设置项图标）。 */
+    /** 用 emoji 字符生成位图(用于设置项图标)。 */
     private android.graphics.Bitmap emojiBitmap(android.content.Context ctx, String emoji, int sizePx) {
         try {
             android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(sizePx, sizePx, android.graphics.Bitmap.Config.ARGB_8888);
@@ -6157,7 +7400,7 @@ private void showUaGroupDialog(final Context ctx) {
         } catch (Throwable ignored) { return null; }
     }
 
-    /** 记录脚本来源（下载地址 / 本地导入 / 手动添加）。 */
+    /** 记录脚本来源(下载地址 / 本地导入 / 手动添加)。 */
     private void saveSource(String fileName, String source) {
         try {
             java.io.File dir = userscriptDir();
@@ -6182,7 +7425,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 读取脚本来源；无记录返回空。 */
+    /** 读取脚本来源;无记录返回空。 */
     private String getSource(String fileName) {
         try {
             java.io.File dir = userscriptDir();
@@ -6200,7 +7443,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 更新所有脚本（异步下载对比版本）。 */
+    /** 更新所有脚本(异步下载对比版本)。 */
     private void updateAllUserscripts() {
         java.util.List<UserscriptMeta> metas = loadUserscripts();
         int updatable = 0;
@@ -6210,7 +7453,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
         final int total = updatable;
         if (total == 0) {
-            toastOnMain(T("没有可检测更新的脚本（需声明 @updateURL 或 @downloadURL）", "No scripts to check (need @updateURL or @downloadURL)"));
+            toastOnMain(T("没有可检测更新的脚本(需声明 @updateURL 或 @downloadURL)", "No scripts to check (need @updateURL or @downloadURL)"));
             return;
         }
         toastOnMain(T("开始检测 ", "Checking ") + total + T(" 个脚本更新...", " scripts for updates..."));
@@ -6225,9 +7468,9 @@ private void showUaGroupDialog(final Context ctx) {
                         if (remote == null || !isUserscriptContentValid(remote)) continue;
                         UserscriptMeta rm = UserscriptMeta.parse(remote);
                         if (rm.version.isEmpty() || m.version.isEmpty() || rm.version.equals(m.version)) {
-                            continue; // 无版本或版本相同，跳过
+                            continue; // 无版本或版本相同,跳过
                         }
-                        // 有更新，覆盖写入。
+                        // 有更新,覆盖写入。
                         java.io.File dir = userscriptDir();
                         if (dir == null) continue;
                         java.io.File f = new java.io.File(dir, m.fileName);
@@ -6240,20 +7483,20 @@ private void showUaGroupDialog(final Context ctx) {
                     }
                 }
                 final int u = updated;
-                toastOnMain(T("更新完成：更新了 ", "Updated ") + u + T(" 个脚本", " scripts"));
+                toastOnMain(T("更新完成:更新了 ", "Updated ") + u + T(" 个脚本", " scripts"));
                 refreshCurrentUserscriptPicker();
             }
         }).start();
     }
 
-    /** 从 url 下载 .user.js 到目录（供下载拦截使用）。 */
+    /** 从 url 下载 .user.js 到目录(供下载拦截使用)。 */
     private void downloadUserscriptToDir(String url) {
         try {
             new Thread(new Runnable() {
                 @Override public void run() {
                     try {
                         String content = httpGet(url);
-                        if (content == null || !isUserscriptContentValid(content)) { toastOnMain(T("下载不完整，请重试: ", "Download incomplete, please retry: ") + url); return; }
+                        if (content == null || !isUserscriptContentValid(content)) { toastOnMain(T("下载不完整,请重试: ", "Download incomplete, please retry: ") + url); return; }
                         String fn = saveUserscriptContent(content);
                         if (fn != null) saveSource(fn, url);
                         toastOnMain(fn == null ? T("保存失败", "Save failed") : ("已安装脚本: " + fn));
@@ -6268,7 +7511,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 简单 HTTP GET，返回响应体字符串。用 read() 批量读+长超时，避免大脚本下载中断截断。 */
+    /** 简单 HTTP GET,返回响应体字符串。用 read() 批量读+长超时,避免大脚本下载中断截断。 */
     private String httpGet(String url) {
         java.net.HttpURLConnection conn = null;
         try {
@@ -6302,18 +7545,18 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 校验油猴脚本内容完整性：非空且同时包含 ==UserScript== 开头块与 ==/UserScript== 结束。 */
+    /** 校验油猴脚本内容完整性:非空且同时包含 ==UserScript== 开头块与 ==/UserScript== 结束。 */
     private boolean isUserscriptContentValid(String content) {
         if (content == null || content.length() < 30) return false;
         return content.indexOf("==UserScript==") >= 0 && content.indexOf("==/UserScript==") >= 0;
     }
 
-    /** 判断 url/文件名是否为油猴脚本（.user.js，兼容被加 .txt 后缀的情况）。 */
+    /** 判断 url/文件名是否为油猴脚本(.user.js,兼容被加 .txt 后缀的情况)。 */
     private boolean isUserScriptUrl(String url, String fileName) {
         try {
             if (fileName != null) {
                 String f = fileName.toLowerCase();
-                // 兼容 .user.js 被浏览器误加 .txt 后缀（如 a.user.js.txt）
+                // 兼容 .user.js 被浏览器误加 .txt 后缀(如 a.user.js.txt)
                 if (f.contains(".user.js")) return true;
             }
             if (url == null) return false;
@@ -6324,7 +7567,7 @@ private void showUaGroupDialog(final Context ctx) {
         } catch (Throwable t) { return false; }
     }
 
-    /** 读取 content:// URI 文本内容（用于导入本地 .user.js 文件）。 */
+    /** 读取 content:// URI 文本内容(用于导入本地 .user.js 文件)。 */
     private String readUriText(android.content.Context ctx, android.net.Uri uri) {
         java.io.InputStream is = null;
         try {
@@ -6344,7 +7587,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    // ==================== 书签管理（导出/导入 HTML 书签） ====================
+    // ==================== 书签管理(导出/导入 HTML 书签) ====================
 
     private static final int REQUEST_BOOKMARK_PICK = 61003;
 
@@ -6376,7 +7619,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 书签管理对话框：导入 / 导出。 */
+    /** 书签管理对话框:导入 / 导出。 */
     private void showBookmarkManagerDialog(final Context ctx) {
         try {
             final android.app.Activity act = sCurrentActivity != null ? sCurrentActivity
@@ -6404,7 +7647,7 @@ private void showUaGroupDialog(final Context ctx) {
 
     // ==================== 书签树形勾选对话框 ====================
 
-    /** 弹书签树勾选对话框：勾选要导出/导入的节点。 */
+    /** 弹书签树勾选对话框:勾选要导出/导入的节点。 */
     private void showBookmarkTreeDialog(final android.app.Activity act, final String title,
             final BookmarkNode root, final boolean isExport) {
         try {
@@ -6427,7 +7670,7 @@ private void showUaGroupDialog(final Context ctx) {
                     android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
             body.addView(btnRow);
 
-            // 树容器（放在 ScrollView 里），高度按屏幕动态计算
+            // 树容器(放在 ScrollView 里),高度按屏幕动态计算
             final android.widget.LinearLayout tree = new android.widget.LinearLayout(act);
             tree.setOrientation(android.widget.LinearLayout.VERTICAL);
             android.widget.ScrollView sv = new android.widget.ScrollView(act);
@@ -6450,7 +7693,7 @@ private void showUaGroupDialog(final Context ctx) {
             };
             rerender[0].run();
 
-            // 复选框容器回填：记录每个节点对应的 CheckBox，供全选/全不选使用
+            // 复选框容器回填:记录每个节点对应的 CheckBox,供全选/全不选使用
             final java.util.List<BookmarkNode> allNodes = new java.util.ArrayList<BookmarkNode>();
             root.expanded = true; // 默认展开顶层
             collectNodes(root, allNodes);
@@ -6488,7 +7731,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 收集所有节点（含根本身不入列）。 */
+    /** 收集所有节点(含根本身不入列)。 */
     private void collectNodes(BookmarkNode node, java.util.List<BookmarkNode> out) {
         for (BookmarkNode c : node.children) {
             out.add(c);
@@ -6541,7 +7784,7 @@ private void showUaGroupDialog(final Context ctx) {
                 });
                 row.addView(cb);
 
-                // 文件夹名（点名字也展开）
+                // 文件夹名(点名字也展开)
                 android.widget.TextView label = new android.widget.TextView(act);
                 label.setText(child.title == null ? T("(文件夹)", "(folder)") : child.title);
                 label.setTextSize(16);
@@ -6562,7 +7805,7 @@ private void showUaGroupDialog(final Context ctx) {
                     renderTreeRows(tree, child, depth + 1, act, rerender);
                 }
             } else {
-                // 书签：空白占位 + 复选框 + 标题
+                // 书签:空白占位 + 复选框 + 标题
                 android.widget.TextView spacer = new android.widget.TextView(act);
                 spacer.setText("   ");
                 row.addView(spacer);
@@ -6589,7 +7832,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 导出：只把勾选的节点序列化成 HTML。 */
+    /** 导出:只把勾选的节点序列化成 HTML。 */
     private void doExportSelected(BookmarkNode root) {
         try {
             StringBuilder sb = new StringBuilder();
@@ -6604,7 +7847,7 @@ private void showUaGroupDialog(final Context ctx) {
             java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
             fos.write(sb.toString().getBytes("UTF-8"));
             fos.close();
-            toastOnMain(T("已导出 ", "Exported ") + cnt + T(" 个书签：", " bookmarks: ") + out.getAbsolutePath());
+            toastOnMain(T("已导出 ", "Exported ") + cnt + T(" 个书签:", " bookmarks: ") + out.getAbsolutePath());
             XposedBridge.log("[SBPlus] export selected: " + cnt + " -> " + out.getAbsolutePath());
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] doExportSelected error: " + t);
@@ -6612,7 +7855,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 递归生成仅勾选节点的 HTML，返回计数。 */
+    /** 递归生成仅勾选节点的 HTML,返回计数。 */
     private int appendCheckedHtml(StringBuilder sb, BookmarkNode node, int depth) {
         int count = 0;
         for (BookmarkNode child : node.children) {
@@ -6635,7 +7878,7 @@ private void showUaGroupDialog(final Context ctx) {
         return count;
     }
 
-    /** 导入：只把勾选的节点写入 BOOKMARKS 表。 */
+    /** 导入:只把勾选的节点写入 BOOKMARKS 表。 */
     private void doImportSelected(BookmarkNode root) {
         android.database.sqlite.SQLiteDatabase db = null;
         try {
@@ -6644,7 +7887,7 @@ private void showUaGroupDialog(final Context ctx) {
             db.beginTransaction();
             int cnt = insertCheckedTree(db, root, 0);
             db.setTransactionSuccessful();
-            toastOnMain(T("已导入 ", "Imported ") + cnt + T(" 个书签，请重启浏览器生效", " bookmarks. Restart the browser to apply"));
+            toastOnMain(T("已导入 ", "Imported ") + cnt + T(" 个书签,请重启浏览器生效", " bookmarks. Restart the browser to apply"));
             XposedBridge.log("[SBPlus] import selected: " + cnt);
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] doImportSelected error: " + t);
@@ -6657,7 +7900,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 递归插入仅勾选的节点，返回计数。 */
+    /** 递归插入仅勾选的节点,返回计数。 */
     private int insertCheckedTree(android.database.sqlite.SQLiteDatabase db, BookmarkNode node, long parentId) {
         int count = 0;
         for (BookmarkNode child : node.children) {
@@ -6794,7 +8037,7 @@ private void showUaGroupDialog(final Context ctx) {
         root.title = "Bookmarks";
         java.util.Deque<BookmarkNode> stack = new java.util.ArrayDeque<BookmarkNode>();
         stack.push(root);
-        // 逐段扫描 <DT> 条目，识别 <H3>（文件夹）和 <A>（书签）
+        // 逐段扫描 <DT> 条目,识别 <H3>(文件夹)和 <A>(书签)
         int pos = 0;
         int len = html.length();
         while (pos < len) {
@@ -6828,8 +8071,8 @@ private void showUaGroupDialog(final Context ctx) {
                 if (!stack.isEmpty()) stack.peek().children.add(bm);
             }
 
-            // 处理 </DL> 归约：弹栈
-            // 简单做法：每遇到一个 </DL> 且栈深>1 就弹一次（对应一个文件夹闭合）
+            // 处理 </DL> 归约:弹栈
+            // 简单做法:每遇到一个 </DL> 且栈深>1 就弹一次(对应一个文件夹闭合)
             int dlEnds = 0;
             int sidx = 0;
             while (true) {
@@ -6864,10 +8107,10 @@ private void showUaGroupDialog(final Context ctx) {
         } catch (Throwable ignored) {}
     }
 
-    /** 刷新当前油猴子页（重新进入）。 */
+    /** 刷新当前油猴子页(重新进入)。 */
     private void refreshCurrentUserscriptPicker() {
         try {
-            // 简单起见：记录一个标记，下次进入时 reload；这里不做内存级刷新，
+            // 简单起见:记录一个标记,下次进入时 reload;这里不做内存级刷新,
             // 改用 toast 提示用户返回重进。
             toastOnMain(T("返回后重新进入即可看到更新", "Re-enter to see the update"));
         } catch (Throwable t) {
@@ -6875,7 +8118,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 打开脚本目录（直接提示路径，避免 FileProvider 跨包引用问题）。 */
+    /** 打开脚本目录(直接提示路径,避免 FileProvider 跨包引用问题)。 */
     private void bindOpenUserscriptDirClick(Object pref, ClassLoader cl) {
         try {
             Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
@@ -6892,7 +8135,7 @@ private void showUaGroupDialog(final Context ctx) {
                                     if (dir == null) {
                                         android.widget.Toast.makeText(ctx, T("目录未初始化", "Directory not initialized"), android.widget.Toast.LENGTH_SHORT).show();
                                     } else {
-                                        android.widget.Toast.makeText(ctx, T("脚本目录：\n", "Script directory:\n") + dir.getAbsolutePath(), android.widget.Toast.LENGTH_LONG).show();
+                                        android.widget.Toast.makeText(ctx, T("脚本目录:\n", "Script directory:\n") + dir.getAbsolutePath(), android.widget.Toast.LENGTH_LONG).show();
                                     }
                                     return Boolean.TRUE;
                                 }
@@ -6908,7 +8151,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 扫描并解析脚本目录，返回解析出的脚本元数据列表。 */
+    /** 扫描并解析脚本目录,返回解析出的脚本元数据列表。 */
     private java.util.List<UserscriptMeta> loadUserscripts() {
         java.util.List<UserscriptMeta> list = new java.util.ArrayList<UserscriptMeta>();
         try {
@@ -6928,7 +8171,7 @@ private void showUaGroupDialog(final Context ctx) {
                         if (prev == null) {
                             byName.put(meta.name, meta);
                         } else {
-                            // 同名重复副本：若当前文件名更短（更可能是干净主文件），则保留当前并记录。
+                            // 同名重复副本:若当前文件名更短(更可能是干净主文件),则保留当前并记录。
                             XposedBridge.log("[SBPlus] userscript duplicate ignored (keep=" + prev.fileName
                                     + ", drop=" + f.getName() + ") name=" + meta.name);
                         }
@@ -6964,7 +8207,7 @@ private void showUaGroupDialog(final Context ctx) {
         return sb.toString();
     }
 
-    /** 油猴脚本元数据（@name / @match / @include / @exclude / @run-at）。 */
+    /** 油猴脚本元数据(@name / @match / @include / @exclude / @run-at)。 */
     static class UserscriptMeta {
         String name = "";
         java.util.List<String> match = new java.util.ArrayList<String>();
@@ -6985,7 +8228,7 @@ private void showUaGroupDialog(final Context ctx) {
 
         static UserscriptMeta parse(String content) {
             UserscriptMeta m = new UserscriptMeta();
-            // 提取 metadata block（// ==UserScript== 到 // ==/UserScript==）
+            // 提取 metadata block(// ==UserScript== 到 // ==/UserScript==)
             String metaBlock = "";
             int ms = content.indexOf("==UserScript==");
             int me = content.indexOf("==/UserScript==");
@@ -6993,13 +8236,13 @@ private void showUaGroupDialog(final Context ctx) {
                 metaBlock = content.substring(ms, me);
                 m.code = content.substring(me + "==/UserScript==".length());
             } else {
-                // 无 metadata block：视为损坏/非标准脚本，直接丢弃，避免 "anonymous" 幽灵项刷屏菜单。
+                // 无 metadata block:视为损坏/非标准脚本,直接丢弃,避免 "anonymous" 幽灵项刷屏菜单。
                 return null;
             }
             String[] lines = metaBlock.split("\n");
             for (String ln : lines) {
                 String l = ln.trim();
-                while (l.startsWith("//")) { l = l.substring(2).trim(); }  // 去掉 // 前缀，如 // @name
+                while (l.startsWith("//")) { l = l.substring(2).trim(); }  // 去掉 // 前缀,如 // @name
                 if (l.startsWith("@name:zh-CN")) { m.name = stripMetaValue(l, "@name:zh-CN"); }
                 else if (l.startsWith("@name:zh")) { m.name = stripMetaValue(l, "@name:zh"); }
                 else if (l.startsWith("@name:")) { m.name = stripMetaValue(l, "@name:"); }
@@ -7040,26 +8283,26 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 简化 URL 匹配：支持 * 通配符；不含通配符时做包含/精确匹配。 */
+    /** 简化 URL 匹配:支持 * 通配符;不含通配符时做包含/精确匹配。 */
     private static boolean matchGlob(String pattern, String url) {
         try {
             if (pattern == null || pattern.isEmpty()) return false;
             String p = pattern.trim();
             if (!p.contains("*")) return url.contains(p);
-            // 手动转义正则特殊字符，仅保留 * 作为通配符 -> .*
+            // 手动转义正则特殊字符,仅保留 * 作为通配符 -> .*
             String esc = p.replace("\\", "\\\\").replace(".", "\\.").replace("+", "\\+").replace("?", "\\?").replace("(", "\\(").replace(")", "\\)").replace("[", "\\[").replace("]", "\\]").replace("^", "\\^").replace("$", "\\$").replace("|", "\\|").replace("{", "\\{").replace("}", "\\}");
             String regex = esc.replace("*", ".*");
             return url.matches(".*" + regex + ".*");
         } catch (Throwable t) { return false; }
     }
 
-    /** GM API 引擎（精简版），注入每个匹配页面。 */
+    /** GM API 引擎(精简版),注入每个匹配页面。 */
     private static final String GM_API_JS =
         "(function(){" +
         "  var SP=window.__sbplus__||{};" +
         "  function pushLog(l){try{if(window.__sbplusLog)window.__sbplusLog(l);else console.log('[SBPlus] '+l);}catch(e){}}" +
         "  var GM={};" +
-        // 存储：桥接到 Java（若未注入 __sbplus__，则回退 localStorage）
+        // 存储:桥接到 Java(若未注入 __sbplus__,则回退 localStorage)
         "  var store=(function(){try{return window.__sbplus__;}catch(e){return null;}})();" +
         "  window.onerror=function(m,src,l,c){try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('ERR '+m+' @'+src+':'+l+':'+c);}catch(e){}};" +
         "  window.addEventListener('unhandledrejection',function(e){try{if(window.__sbplus__&&window.__sbplus__.gmLog)window.__sbplus__.gmLog('PROMISE '+(e.reason&&e.reason.message||e.reason));}catch(x){}});" +
@@ -7097,13 +8340,18 @@ private void showUaGroupDialog(final Context ctx) {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
+                                injectWebTheme(param.thisObject, (String) param.args[0]);
+                            } catch (Throwable t) {
+                                XposedBridge.log("[SBPlus] injectWebTheme error: " + t);
+                            }
+                            try {
                                 injectUserscripts(param.thisObject, (String) param.args[0]);
                             } catch (Throwable t) {
                                 XposedBridge.log("[SBPlus] injectUserscripts error: " + t);
                             }
                         }
                     });
-            // 页面开始加载时就注册 JS 桥，确保 window.__sbplus__ 在页面上下文建立时就存在。
+            // 页面开始加载时就注册 JS 桥,确保 window.__sbplus__ 在页面上下文建立时就存在。
             XposedHelpers.findAndHookMethod(tabEventHandler, "onLoadStarted", String.class,
                     new XC_MethodHook() {
                         @Override
@@ -7122,10 +8370,10 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 在页面加载完成后，把匹配的油猴脚本注入当前 Tab。 */
+    /** 在页面加载完成后,把匹配的油猴脚本注入当前 Tab。 */
     /**
-     * 地址栏油猴图标：hook LocationBarButtonLayout.onFinishInflate，在刷新按钮旁注入一个
-     * 油猴图标。点击图标弹出「当前页面生效脚本」列表，点脚本可查看/触发其菜单命令。
+     * 地址栏油猴图标:hook LocationBarButtonLayout.onFinishInflate,在刷新按钮旁注入一个
+     * 油猴图标。点击图标弹出「当前页面生效脚本」列表,点脚本可查看/触发其菜单命令。
      */
     private void hookUserscriptToolbar(ClassLoader cl) {
         try {
@@ -7148,14 +8396,14 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 在刷新按钮旁插入油猴图标按钮（幂等）。 */
+    /** 在刷新按钮旁插入油猴图标按钮(幂等)。 */
     private void injectUserscriptToolbarButton(final Object layoutObj, final ClassLoader cl) {
         try {
             final Object urlBarParent = XposedHelpers.getObjectField(layoutObj, "mUrlBarParent");
             if (!(urlBarParent instanceof android.view.ViewGroup)) return;
             android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
             android.view.View already = parent.findViewWithTag("sbplus_monkey_btn");
-            // 总开关关闭时：不注入，并移除已存在的图标（用户切回浏览器后图标消失）
+            // 总开关关闭时:不注入,并移除已存在的图标(用户切回浏览器后图标消失)
             if (!isUserscriptEnabled()) {
                 if (already != null) {
                     try { ((android.view.ViewGroup) already.getParent()).removeView(already); } catch (Throwable ignored) {}
@@ -7169,7 +8417,7 @@ private void showUaGroupDialog(final Context ctx) {
             Object copyBtn = XposedHelpers.getObjectField(layoutObj, "mCopyButton");
             Object zoomBtn = XposedHelpers.getObjectField(layoutObj, "mZoomButton");
             int insertIndex = -1;
-            // 优先放 copy 按钮之后（即跳转App等右侧图标的最前面）。
+            // 优先放 copy 按钮之后(即跳转App等右侧图标的最前面)。
             if (copyBtn instanceof android.view.View) {
                 insertIndex = parent.indexOfChild((android.view.View) copyBtn) + 1;
             } else if (zoomBtn instanceof android.view.View) {
@@ -7214,14 +8462,14 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 注入「资源嗅探」图标按钮（在油猴图标之前）。 */
+    /** 注入「资源嗅探」图标按钮(在油猴图标之前)。 */
     private void injectSniffToolbarButton(final Object layoutObj, final ClassLoader cl) {
         try {
             final Object urlBarParent = XposedHelpers.getObjectField(layoutObj, "mUrlBarParent");
             if (!(urlBarParent instanceof android.view.ViewGroup)) return;
             android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
             android.view.View already = parent.findViewWithTag("sbplus_sniff_btn");
-            // 开关关闭时不注入，并移除已存在图标（用户切回浏览器后图标消失）
+            // 开关关闭时不注入,并移除已存在图标(用户切回浏览器后图标消失)
             if (!isSniffEnabled()) {
                 if (already != null) {
                     try { ((android.view.ViewGroup) already.getParent()).removeView(already); } catch (Throwable ignored) {}
@@ -7367,7 +8615,7 @@ private void showUaGroupDialog(final Context ctx) {
             pop.setFocusable(true);
             pop.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(BG_POP));
             popRef[0] = pop;
-            // 包一层 ScrollView，限制最大高度为屏幕 60%，过时可滚动、避免末尾项被截断。
+            // 包一层 ScrollView,限制最大高度为屏幕 60%,过时可滚动、避免末尾项被截断。
             wrapWithScroll(pop, ctx, root);
             showPopup(pop, anchor, ctx);
         } catch (Throwable t) {
@@ -7375,20 +8623,20 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 把弹窗内容包进 ScrollView，限制最大高度并保证可滚动，避免列表过长时末尾项被截断。 */
+    /** 把弹窗内容包进 ScrollView,限制最大高度并保证可滚动,避免列表过长时末尾项被截断。 */
     private void wrapWithScroll(final android.widget.PopupWindow pop, final Context ctx, final android.view.View content) {
         try {
             int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
             int screenH = ctx.getResources().getDisplayMetrics().heightPixels;
-            // 限宽：内容不超过屏幕宽的 85%。
+            // 限宽:内容不超过屏幕宽的 85%。
             int maxW = (int) (screenW * 0.85f);
             int maxH = (int) (screenH * 0.6f);
-            // 第一步：用 AT_MOST(限宽) 测宽度，拿到真实宽度（UNSPECIFIED 会让 weight=1 的 child 得到 0 宽）。
+            // 第一步:用 AT_MOST(限宽) 测宽度,拿到真实宽度(UNSPECIFIED 会让 weight=1 的 child 得到 0 宽)。
             int wSpec = android.view.View.MeasureSpec.makeMeasureSpec(maxW, android.view.View.MeasureSpec.AT_MOST);
             int hSpec0 = android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED);
             content.measure(wSpec, hSpec0);
             int contentW = Math.min(content.getMeasuredWidth(), maxW);
-            // 第二步：用已确定宽度测高度（宽度固定后，weight=1 的 child 才得到正确宽度与换行）。
+            // 第二步:用已确定宽度测高度(宽度固定后,weight=1 的 child 才得到正确宽度与换行)。
             int wSpec2 = android.view.View.MeasureSpec.makeMeasureSpec(contentW, android.view.View.MeasureSpec.EXACTLY);
             int hSpec2 = android.view.View.MeasureSpec.makeMeasureSpec(maxH, android.view.View.MeasureSpec.AT_MOST);
             content.measure(wSpec2, hSpec2);
@@ -7405,14 +8653,14 @@ private void showUaGroupDialog(final Context ctx) {
             pop.setContentView(sv);
             pop.setWidth(w);
             pop.setHeight(h);
-            // 裁剪关闭（API 21+），避免系统自动裁剪弹窗导致高度丢失。
+            // 裁剪关闭(API 21+),避免系统自动裁剪弹窗导致高度丢失。
             try { pop.setClippingEnabled(false); } catch (Throwable ignored) {}
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] wrapWithScroll error: " + t);
         }
     }
 
-    /** 主线程安全地显示弹窗，锚点失效时兜底定位到屏幕右上。锚点在屏幕下半时向上展开。 */
+    /** 主线程安全地显示弹窗,锚点失效时兜底定位到屏幕右上。锚点在屏幕下半时向上展开。 */
     private void showPopup(final android.widget.PopupWindow pop, final android.view.View anchor, final Context ctx) {
         final int offY = dp(ctx, 6);
         final Runnable run = new Runnable() {
@@ -7420,7 +8668,7 @@ private void showUaGroupDialog(final Context ctx) {
             public void run() {
                 try {
                     if (anchor != null && anchor.getWindowToken() != null) {
-                        // 判断锚点位置：在屏幕下半部则向上展开，避免底部工具栏锚点导致弹窗被屏幕底部截断。
+                        // 判断锚点位置:在屏幕下半部则向上展开,避免底部工具栏锚点导致弹窗被屏幕底部截断。
                         int[] loc = new int[2];
                         anchor.getLocationOnScreen(loc);
                         int screenH = ctx.getResources().getDisplayMetrics().heightPixels;
@@ -7462,7 +8710,7 @@ private void showUaGroupDialog(final Context ctx) {
         void onItem(int index);
     }
 
-    /** 弹出「当前页面生效脚本」列表（锚定到图标下方）。 */
+    /** 弹出「当前页面生效脚本」列表(锚定到图标下方)。 */
     private void showUserscriptScriptsPopup(final Object layoutObj, ClassLoader cl, final android.view.View anchor) {
         try {
             String url = null;
@@ -7478,7 +8726,7 @@ private void showUaGroupDialog(final Context ctx) {
             if (url == null) url = sCurrentUrl;
             if (terrace == null && sCurrentRealTab != null) terrace = sCurrentRealTab;
 
-            // 加载匹配当前页面的脚本（含 fileName/enabled，供开关使用）。
+            // 加载匹配当前页面的脚本(含 fileName/enabled,供开关使用)。
             final java.util.List<UserscriptMeta> matched = new java.util.ArrayList<UserscriptMeta>();
             java.util.List<UserscriptMeta> metas = loadUserscripts();
             for (UserscriptMeta m : metas) {
@@ -7507,7 +8755,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 带开关的脚本列表弹窗：每行 = 脚本名（可换行） + 启用开关。 */
+    /** 带开关的脚本列表弹窗:每行 = 脚本名(可换行) + 启用开关。 */
     private void showScriptSwitchList(final android.view.View anchor, final String title,
                                       final java.util.List<UserscriptMeta> scripts,
                                       final com.sbplus.browser.MainHook.ItemClickListener onItem) {
@@ -7575,7 +8823,7 @@ private void showUaGroupDialog(final Context ctx) {
                     }
                 });
 
-                // 开关在前，名字在后；开关与名字之间留 12dp 空隙。
+                // 开关在前,名字在后;开关与名字之间留 12dp 空隙。
                 row.addView(sw);
                 android.widget.LinearLayout.LayoutParams nameLp = new android.widget.LinearLayout.LayoutParams(
                         0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
@@ -7600,7 +8848,7 @@ private void showUaGroupDialog(final Context ctx) {
             pop.setFocusable(true);
             pop.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(BG_POP));
             popRef[0] = pop;
-            // 包一层 ScrollView，限制最大高度为屏幕 60%，过时可滚动、避免末尾项被截断。
+            // 包一层 ScrollView,限制最大高度为屏幕 60%,过时可滚动、避免末尾项被截断。
             wrapWithScroll(pop, ctx, root);
             showPopup(pop, anchor, ctx);
         } catch (Throwable t) {
@@ -7608,7 +8856,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 弹出某脚本在当前页面注册的菜单命令列表（锚定到图标下方），点命令触发回调。 */
+    /** 弹出某脚本在当前页面注册的菜单命令列表(锚定到图标下方),点命令触发回调。 */
     private void showUserscriptMenuCommandPopup(final String scriptName, final Object terrace, final android.view.View anchor) {
         try {
             if (terrace == null) {
@@ -7617,7 +8865,7 @@ private void showUaGroupDialog(final Context ctx) {
             }
             final String tag = quoteJsonString(scriptName);
             final String js = "JSON.stringify((window.__sbplus_menus__&&window.__sbplus_menus__[" + tag + "]||[]).map(function(m){return m.n;}));";
-            // 调试：同时打所有 tag 和本脚本 tag。
+            // 调试:同时打所有 tag 和本脚本 tag。
             final String dbgJs = "JSON.stringify(Object.keys(window.__sbplus_menus__||{}))+'|'+" + tag + "+'|'+JSON.stringify(window.__sbplus_menus__||{})+'|DBG:'+JSON.stringify(window.__sbplus_dbg__||[])";
             evaluateJsWithResult(terrace, dbgJs, new com.sbplus.browser.MainHook.JsResultListener() {
                 @Override public void onResult(String r) { XposedBridge.log("[SBPlus] menus dbg: " + r); }
@@ -7629,7 +8877,7 @@ private void showUaGroupDialog(final Context ctx) {
                     try {
                         final java.util.List<String> cmdNames = new java.util.ArrayList<String>();
                         try {
-                            // Terrace 对字符串返回值多做了一层 JSON 编码（result 形如 "[\"...\"]"），先解一层。
+                            // Terrace 对字符串返回值多做了一层 JSON 编码(result 形如 "[\"...\"]"),先解一层。
                             String raw = result;
                             try {
                                 Object tmp = new org.json.JSONTokener(raw).nextValue();
@@ -7669,7 +8917,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 用 Terrace 执行一段 JS，并通过回调拿字符串结果（listener 可空）。 */
+    /** 用 Terrace 执行一段 JS,并通过回调拿字符串结果(listener 可空)。 */
     private void evaluateJsWithResult(Object terrace, final String js, final com.sbplus.browser.MainHook.JsResultListener listener) {
         try {
             Class<?> cbCls = XposedHelpers.findClass("com.sec.terrace.TerraceJavaScriptCallback", sModuleClassLoader);
@@ -7720,6 +8968,34 @@ private void showUaGroupDialog(final Context ctx) {
         return defPx;
     }
 
+    /** 网页文字/背景主题: 页面加载完成后注入 CSS(S_WEB_TEXT/S_WEB_BG)。 */
+    private void injectWebTheme(Object tabEventHandlerObj, String url) {
+        try {
+            if (!isThemeActive()) return;
+            android.content.Context ctx = sAppContext;
+            if (ctx == null) return;
+            int wtext = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_WEB_TEXT);
+            int wbg = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_WEB_BG);
+            if (wtext == -1 && wbg == -1) return;
+            Object tab = XposedHelpers.getObjectField(tabEventHandlerObj, "mTab");
+            if (tab == null) return;
+            Object realTab = XposedHelpers.callMethod(tab, "getTab");
+            if (realTab == null) return;
+            String css = buildWebThemeCss(wtext, wbg);
+            final String js = "(function(){" +
+                    "var e=document.getElementById('sbplusTheme');" +
+                    "if(e){e.parentNode.removeChild(e);}" +
+                    "var s=document.createElement('style');s.id='sbplusTheme';" +
+                    "s.textContent='" + css + "';" +
+                    "(document.head||document.documentElement).appendChild(s);" +
+                    "})();";
+            evaluateJsWithResult(realTab, js, null);
+            XposedBridge.log("[SBPlus] web theme injected url=" + url + " text=#" + Integer.toHexString(wtext) + " bg=#" + Integer.toHexString(wbg));
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] injectWebTheme error: " + t);
+        }
+    }
+
     private void injectUserscripts(Object tabEventHandlerObj, String url) {
         XposedBridge.log("[SBPlus] injectUserscripts ENTER url=" + url + " enabled=" + isUserscriptEnabled());
         if (!isUserscriptEnabled()) return;
@@ -7735,8 +9011,8 @@ private void showUaGroupDialog(final Context ctx) {
             String curUrl = (String) XposedHelpers.callMethod(realTab, "getUrl");
             if (curUrl == null) curUrl = url;
 
-            // 脚本源站点：无条件注入 GM API，伪造“脚本管理器已安装”，
-            // 让 ScriptCat/GreasyFork 的“安装”按钮走正常下载路径而不弹引导。
+            // 脚本源站点:无条件注入 GM API,伪造"脚本管理器已安装",
+            // 让 ScriptCat/GreasyFork 的"安装"按钮走正常下载路径而不弹引导。
             if (isSourceSite) {
                 injectJs(realTab, GM_API_JS);
                 XposedBridge.log("[SBPlus] GM API injected to source site: " + curUrl);
@@ -7760,9 +9036,9 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    // ================= 资源嗅探（音频/视频下载） =================
+    // ================= 资源嗅探(音频/视频下载) =================
 
-    /** 页面嗅探 JS：扫描 <audio>/<video> 元素 + 已加载媒体资源，上报给 __sbplus__.reportMedia。 */
+    /** 页面嗅探 JS:扫描 <audio>/<video> 元素 + 已加载媒体资源,上报给 __sbplus__.reportMedia。 */
         private static final String SNIFF_JS =
         "(function(){var W=window;var st;var out=[];" +
         "try{st=W.__sbplusSniffStore__;}catch(e){st=null;}" +
@@ -7806,12 +9082,12 @@ private void showUaGroupDialog(final Context ctx) {
         "var r=JSON.stringify(st.list);if(W.__sbplus__){try{W.__sbplus__.reportMedia(r);}catch(e){}}return r;" +
         "})();";
 
-    /** 入口：嗅探当前页面媒体资源。返回 true 表示已触发。 */
-    /** 从 View 的 context 链向上找 Activity（ContextWrapper 递归）。 */
+    /** 入口:嗅探当前页面媒体资源。返回 true 表示已触发。 */
+    /** 从 View 的 context 链向上找 Activity(ContextWrapper 递归)。 */
     private android.app.Activity resolveActivityFromView(android.view.View v) {
         try {
             if (v == null) return null;
-            // 1) 沿 view 的 context 链（可能含 ContextThemeWrapper/ContextWrapper）
+            // 1) 沿 view 的 context 链(可能含 ContextThemeWrapper/ContextWrapper)
             android.content.Context c = v.getContext();
             java.util.Set<android.content.Context> seen = new java.util.HashSet<android.content.Context>();
             while (c instanceof android.content.Context) {
@@ -7847,9 +9123,9 @@ private void showUaGroupDialog(final Context ctx) {
                 toastShort(T("没有找到当前页面", "No active page found"));
                 return false;
             }
-            // 确保 JS 桥已注册（嗅探独立于油猴开关）
+            // 确保 JS 桥已注册(嗅探独立于油猴开关)
             registerJsBridgeForSniff(sCurrentRealTab);
-            // 标记"等待中"，设置 2s 超时
+            // 标记"等待中",设置 2s 超时
             synchronized (sSniffLock) {
                 sSniffedMediaJson = null;
                 sSniffPending = true;
@@ -7875,7 +9151,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 确保嗅探用 JS 桥已注入到 realTab（幂等）。 */
+    /** 确保嗅探用 JS 桥已注入到 realTab(幂等)。 */
     private void registerJsBridgeForSniff(Object realTab) {
         try {
             XposedHelpers.callMethod(realTab, "addJavaScriptInterface", new SbplusJsBridge(), "__sbplus__");
@@ -7884,11 +9160,11 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 注入嗅探 JS 并用 evaluateJavascript 返回值回调拿结果（不依赖 JS 桥）。 */
+    /** 注入嗅探 JS 并用 evaluateJavascript 返回值回调拿结果(不依赖 JS 桥)。 */
     private void injectSniffJs(final Object realTab) {
         try {
-            // Tab 类没有 Android 的 evaluateJavascript(ValueCallback<String>)，
-            // 用三星自己的 evaluateJavaScript(String, TerraceJavaScriptCallback)（与油猴注入同一机制）。
+            // Tab 类没有 Android 的 evaluateJavascript(ValueCallback<String>),
+            // 用三星自己的 evaluateJavaScript(String, TerraceJavaScriptCallback)(与油猴注入同一机制)。
             final java.util.concurrent.atomic.AtomicBoolean delivered = new java.util.concurrent.atomic.AtomicBoolean(false);
             final MainHook self = this;
             com.sbplus.browser.MainHook.JsResultListener lsn = new com.sbplus.browser.MainHook.JsResultListener() {
@@ -7905,7 +9181,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 处理嗅探 JS 返回值（可能来自 TerraceJavaScriptCallback 或 reportMedia 桥）。 */
+    /** 处理嗅探 JS 返回值(可能来自 TerraceJavaScriptCallback 或 reportMedia 桥)。 */
     private void handleSniffResult(final String raw) {
         try {
             XposedBridge.log("[SBPlus] sniff result RAW head: " + (raw == null ? "null" : raw.substring(0, Math.min(120, raw.length()))));
@@ -7936,13 +9212,13 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
 
-    /** SbplusJsBridge.reportMedia 回调入口（静态）。 */
+    /** SbplusJsBridge.reportMedia 回调入口(静态)。 */
     public static void onSniffedMedia(String jsons) {
         try {
             XposedBridge.log("[SBPlus] onSniffedMedia got: " + (jsons == null ? "null" : jsons.length() + " chars"));
             if (jsons == null) return;
             synchronized (sSniffLock) {
-                if (!sSniffPending) return;   // 已被另一通道或超时处理，去重
+                if (!sSniffPending) return;   // 已被另一通道或超时处理,去重
             }
             final String data = jsons;
             final MainHook inst = sInstance;
@@ -7957,7 +9233,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 从 URL 提取扩展名（小写，带点），取不到返回 type 默认。 */
+    /** 从 URL 提取扩展名(小写,带点),取不到返回 type 默认。 */
     private String parseExt(String url, String type) {
         try {
             String path = url.split("[?#]")[0];
@@ -7981,7 +9257,7 @@ private void showUaGroupDialog(final Context ctx) {
         } catch (Throwable ignored) { return "?"; }
     }
 
-    /** 从 URL 提取扩展名+清晰度标签（如 720P），用于标题后缀。 */
+    /** 从 URL 提取扩展名+清晰度标签(如 720P),用于标题后缀。 */
     private String videoQuality(String url, int vW, int vH) {
         try {
             String u = url.toLowerCase();
@@ -7995,7 +9271,7 @@ private void showUaGroupDialog(final Context ctx) {
         return "";
     }
 
-    /** 批量下载：选中项 <= 10 逐个加入；> 10 打包成 zip 后加入。 */
+    /** 批量下载:选中项 <= 10 逐个加入;> 10 打包成 zip 后加入。 */
     private void downloadMany(final java.util.List<Integer> idxList,
                               final java.util.List<String> urls,
                               final java.util.List<String> types,
@@ -8074,11 +9350,11 @@ private void showUaGroupDialog(final Context ctx) {
             } catch (Throwable t) {
                 XposedBridge.log("[SBPlus] m3u8 branch error: " + t);
             }
-            // ---- 需求2: 分段(视频音频)自动识别合并，与包装zip不冲突 ----
+            // ---- 需求2: 分段(视频音频)自动识别合并,与包装zip不冲突 ----
             try {
                 java.util.List<java.util.List<Integer>> groups = groupSegments(idxList, urls, types);
                 if (groups != null && !groups.isEmpty()) {
-                    // 拆分出被合并的分片索引，以及剩余非分段项
+                    // 拆分出被合并的分片索引,以及剩余非分段项
                     java.util.Set<Integer> mergedSet = new java.util.HashSet<Integer>();
                     for (java.util.List<Integer> g : groups) for (Integer i : g) mergedSet.add(i);
                     java.util.List<Integer> rest = new java.util.ArrayList<Integer>();
@@ -8107,7 +9383,7 @@ private void showUaGroupDialog(final Context ctx) {
                                     toastShort(T("分段合成失败", "Merge failed"));
                                 }
                             }});
-                            // 剩余非分段项：重新交由 downloadMany 自身的逻辑处理（含 >10 打包 zip）
+                            // 剩余非分段项:重新交由 downloadMany 自身的逻辑处理(含 >10 打包 zip)
                             if (hasRest && !fRest.isEmpty()) {
                                 try { downloadMany(fRest, fUrls, fTypes, fTitles); } catch (Throwable t) { XposedBridge.log("[SBPlus] rest download error: " + t); }
                             }
@@ -8178,7 +9454,7 @@ private void showUaGroupDialog(final Context ctx) {
                                     it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
                                     try { sAppContext.startActivity(it); }
                                     catch (Throwable te) {
-                                        toastShort(T("打包完成: 成功 " + dOk + " 失败 " + dFail + "，文件在 " + zf.getAbsolutePath(),
+                                        toastShort(T("打包完成: 成功 " + dOk + " 失败 " + dFail + ",文件在 " + zf.getAbsolutePath(),
                                                 "ZIP done: ok " + dOk + " fail " + dFail + " at " + zf.getAbsolutePath()));
                                     }
                                     toastShort(T("打包完成: 成功 " + dOk + " 失败 " + dFail, "ZIP done: ok " + dOk + " fail " + dFail));
@@ -8197,9 +9473,9 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    
-    /** 展示嗅探结果对话框；用户选择媒体后 dispatch 到第三方下载器。 */
-    /** 需求2: 识别分段组。返回 group 列表（每个 group 是 idxList 中属于同一分段视频的多个索引，按序号排序）。*/
+
+    /** 展示嗅探结果对话框;用户选择媒体后 dispatch 到第三方下载器。 */
+    /** 需求2: 识别分段组。返回 group 列表(每个 group 是 idxList 中属于同一分段视频的多个索引,按序号排序)。*/
     private java.util.List<java.util.List<Integer>> groupSegments(final java.util.List<Integer> idxList,
                                                                   final java.util.List<String> urls,
                                                                   final java.util.List<String> types) {
@@ -8235,7 +9511,7 @@ private void showUaGroupDialog(final Context ctx) {
         return result;
     }
 
-    /** 返回 {base, seq}。若 URL 是分段 m4s 则 base!=null；否则 base==null。 */
+    /** 返回 {base, seq}。若 URL 是分段 m4s 则 base!=null;否则 base==null。 */
     private String[] segmentInfo(String url) {
         try {
             if (url == null) return new String[]{null, "0"};
@@ -8246,14 +9522,14 @@ private void showUaGroupDialog(final Context ctx) {
                     && !lower.endsWith(".ogg") && !lower.endsWith(".opus")) {
                 return new String[]{null, "0"};
             }
-            // 去掉扩展名后，找末尾的序号模式: -N / _N
+            // 去掉扩展名后,找末尾的序号模式: -N / _N
             String noExt = path.substring(0, path.lastIndexOf('.'));
-            // 匹配末尾 "-数字" 或 "_数字" (可以是 _数字_数字 等，取最后一段数字)
+            // 匹配末尾 "-数字" 或 "_数字" (可以是 _数字_数字 等,取最后一段数字)
             java.util.regex.Matcher mm = java.util.regex.Pattern.compile("([-_])(\\d+)$").matcher(noExt);
             if (mm.find()) {
                 String base = noExt.substring(0, mm.start());
                 String seq = mm.group(2);
-                // 排除: base 为空 或 base 本身就是纯数字编号（如 foo/123/ ）不构成分段
+                // 排除: base 为空 或 base 本身就是纯数字编号(如 foo/123/ )不构成分段
                 if (base.isEmpty()) return new String[]{null, "0"};
                 return new String[]{base, seq};
             }
@@ -8263,7 +9539,7 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    /** 下载一个分段组的所有分片，按顺序拼接保存到 Download/SBPlus/*。返回输出文件或 null。 */
+    /** 下载一个分段组的所有分片,按顺序拼接保存到 Download/SBPlus/*。返回输出文件或 null。 */
     /** 判断 URL 是否 m3u8 播放列表。 */
     private boolean isM3u8Url(String url) {
         try {
@@ -8499,21 +9775,21 @@ private void showUaGroupDialog(final Context ctx) {
             final android.widget.RadioGroup modeG = new android.widget.RadioGroup(act);
             modeG.setOrientation(android.widget.RadioGroup.VERTICAL);
             final android.widget.RadioButton rInternal = new android.widget.RadioButton(act);
-            rInternal.setText(T("内置下载器（多线程+MP4，推荐）", "Built-in (multi-thread + MP4, recommended)"));
+            rInternal.setText(T("内置下载器(多线程+MP4,推荐)", "Built-in (multi-thread + MP4, recommended)"));
             final android.widget.RadioButton rExternal = new android.widget.RadioButton(act);
-            rExternal.setText(T("转到外部下载器（ADM 等）", "External downloader (ADM etc.)"));
+            rExternal.setText(T("转到外部下载器(ADM 等)", "External downloader (ADM etc.)"));
             modeG.addView(rInternal); modeG.addView(rExternal);
             if ("external".equals(curMode)) rExternal.setChecked(true); else rInternal.setChecked(true);
             root.addView(modeG);
             android.widget.TextView modeHint = new android.widget.TextView(act);
-            modeHint.setText(T("内置：嗅探后多线程下载并转 MP4；外部：转交给已设置的下载器连接", "Built-in: download + convert MP4; External: hand off to configured downloader"));
+            modeHint.setText(T("内置:嗅探后多线程下载并转 MP4;外部:转交给已设置的下载器连接", "Built-in: download + convert MP4; External: hand off to configured downloader"));
             modeHint.setTextSize(11); modeHint.setTextColor(0xFF888888);
             root.addView(modeHint);
 
             // 线程数
             android.widget.TextView threadsLbl = new android.widget.TextView(act);
-            threadsLbl.setText(T("分片下载线程数（1-32）", "Download threads (1-32)"));
-            threadsLbl.setTextSize(14); 
+            threadsLbl.setText(T("分片下载线程数(1-32)", "Download threads (1-32)"));
+            threadsLbl.setTextSize(14);
             android.widget.LinearLayout.LayoutParams tlLp = new android.widget.LinearLayout.LayoutParams(-1, -2);
             tlLp.topMargin = pad;
             root.addView(threadsLbl, tlLp);
@@ -8524,7 +9800,7 @@ private void showUaGroupDialog(final Context ctx) {
 
             // 并行任务数
             android.widget.TextView parLbl = new android.widget.TextView(act);
-            parLbl.setText(T("同时下载的任务数（1-10）", "Parallel tasks (1-10)"));
+            parLbl.setText(T("同时下载的任务数(1-10)", "Parallel tasks (1-10)"));
             parLbl.setTextSize(14);
             android.widget.LinearLayout.LayoutParams plLp = new android.widget.LinearLayout.LayoutParams(-1, -2);
             plLp.topMargin = pad;
@@ -8691,7 +9967,7 @@ private void showUaGroupDialog(final Context ctx) {
             it.setDataAndType(uri, mime);
             it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
             try { act.startActivity(it); }
-            catch (Throwable t2) { toastShort(T("无法打开，可用文件管理器打开", "Cannot open")); }
+            catch (Throwable t2) { toastShort(T("无法打开,可用文件管理器打开", "Cannot open")); }
         } catch (Throwable t) { XposedBridge.log("[SBPlus] openDownloadedFile: " + t); }
     }
 
@@ -8700,7 +9976,7 @@ private void showUaGroupDialog(final Context ctx) {
         try {
             new android.app.AlertDialog.Builder(act)
                 .setTitle(T("删除下载", "Delete download"))
-                .setMessage(T("同时删除已下载的文件？", "Also delete the downloaded file?"))
+                .setMessage(T("同时删除已下载的文件?", "Also delete the downloaded file?"))
                 .setPositiveButton(T("连同文件删除", "Delete file too"), new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
                         try {
@@ -9163,7 +10439,7 @@ private boolean showMediaDialog(String json) {
             }
             final int n = urls.size();
             final boolean[] checked = new boolean[n];
-            for (int i = 0; i < n; i++) checked[i] = false;  // 默认不全选，用户手动全选
+            for (int i = 0; i < n; i++) checked[i] = false;  // 默认不全选,用户手动全选
             android.app.Activity act0 = sSniffActivity != null ? sSniffActivity
                     : (sCurrentActivity != null ? sCurrentActivity
                     : (sAppContext instanceof android.app.Activity ? (android.app.Activity) sAppContext : null));
@@ -9206,7 +10482,7 @@ private boolean showMediaDialog(String json) {
             tabRow.addView(tvTab1, t1p); tabRow.addView(tvTab2, t2p); tabRow.addView(tvTab3, t3p);
             root.addView(tabRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
 
-            // 已选数量状态条（每次勾选/取消/全选时刷新）
+            // 已选数量状态条(每次勾选/取消/全选时刷新)
             final android.widget.TextView tvSelCount = new android.widget.TextView(act);
             tvSelCount.setTextColor(0xFF1E88E5);
             tvSelCount.setTextSize(13);
@@ -9220,12 +10496,12 @@ private boolean showMediaDialog(String json) {
             root.addView(tvSelCount, new android.widget.LinearLayout.LayoutParams(-1, -2));
             updateSelCount.run();
 
-            // 内容容器（用 FrameLayout 承载可见页）
+            // 内容容器(用 FrameLayout 承载可见页)
             final android.widget.FrameLayout content = new android.widget.FrameLayout(act);
             final int contentH = (int)(380 * act.getResources().getDisplayMetrics().density);
             root.addView(content, new android.widget.LinearLayout.LayoutParams(-1, contentH));
 
-            // 三个页面（图片 GridView / 音视频 ListView）
+            // 三个页面(图片 GridView / 音视频 ListView)
             final android.widget.GridView gridImages = new android.widget.GridView(act);
             gridImages.setNumColumns(3);
             gridImages.setStretchMode(android.widget.GridView.STRETCH_COLUMN_WIDTH);
@@ -9248,7 +10524,7 @@ private boolean showMediaDialog(String json) {
                 else vidIdx.add(i);
             }
 
-            // ===== GridView 适配器：图片缩略图 + WxH + 大小 =====
+            // ===== GridView 适配器:图片缩略图 + WxH + 大小 =====
             android.widget.BaseAdapter gridAdp = new android.widget.BaseAdapter() {
                 @Override public int getCount() { return imgIdx.size(); }
                 @Override public Object getItem(int p) { return imgIdx.get(p); }
@@ -9263,7 +10539,7 @@ private boolean showMediaDialog(String json) {
                         cell.setPadding(2,2,2,2);
                     }
                     cell.removeAllViews();
-                    // ⚠️ 关键修复：在添加子view之前就设置cell可点击（解决第一列/第三列难点问题）
+                    // ⚠️ 关键修复:在添加子view之前就设置cell可点击(解决第一列/第三列难点问题)
                     cell.setClickable(true);
                     cell.setFocusable(true);
                     // 缩略图
@@ -9272,7 +10548,7 @@ private boolean showMediaDialog(String json) {
                     iv.setBackgroundColor(0xFF222222);
                     final String u = urls.get(realIdx);
                     iv.setTag("loading");
-                    // 固定格子高度（防不同尺寸遮住/错位）
+                    // 固定格子高度(防不同尺寸遮住/错位)
                     final int cellH = (int)(150 * act.getResources().getDisplayMetrics().density);
                     cell.setLayoutParams(new android.widget.GridView.LayoutParams(-1, cellH));
                     // 背景线程下载缩略图
@@ -9291,15 +10567,15 @@ private boolean showMediaDialog(String json) {
                         }
                     }).start();
                     cell.addView(iv, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                    // 选中遮罩层：半透明蓝覆盖在缩略图上，让选中状态一眼可见
+                    // 选中遮罩层:半透明蓝覆盖在缩略图上,让选中状态一眼可见
                     final android.view.View selOverlay = new android.view.View(act);
                     selOverlay.setBackgroundColor(0x661E88E5);
                     selOverlay.setClickable(false);
-                    selOverlay.setFocusable(false);  // 禁用点击，避免拦截 cell.onClick
+                    selOverlay.setFocusable(false);  // 禁用点击,避免拦截 cell.onClick
                     selOverlay.setFocusable(false);
                     selOverlay.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                     cell.addView(selOverlay, new android.widget.FrameLayout.LayoutParams(-1, -1));
-                    // 底部信息条：WxH + 大小 + 格式
+                    // 底部信息条:WxH + 大小 + 格式
                     final android.widget.TextView info = new android.widget.TextView(act);
                     info.setTextColor(0xFFFFFFFF);
                     info.setTextSize(10);
@@ -9311,7 +10587,7 @@ private boolean showMediaDialog(String json) {
                     info.setText(dim + "  " + sizeStr + ext);
                     android.widget.FrameLayout.LayoutParams infop = new android.widget.FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM);
                     cell.addView(info, infop);
-                    // HEAD 请求大小（后台）
+                    // HEAD 请求大小(后台)
                     final String fu = urls.get(realIdx);
                     new Thread(new Runnable() {
                         @Override public void run() {
@@ -9325,7 +10601,7 @@ private boolean showMediaDialog(String json) {
                             } catch (Throwable ignored) {}
                         }
                     }).start();
-                    // 选中状态：点击切换 （蓝色边框 + 右上角勾）
+                    // 选中状态:点击切换 (蓝色边框 + 右上角勾)
                     final android.widget.FrameLayout fcell = cell;
                     final android.widget.TextView chkBadge = new android.widget.TextView(act);
                     chkBadge.setText("✓");
@@ -9334,7 +10610,7 @@ private boolean showMediaDialog(String json) {
                     chkBadge.setGravity(android.view.Gravity.CENTER);
                     chkBadge.setBackgroundColor(0xFF1E88E5);
                     chkBadge.setClickable(false);
-                    chkBadge.setFocusable(false);  // 禁用点击，避免拦截 cell.onClick
+                    chkBadge.setFocusable(false);  // 禁用点击,避免拦截 cell.onClick
                     chkBadge.setFocusable(false);
                     chkBadge.setVisibility(checked[realIdx] ? android.view.View.VISIBLE : android.view.View.GONE);
                     android.widget.FrameLayout.LayoutParams chkP = new android.widget.FrameLayout.LayoutParams(dp(act,20), dp(act,20), android.view.Gravity.TOP | android.view.Gravity.RIGHT);
@@ -9350,14 +10626,14 @@ private boolean showMediaDialog(String json) {
                             updateSelCount.run();
                         } catch (Throwable ignored) {}
                     }};
-                    // 禁用所有子view的触摸拦截（解决第一列难以点击的问题）
+                    // 禁用所有子view的触摸拦截(解决第一列难以点击的问题)
                     iv.setClickable(false);
                     iv.setFocusable(false);
                     selOverlay.setClickable(false);
                     selOverlay.setFocusable(false);
                     chkBadge.setClickable(false);
                     chkBadge.setFocusable(false);
-                    // 强制拦截触摸事件（解决子view在某些列阻断点击的问题）
+                    // 强制拦截触摸事件(解决子view在某些列阻断点击的问题)
 
                     cell.setOnTouchListener(new android.view.View.OnTouchListener() {
 
@@ -9369,7 +10645,7 @@ private boolean showMediaDialog(String json) {
 
                             }
 
-                            return true; // 消费事件，不让子view拦截
+                            return true; // 消费事件,不让子view拦截
 
                         }
 
@@ -9387,7 +10663,7 @@ private boolean showMediaDialog(String json) {
             };
             gridImages.setAdapter(gridAdp);
 
-            // ===== ListView 适配器（视频/音频） =====
+            // ===== ListView 适配器(视频/音频) =====
             final android.widget.BaseAdapter adpVideo = new android.widget.BaseAdapter() {
                 @Override public int getCount() { return vidIdx.size(); }
                 @Override public Object getItem(int p) { return vidIdx.get(p); }
@@ -9406,12 +10682,12 @@ private boolean showMediaDialog(String json) {
                     row.removeAllViews();
                     final android.widget.CheckBox cb = new android.widget.CheckBox(act);
                     cb.setChecked(checked[realIdx]);
-                    // 禁用 CheckBox 自身点击，统一由行 onClick 处理勾选，避免双重翻转导致勾不上
+                    // 禁用 CheckBox 自身点击,统一由行 onClick 处理勾选,避免双重翻转导致勾不上
                     cb.setClickable(false);
                     cb.setFocusable(false);
                     row.addView(cb, new android.widget.LinearLayout.LayoutParams(-2, -2));
 
-                    // 缩略图占位（视频封面通常拿不到，用 🎬 图标 + 深色底代表）
+                    // 缩略图占位(视频封面通常拿不到,用 🎬 图标 + 深色底代表)
                     final android.widget.TextView thumb = new android.widget.TextView(act);
                     thumb.setText("\uD83C\uDFAC");
                     thumb.setTextSize(26);
@@ -9449,7 +10725,7 @@ private boolean showMediaDialog(String json) {
                     tx3.setEllipsize(android.text.TextUtils.TruncateAt.END);
                     tx3.setTextColor(0xFF999999);
                     col.addView(tx3, new android.widget.LinearLayout.LayoutParams(-1, -2));
-                    // 大小（后台 HEAD）
+                    // 大小(后台 HEAD)
                     new Thread(new Runnable() {
                         @Override public void run() {
                             try {
@@ -9464,7 +10740,7 @@ private boolean showMediaDialog(String json) {
                     }).start();
                     row.addView(col, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
 
-                    // 整行点击切换选中 （选中浅蓝背景 + 勾框）
+                    // 整行点击切换选中 (选中浅蓝背景 + 勾框)
                     row.setOnClickListener(new android.view.View.OnClickListener() {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx]; cb.setChecked(checked[realIdx]);
@@ -9494,11 +10770,11 @@ private boolean showMediaDialog(String json) {
                     row.removeAllViews();
                     final android.widget.CheckBox cb = new android.widget.CheckBox(act);
                     cb.setChecked(checked[realIdx]);
-                    // 禁用 CheckBox 自身点击，统一由行 onClick 处理勾选，避免双重翻转导致勾不上
+                    // 禁用 CheckBox 自身点击,统一由行 onClick 处理勾选,避免双重翻转导致勾不上
                     cb.setClickable(false);
                     cb.setFocusable(false);
                     row.addView(cb, new android.widget.LinearLayout.LayoutParams(-2, -2));
-                    // ♪ 图标（不下载缩略图）
+                    // ♪ 图标(不下载缩略图)
                     final android.widget.TextView icon = new android.widget.TextView(act);
                     icon.setText("\u266A");
                     icon.setTextSize(26);
@@ -9534,7 +10810,7 @@ private boolean showMediaDialog(String json) {
                     tx3.setEllipsize(android.text.TextUtils.TruncateAt.END);
                     tx3.setTextColor(0xFF999999);
                     col.addView(tx3, new android.widget.LinearLayout.LayoutParams(-1, -2));
-                    // 大小（后台 HEAD）
+                    // 大小(后台 HEAD)
                     new Thread(new Runnable() {
                         @Override public void run() {
                             try {
@@ -9548,7 +10824,7 @@ private boolean showMediaDialog(String json) {
                         }
                     }).start();
                     row.addView(col, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
-                    // 整行点击切换选中 （选中浅蓝背景 + 勾框）
+                    // 整行点击切换选中 (选中浅蓝背景 + 勾框)
                     row.setOnClickListener(new android.view.View.OnClickListener() {
                         @Override public void onClick(android.view.View v) {
                             checked[realIdx] = !checked[realIdx]; cb.setChecked(checked[realIdx]);
@@ -9567,7 +10843,7 @@ private boolean showMediaDialog(String json) {
             final Runnable[] showPage = new Runnable[1];
             showPage[0] = new Runnable() {
                 @Override public void run() {
-                    // 占位，下面重新赋值
+                    // 占位,下面重新赋值
                 }
             };
             final int[] curTab = new int[]{0};
@@ -9617,7 +10893,7 @@ private boolean showMediaDialog(String json) {
             listAudio.setOnTouchListener(tabTouch);
             showPage[0].run();
 
-            // 底部按钮：刷新 + 全选/取消全选 + 下载 + 取消
+            // 底部按钮:刷新 + 全选/取消全选 + 下载 + 取消
             final android.widget.LinearLayout btnRow = new android.widget.LinearLayout(act);
             btnRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
             final android.widget.Button btnRefresh = new android.widget.Button(act);
@@ -9639,7 +10915,7 @@ private boolean showMediaDialog(String json) {
             btnAll.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) {
                     allSelected[0] = !allSelected[0];
-                    // 只操作当前tab对应类型的资源（curTab: 0=video, 1=audio, 2=image）
+                    // 只操作当前tab对应类型的资源(curTab: 0=video, 1=audio, 2=image)
                     String currentType = (curTab[0] == 0) ? "video" : ((curTab[0] == 1) ? "audio" : "image");
                     for (int i = 0; i < n; i++) {
                         if (types.get(i).equals(currentType)) {
@@ -9671,8 +10947,8 @@ private boolean showMediaDialog(String json) {
             btnRefresh.setOnClickListener(new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) {
                     try { dlg.dismiss(); } catch (Throwable ignored) {}
-                    // 重新嗅探：必须在主线程执行 evaluateJavaScript，且走 sniffCurrentPage 完整流程
-                    // （注册 JS 桥 + 置 pending + 超时兜底），SNIFF_JS 返回累积全量自动开新面板
+                    // 重新嗅探:必须在主线程执行 evaluateJavaScript,且走 sniffCurrentPage 完整流程
+                    // (注册 JS 桥 + 置 pending + 超时兜底),SNIFF_JS 返回累积全量自动开新面板
                     try { sniffCurrentPage(); } catch (Throwable ignored) {}
                 }
             });
@@ -9684,7 +10960,7 @@ private boolean showMediaDialog(String json) {
         }
     }
 
-    /** 从 URL 后缀解析尺寸，如 @384w_216h_1c.webp -> 384x216 */
+    /** 从 URL 后缀解析尺寸,如 @384w_216h_1c.webp -> 384x216 */
     private String parseDim(String url) {
         try {
             java.util.regex.Matcher m = java.util.regex.Pattern.compile("@(\\d+)w_(\\d+)h").matcher(url);
@@ -9695,7 +10971,7 @@ private boolean showMediaDialog(String json) {
         return "?";
     }
 
-    /** HEAD 请求获取文件大小，返回 "1.2MB"/"350KB"/null */
+    /** HEAD 请求获取文件大小,返回 "1.2MB"/"350KB"/null */
     private String httpHeadSize(String url) {
         try {
             java.net.URL u = new java.net.URL(url);
@@ -9711,7 +10987,7 @@ private boolean showMediaDialog(String json) {
                 conn.disconnect();
                 if (len > 0) return fmtSize(len);
             } else if (code == 405) {
-                // HEAD 不支持则 GET 读前 8KB（只取 Content-Length）
+                // HEAD 不支持则 GET 读前 8KB(只取 Content-Length)
                 conn.disconnect();
                 java.net.HttpURLConnection c2 = (java.net.HttpURLConnection) u.openConnection();
                 c2.setRequestMethod("GET");
@@ -9730,7 +11006,7 @@ private boolean showMediaDialog(String json) {
         return null;
     }
 
-    /** GET 下载字节（缩略图） */
+    /** GET 下载字节(缩略图) */
     private byte[] httpGetBytes(String url) {
         try {
             java.net.URL u = new java.net.URL(url);
@@ -9751,7 +11027,7 @@ private boolean showMediaDialog(String json) {
         } catch (Throwable ignored) { return null; }
     }
 
-    /** 采样解码 Bitmap（避免 OOM） */
+    /** 采样解码 Bitmap(避免 OOM) */
     private android.graphics.Bitmap decodeSampledBitmap(byte[] data, int reqW, int reqH) {
         try {
             android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
@@ -9811,7 +11087,7 @@ private boolean showMediaDialog(String json) {
     }
 
 
-    /** 从 TabEventHandler 对象拿到真实 Tab，并注册 __sbplus__ JS 桥（幂等）。 */
+    /** 从 TabEventHandler 对象拿到真实 Tab,并注册 __sbplus__ JS 桥(幂等)。 */
     private void registerJsBridge(Object tabEventHandlerObj) {
         try {
             if (!isUserscriptEnabled()) { XposedBridge.log("[SBPlus] registerJsBridge: disabled"); return; }
@@ -9826,7 +11102,7 @@ private boolean showMediaDialog(String json) {
         }
     }
 
-    /** 无条件更新当前活动的 realTab（嗅探等不依赖油猴开关的功能使用）。 */
+    /** 无条件更新当前活动的 realTab(嗅探等不依赖油猴开关的功能使用)。 */
     private void updateCurrentRealTab(Object tabEventHandlerObj) {
         try {
             Object tab = XposedHelpers.getObjectField(tabEventHandlerObj, "mTab");
@@ -9839,7 +11115,7 @@ private boolean showMediaDialog(String json) {
     }
 
 
-    /** 从缓存拼接脚本声明的 @require 外部库（主线程调用，只读缓存不做网络）。 */
+    /** 从缓存拼接脚本声明的 @require 外部库(主线程调用,只读缓存不做网络)。 */
     private String loadRequires(UserscriptMeta meta) {
         StringBuilder out = new StringBuilder();
         if (meta.requires == null || meta.requires.isEmpty()) return "";
@@ -9858,7 +11134,7 @@ private boolean showMediaDialog(String json) {
         return out.toString();
     }
 
-    /** 后台线程预下载脚本依赖的 @require 库到缓存；全部就绪后回到主线程执行注入。 */
+    /** 后台线程预下载脚本依赖的 @require 库到缓存;全部就绪后回到主线程执行注入。 */
     private void prefetchRequires(final java.util.List<UserscriptMeta> metas, final String url, final Object realTab) {
         new Thread(new Runnable() {
             @Override public void run() {
@@ -9884,7 +11160,7 @@ private boolean showMediaDialog(String json) {
                             }
                         }
                     }
-                    // 下载 @resource 资源（name + 空格 + url）
+                    // 下载 @resource 资源(name + 空格 + url)
                     for (UserscriptMeta m : metas) {
                         if (!m.matches(url)) continue;
                         if (!isUserscriptFileEnabled(m.fileName)) continue;
@@ -9944,24 +11220,24 @@ private boolean showMediaDialog(String json) {
         return sb.toString();
     }
 
-    /** 生成 JSON 双引号字符串字面量（含外层引号）。 */
+    /** 生成 JSON 双引号字符串字面量(含外层引号)。 */
     private String jsonQuote(String s) {
         if (s == null) return "\"\"";
         String e = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
         return "\"" + e + "\"";
     }
 
-    /** 主线程执行注入：只读缓存拼装 + evaluateJavaScript。 */
+    /** 主线程执行注入:只读缓存拼装 + evaluateJavaScript。 */
     private void doInjectOnMain(java.util.List<UserscriptMeta> metas, String url, Object realTab) {
         try {
-            // 注册 __sbplus__ JS 桥（脚本执行时用 GM_xmlhttpRequest 跨域）。
+            // 注册 __sbplus__ JS 桥(脚本执行时用 GM_xmlhttpRequest 跨域)。
             try {
                 XposedHelpers.callMethod(realTab, "addJavaScriptInterface", new SbplusJsBridge(), "__sbplus__");
             } catch (Throwable t) {
                 XposedBridge.log("[SBPlus] addJavaScriptInterface error: " + t);
             }
 
-            // 一次性拼接注入：@resource 资源 + GM API 引擎 + 逐脚本（@require + tag + 主体）。
+            // 一次性拼接注入:@resource 资源 + GM API 引擎 + 逐脚本(@require + tag + 主体)。
             StringBuilder all = new StringBuilder();
             String resourcesJs = buildResourcesJs();
             if (resourcesJs != null && !resourcesJs.isEmpty()) all.append(resourcesJs);
@@ -9977,8 +11253,8 @@ private boolean showMediaDialog(String json) {
                 anyMatch = true;
                 all.append(loadRequires(m));
                 all.append("\nwindow.__sbplus_current_tag__=").append(jsonQuote(m.name)).append(";\n");
-                // 为每个脚本重绑定带捕获 tag 的 registerMenuCommand（闭包），避免脚本异步
-                // 注册菜单时读到被后续脚本覆盖的全局 current_tag，导致菜单错记到别的脚本名下。
+                // 为每个脚本重绑定带捕获 tag 的 registerMenuCommand(闭包),避免脚本异步
+                // 注册菜单时读到被后续脚本覆盖的全局 current_tag,导致菜单错记到别的脚本名下。
                 all.append("(function(){var __scoped_tag__=").append(jsonQuote(m.name)).append(";");
                 all.append("var __scoped_orig__=window.GM_registerMenuCommand;");
                 all.append("var __scoped_reg__=function(name,fn,acc){try{window.__sbplus_menus__=window.__sbplus_menus__||{};if(!window.__sbplus_menus__[__scoped_tag__])window.__sbplus_menus__[__scoped_tag__]=[];var arr=window.__sbplus_menus__[__scoped_tag__];var found=-1;for(var i=0;i<arr.length;i++){if(arr[i].n===name){found=i;break;}}if(found>=0){arr[found].f=fn;arr[found].id=found;return found;}var id=arr.length;arr.push({n:name,f:fn});window.__sbplus_dbg__=window.__sbplus_dbg__||[];window.__sbplus_dbg__.push('REG:'+name+'@'+__scoped_tag__);return id;}catch(e){return 0;}};");
@@ -10001,7 +11277,7 @@ private boolean showMediaDialog(String json) {
             } catch (Throwable t) { XposedBridge.log("[SBPlus] dump err: " + t); }
             XposedBridge.log("[SBPlus] ALLLEN=" + allJs.length() + " HEAD=" + safeHead(allJs, 200));
             final String[] attempt = new String[]{ allJs };
-            // 确认式注入：注入后 600ms 读回探针，失败则最多重试 3 次（每次间隔递增）。
+            // 确认式注入:注入后 600ms 读回探针,失败则最多重试 3 次(每次间隔递增)。
             final int[] tries = new int[]{ 0 };
             final Runnable[] injectOnceRef = new Runnable[1];
             injectOnceRef[0] = new Runnable() {
@@ -10047,7 +11323,7 @@ private boolean showMediaDialog(String json) {
         }
     }
 
-    /** 是否为脚本源站点（需要伪造脚本管理器）。 */
+    /** 是否为脚本源站点(需要伪造脚本管理器)。 */
     private boolean isScriptSourceSite(String url) {
         if (url == null) return false;
         String u = url.toLowerCase();
@@ -10069,8 +11345,8 @@ private boolean showMediaDialog(String json) {
 
 
     /**
-     * 精简设置页：主开关开启时，hook SettingsFragment.initPreferences()（三星加载完所有
-     * 设置项后），遍历被勾选的 key，findPreference(key).setVisible(false)。
+     * 精简设置页:主开关开启时,hook SettingsFragment.initPreferences()(三星加载完所有
+     * 设置项后),遍历被勾选的 key,findPreference(key).setVisible(false)。
      */
     private void hookCleanSettings(ClassLoader cl) {
         try {
@@ -10095,7 +11371,7 @@ private boolean showMediaDialog(String json) {
                                     }
                                 } catch (Throwable ignored) {}
                             }
-                            // 特殊项：无条件隐藏无 key 的「隐私」分类标题（装饰性空标题）。
+                            // 特殊项:无条件隐藏无 key 的「隐私」分类标题(装饰性空标题)。
                             count += hidePrivacyCategory(frag);
                             XposedBridge.log("[SBPlus] clean settings hidden " + count + " items");
                         }
@@ -10122,7 +11398,7 @@ private boolean showMediaDialog(String json) {
             XposedBridge.log("[SBPlus] shouldShowUpdateCard hook failed: " + t);
         }
 
-        // 特殊项 @search：屏蔽设置页顶部搜索（阻止展开 + 隐藏搜索入口）。
+        // 特殊项 @search:屏蔽设置页顶部搜索(阻止展开 + 隐藏搜索入口)。
         try {
             Class<?> settingsActivity = XposedHelpers.findClass(
                     "com.sec.android.app.sbrowser.settings.SettingsActivity", cl);
@@ -10164,7 +11440,7 @@ private boolean showMediaDialog(String json) {
      * while clicks/long-press stay intact.
      */
 
-    /** 隐藏无 key 的「隐私」分类标题（PreferenceCategory，按 title 遍历匹配）。返回隐藏数量。 */
+    /** 隐藏无 key 的「隐私」分类标题(PreferenceCategory,按 title 遍历匹配)。返回隐藏数量。 */
     private int hidePrivacyCategory(Object frag) {
         int n = 0;
         try {
@@ -10180,7 +11456,7 @@ private boolean showMediaDialog(String json) {
                 String cls = pref.getClass().getName();
                 Object key = XposedHelpers.callMethod(pref, "getKey");
                 XposedBridge.log("[SBPlus]   pref[" + i + "] cls=" + cls + " key=" + key + " title=" + ts);
-                // 匹配「隐私」「Privacy」标题的分类（无 key）。
+                // 匹配「隐私」「Privacy」标题的分类(无 key)。
                 if (!("隐私".equals(ts) || "Privacy".equals(ts))) continue;
                 if (key != null) continue;
                 boolean isCategory = cls.contains("PreferenceCategory");
@@ -10196,9 +11472,9 @@ private boolean showMediaDialog(String json) {
     }
 
     private void hookRegionTouchScroll(ClassLoader cl) {
-        // [已禁用] 早期误判 SeslRecyclerView 会掉 ACTION_MOVE 导致滑不动，
-        // 于是额外 scrollBy 补偿；但实际三星原生滚动正常，补偿造成“双倍滚动→跳动”。
-        // 现今设备原生滚动已可正常工作，这里不再额外补偿。保留方法仅为避免调用处报错。
+        // [已禁用] 早期误判 SeslRecyclerView 会掉 ACTION_MOVE 导致滑不动,
+        // 于是额外 scrollBy 补偿;但实际三星原生滚动正常,补偿造成"双倍滚动→跳动"。
+        // 现今设备原生滚动已可正常工作,这里不再额外补偿。保留方法仅为避免调用处报错。
         XposedBridge.log("[SBPlus] region touch scroll compensation DISABLED (native scroll works)");
     }
 
@@ -10209,7 +11485,7 @@ private boolean showMediaDialog(String json) {
      * feel impossible to scroll. When the region page is active, force AppBarLayout's
      * touch interception / drag handling to yield so the RecyclerView scrolls normally.
      */
-    
+
 
 
 
@@ -10408,6 +11684,19 @@ private boolean showMediaDialog(String json) {
                             Object holder = param.args[0];
                             if (!holderCls2.isInstance(holder)) return;
                             hideGridDecorations(holder);
+                            // 染更多菜单图标: 无条件强制染(不依赖懒判断,防翻页后新 holder 未染色/被覆盖)
+                            try {
+                                Object iv = XposedHelpers.getObjectField(holder, "itemView");
+                                if (iv instanceof android.view.View) {
+                                    java.util.List<android.view.View> ivs = new java.util.ArrayList<>();
+                                    collectAllViews((android.view.View) iv, ivs);
+                                    for (android.view.View v : ivs) {
+                                        if (v instanceof android.widget.ImageView) {
+                                            forceTintImageView((android.widget.ImageView) v);
+                                        }
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
                         } catch (Throwable t) {
                             XposedBridge.log("[SBPlus] grid divider rehide error: " + t);
                         }
@@ -10599,7 +11888,7 @@ private boolean showMediaDialog(String json) {
     private void cacheGridRefs(Object handler, Object recycler, Object adapter) {
         try {
             sGridPage = 0; // menu re-opened: reset pager to first page
-            // NOTE: do NOT reset sPageIndicator here — cacheGridRefs fires far more often
+            // NOTE: do NOT reset sPageIndicator here - cacheGridRefs fires far more often
             // than menu-open (self-heal timer), and resetting it orphaned the dots so the
             // highlight never updated. The indicator re-attaches lazily in
             // ensureIndicator(recycler) instead.
@@ -10791,7 +12080,7 @@ private boolean showMediaDialog(String json) {
 
             // (D) Draw the page-indicator dots directly on the RecyclerView canvas via the
             //     ItemDecoration.onDrawOver hook. This bypasses the LinearLayout weight problem
-            //     (RecyclerView weight=1 squeezes any below-dots to zero) — the dots are painted
+            //     (RecyclerView weight=1 squeezes any below-dots to zero) - the dots are painted
             //     on top of the grid every frame the RecyclerView draws, so they show immediately
             //     on open and follow page changes without any layout/attach timing dependency.
             try {
@@ -10954,7 +12243,7 @@ private boolean showMediaDialog(String json) {
     /** Snap to the current cached page (re-align after smooth scroll settles). */
     private void snapGridToPage(android.view.View rv) {
         try {
-            // A plain tap (no drag/fling) must NOT snap — otherwise tapping an icon
+            // A plain tap (no drag/fling) must NOT snap - otherwise tapping an icon
             // while scrollX sits near a page boundary jumps to another page.
             if (!sDragMoved && !sFlingFired) return;
             sDragMoved = false;
@@ -11032,7 +12321,7 @@ private boolean showMediaDialog(String json) {
                                 Object info = param.args[0];
                                 long guid = (Long) param.args[1];
                                 DownloadMeta meta = extractMeta(info);
-                                // 油猴脚本：总开关开启时，优先拦截 .user.js，自己下载保存，不走下载桥。
+                                // 油猴脚本:总开关开启时,优先拦截 .user.js,自己下载保存,不走下载桥。
                                 boolean isUs = isUserscriptEnabled();
                                 boolean isUjs = isUserScriptUrl(meta.url, meta.fileName);
                                 XposedBridge.log("[SBPlus] pre-download check: enabled=" + isUs + " isUserJs=" + isUjs + " url=" + meta.url);
@@ -11040,7 +12329,7 @@ private boolean showMediaDialog(String json) {
                                     XposedBridge.log("[SBPlus] .user.js detected (pre-download): " + meta.url);
                                     android.widget.Toast.makeText(sAppContext, T("正在安装脚本...", "Installing script..."), android.widget.Toast.LENGTH_SHORT).show();
                                     downloadUserscriptToDir(meta.url);
-                                    // 关闭空白 tab / 告知 native 拒绝下载，避免回退导航。
+                                    // 关闭空白 tab / 告知 native 拒绝下载,避免回退导航。
                                     try {
                                         XposedHelpers.callMethod(param.thisObject, "ignoreDownload", guid, info);
                                     } catch (Throwable ig) {
@@ -11094,7 +12383,7 @@ private boolean showMediaDialog(String json) {
                             try {
                                 Object info = param.args[0];
                                 DownloadMeta meta = extractMeta(info);
-                                // 油猴脚本：拦截 .user.js 下载，自动保存到脚本目录。
+                                // 油猴脚本:拦截 .user.js 下载,自动保存到脚本目录。
                                 if (isUserscriptEnabled() && isUserScriptUrl(meta.url, meta.fileName)) {
                                     XposedBridge.log("[SBPlus] .user.js detected, intercept: " + meta.url);
                                     android.widget.Toast.makeText(sAppContext, T("正在安装脚本...", "Installing script..."), android.widget.Toast.LENGTH_SHORT).show();
@@ -11242,7 +12531,7 @@ private boolean showMediaDialog(String json) {
                     + " cookie=" + (cookie == null ? "null" : "***(" + cookie.length() + " chars)");
         }
     }
-    /** 网络层嗅探：hook 底层网络请求，收集所有媒体资源 URL（包括 iframe 内的）。 */
+    /** 网络层嗅探:hook 底层网络请求,收集所有媒体资源 URL(包括 iframe 内的)。 */
     private void hookNetworkSniff(ClassLoader cl) {
         try {
             // Hook WebViewClient.shouldInterceptRequest - WebView 加载所有资源的入口
@@ -11257,17 +12546,17 @@ private boolean showMediaDialog(String json) {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         try {
                             if (!isSniffEnabled()) return;
-                            
-                            android.webkit.WebResourceRequest request = 
+
+                            android.webkit.WebResourceRequest request =
                                 (android.webkit.WebResourceRequest) param.args[1];
-                            
+
                             if (request != null && request.getUrl() != null) {
                                 String url = request.getUrl().toString();
                                 String type = detectMediaType(url);
-                                
+
                                 if (type != null && !type.isEmpty()) {
                                     sNetworkSniffedUrls.add(url);
-                                    XposedBridge.log("[SBPlus] WebView intercept: " + type + " -> " + 
+                                    XposedBridge.log("[SBPlus] WebView intercept: " + type + " -> " +
                                             url.substring(0, Math.min(100, url.length())));
                                 }
                             }
@@ -11277,62 +12566,62 @@ private boolean showMediaDialog(String json) {
                     }
                 }
             );
-            
+
             XposedBridge.log("[SBPlus] hookNetworkSniff: WebViewClient.shouldInterceptRequest hooked");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] hookNetworkSniff failed: " + t);
         }
     }
-    
-    /** 检测 URL 是否是媒体资源，返回类型（video/audio/image）或 null。 */
+
+    /** 检测 URL 是否是媒体资源,返回类型(video/audio/image)或 null。 */
     private String detectMediaType(String url) {
         try {
             if (url == null || url.isEmpty()) return null;
             String lower = url.toLowerCase();
-            
+
             // 过滤掉明显的非媒体资源
             if (lower.startsWith("data:") || lower.startsWith("blob:")) return null;
             if (lower.contains("/api/") || lower.contains("/analytics")) return null;
             if (lower.contains(".css") || lower.contains(".js") || lower.contains(".json")) return null;
             if (lower.contains(".woff") || lower.contains(".ttf") || lower.contains(".eot")) return null;
-            
-            // 提取路径（去掉查询参数）
+
+            // 提取路径(去掉查询参数)
             String path = lower.split("[?#]")[0];
-            
+
             // 视频格式
             if (path.matches(".*\\.(mp4|m4v|webm|mkv|flv|mov|avi|wmv|mpg|mpeg|3gp|m4s|ts|mpd)$")) {
                 return "video";
             }
-            
+
             // 音频格式
             if (path.matches(".*\\.(mp3|m4a|aac|ogg|opus|wav|flac|wma)$")) {
                 return "audio";
             }
-            
+
             // 图片格式
             if (path.matches(".*\\.(jpe?g|png|gif|webp|bmp|svg|avif|ico)$")) {
                 return "image";
             }
-            
-            // 特殊域名识别（B站、优酷等）
+
+            // 特殊域名识别(B站、优酷等)
             if (lower.contains("bilivideo.com") && (lower.contains(".m4s") || lower.contains(".mp4"))) {
                 return "video";
             }
-            
+
             return null;
         } catch (Throwable t) {
             return null;
         }
     }
-    
+
     /** 合并网络层嗅探的 URL 到 showMediaDialog 的数据中。 */
     private void mergeNetworkSniffedUrls(java.util.List<String> urls, java.util.List<String> types, java.util.List<String> titles) {
         try {
             synchronized (sNetworkSniffedUrls) {
                 for (String url : sNetworkSniffedUrls) {
-                    // 去重：如果 JS 嗅探已收集过，跳过
+                    // 去重:如果 JS 嗅探已收集过,跳过
                     if (urls.contains(url)) continue;
-                    
+
                     String type = detectMediaType(url);
                     if (type != null) {
                         urls.add(url);
@@ -11340,8 +12629,8 @@ private boolean showMediaDialog(String json) {
                         titles.add(""); // 网络层嗅探没有 title
                     }
                 }
-                
-                // 清空收集列表，为下次嗅探准备
+
+                // 清空收集列表,为下次嗅探准备
                 sNetworkSniffedUrls.clear();
             }
             XposedBridge.log("[SBPlus] merged network sniffed URLs: " + sNetworkSniffedUrls.size());
