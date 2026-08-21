@@ -423,43 +423,6 @@ private static final String[] RANDOM_UAS = new String[]{
         hookThemeHook(lpparam.classLoader);
         hookGlobalFont(lpparam.classLoader);
 
-        // ===== 临时诊断: 定位"页面背景变蓝"来源 (hook setColorFilter 蓝色) =====
-        try {
-            final int[] diagCount = { 0 };
-            XposedHelpers.findAndHookMethod("android.graphics.drawable.Drawable", lpparam.classLoader,
-                "setColorFilter", int.class, android.graphics.PorterDuff.Mode.class,
-                new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (diagCount[0] > 60) return;
-                        try {
-                            int col = ((Integer) param.args[0]).intValue();
-                            if (col == 0xFF03A9F4) {
-                                Object d = param.thisObject;
-                                String dn = d.getClass().getName();
-                                if (dn.contains("BitmapDrawable") || dn.contains("LayerDrawable")
-                                        || dn.contains("GradientDrawable") || dn.contains("ColorDrawable")) {
-                                    diagCount[0]++;
-                                    XposedBridge.log("[SBPlus] DIAG-BLUE setColorFilter on " + dn + " (" + diagCount[0] + ")");
-                                    if (diagCount[0] <= 6) {
-                                        java.lang.StackTraceElement[] st = Thread.currentThread().getStackTrace();
-                                        StringBuilder sb2 = new StringBuilder("[SBPlus] DIAG-BLUE stack:");
-                                        int n = 0;
-                                        for (java.lang.StackTraceElement e : st) {
-                                            if (e.getClassName().startsWith("com.sbplus")) {
-                                                sb2.append(" -> " + e.getClassName().substring(e.getClassName().lastIndexOf('.')+1) + "." + e.getMethodName() + ":" + e.getLineNumber());
-                                                if (n++ > 5) break;
-                                            }
-                                        }
-                                        XposedBridge.log(sb2.toString());
-                                    }
-                                }
-                            }
-                        } catch (Throwable ignored) {}
-                    }
-                });
-        } catch (Throwable e) {
-            XposedBridge.log("[SBPlus] DIAG hook fail: " + e);
-        }
     }
 
     private static void copyFile(java.io.File src, java.io.File dst) throws Exception {
@@ -3451,8 +3414,6 @@ private static final String[] RANDOM_UAS = new String[]{
                 });
             // 绘制兜底: 设置页文字被三星重设成蓝/默认色时强制 correction
             try {
-                            final java.util.Set<String> dumpBlueSeen = java.util.concurrent.ConcurrentHashMap.newKeySet();
-            final java.util.Set<String> dumpProbe = java.util.concurrent.ConcurrentHashMap.newKeySet();
             try {
                 XposedHelpers.findAndHookMethod("android.widget.TextView", cl,
                     "onDraw", android.graphics.Canvas.class, new XC_MethodHook() {
@@ -3487,57 +3448,22 @@ private static final String[] RANDOM_UAS = new String[]{
                                                 tbg.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN);
                                             }
                                         }
-                                        // 诊断: dump 父布局(action_tabs)结构, 定位"页面图标"
-                                        try {
-                                            android.view.ViewParent par = tvd.getParent();
-                                            if (par instanceof android.view.ViewGroup) {
-                                                android.view.ViewGroup pg = (android.view.ViewGroup) par;
-                                                for (int ci=0; ci<pg.getChildCount(); ci++) {
-                                                    android.view.View cv = pg.getChildAt(ci);
-                                                    String cidn="";
-                                                    try { cidn = cv.getResources().getResourceEntryName(cv.getId()); } catch (Throwable ignoredX) {}
-                                                    String bid="bg="+(cv.getBackground()!=null?cv.getBackground().getClass().getSimpleName():"null");
-                                                    String draw = "";
-                                                    if (cv instanceof android.widget.ImageView) {
-                                                        android.graphics.drawable.Drawable dd = ((android.widget.ImageView)cv).getDrawable();
-                                                        draw = "drawable="+(dd!=null?dd.getClass().getSimpleName():"null");
-                                                    }
-                                                }
-                                            }
-                                        } catch (Throwable ignoredT) {}
                                         return;
-                                    }
-                                }
-                                // 探测: 只打印一次每条文字(不设色), 确认 hook 运行
-                                if (dumpProbe.add(Integer.toHexString(System.identityHashCode(o)))) {
-                                    String txtP = "";
-                                    try { CharSequence tp = tvd.getText(); if (tp!=null) txtP = tp.toString(); } catch (Throwable ignoredP) {}
-                                    XposedBridge.log("[SBPlus] DRAW cur=#" + Integer.toHexString(curD) + " cls=" + o.getClass().getName() + " txt=" + txtP);
-                                }
-                                int rr=(curD>>16)&0xff, gg=(curD>>8)&0xff, bb=curD&0xff;
-                                if (bb > 90 && bb > (rr+40) && bb > (gg+40) && txtD.length()>0) {
-                                    String id = Integer.toHexString(System.identityHashCode(o));
-                                    if (dumpBlueSeen.add(id)) {
-                                        float spD=0;
-                                        try { spD = tvd.getTextSize()/tvd.getResources().getDisplayMetrics().scaledDensity; } catch (Throwable ignored) {}
-                                        XposedBridge.log("[SBPlus] BLUE " + spD + "sp cur=#" + Integer.toHexString(curD)
-                                            + " act=" + curActivityName(tvd) + " cls=" + o.getClass().getName()
-                                            + " txt=" + txtD);
                                     }
                                 }
                                 boolean inS = isInSettingsScreen(tvd);
                                 if (!inS) return;
                                 int targetD = themeTextColorFor(tvd);
                                 if (targetD == -1) return;
+                                // 仅在颜色确实不同才设色, 避免每次 onDraw 都 invalidate 造成重绘风暴
+                                int curCol = tvd.getCurrentTextColor();
+                                if (curCol == targetD) return;
                                 sInThemeText = true;
                                 try {
                                     tvd.setTextColor(targetD);
                                     try { tvd.setLinkTextColor(targetD); } catch (Throwable ignoredL) {}
                                     try { tvd.getPaint().setColor(targetD); } catch (Throwable ignoredP) {}
-                                    try { tvd.invalidate(); } catch (Throwable ignoredI) {}
                                 } finally { sInThemeText = false; }
-                                // 无条件再触发一次重绘以确保强制
-                                try { tvd.postInvalidate(); } catch (Throwable ignoredQ) {}
                             } catch (Throwable ignored) {}
                         }
                     });
@@ -10872,9 +10798,10 @@ private void showUaGroupDialog(final Context ctx) {
                         }
                         if (sniff != null || monkey != null) {
                             int vis = onHome ? android.view.View.GONE : android.view.View.VISIBLE;
-                            if (sniff != null && sniff.getVisibility() != vis) sniff.setVisibility(vis);
-                            if (monkey != null && monkey.getVisibility() != vis) monkey.setVisibility(vis);
-                            XposedBridge.log("[SBPlus] syncPeriodic home=" + onHome + " url=" + (sCurrentUrl==null?"null":sCurrentUrl) + " sniff=" + (sniff!=null?sniff.getVisibility():-1) + " monkey=" + (monkey!=null?monkey.getVisibility():-1));
+                            boolean changed = false;
+                            if (sniff != null && sniff.getVisibility() != vis) { sniff.setVisibility(vis); changed = true; }
+                            if (monkey != null && monkey.getVisibility() != vis) { monkey.setVisibility(vis); changed = true; }
+                            if (changed) XposedBridge.log("[SBPlus] syncPeriodic home=" + onHome + " url=" + (sCurrentUrl==null?"null":sCurrentUrl) + " sniff=" + (sniff!=null?sniff.getVisibility():-1) + " monkey=" + (monkey!=null?monkey.getVisibility():-1));
                         }
                     }
                 } catch (Throwable t) { XposedBridge.log("[SBPlus] syncPeriodic err: " + t); }
