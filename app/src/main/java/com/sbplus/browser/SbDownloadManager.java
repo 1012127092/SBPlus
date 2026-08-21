@@ -31,6 +31,7 @@ public class SbDownloadManager {
         public String name;          // 文件名
         public int status;           // STATUS_*
         public long totalBytes = 0;  // 已下载字节
+        public long totalSizeBytes = 0; // 源文件总大小(可预知时; 未知为0)
         public long partCount = 0;   // 已完成分片
         public long partTotal = 0;   // 总分片
         public long speedBps = 0;    // 当前速度
@@ -38,6 +39,9 @@ public class SbDownloadManager {
         public long lastBytes = 0;
         public long lastTime = 0;
         public String outPath = "";  // 完成后的文件路径
+        public String url = "";       // 源 URL(m3u8 续传重置用)
+        public String kind = "m3u8"; // m3u8 / seg / zip
+        public boolean zipped = false; // 是否 zip 打包任务(不参与暂停/续传)
 
         public Task(String id, String name) {
             this.id = id;
@@ -106,17 +110,34 @@ public class SbDownloadManager {
     }
 
     private static final java.util.Set<String> CANCELLED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.Set<String> PAUSED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /** 标记任务取消(中断下载循环 + 关通知). */
     public static void cancel(Context ctx, String id) {
         try {
             if (id != null) CANCELLED.add(id);
+            if (id != null) PAUSED.remove(id);
         } catch (Throwable ignored) {}
         try {
             if (ctx == null) return;
             NotificationManager nm = nm(ctx);
             if (nm != null) nm.cancel(notifId(id));
         } catch (Throwable ignored) {}
+    }
+
+    /** 暂停任务(保留已下载分片, 不取消). */
+    public static void pause(String id) {
+        try { if (id != null) PAUSED.add(id); } catch (Throwable ignored) {}
+    }
+
+    /** 继续任务(清除暂停标记). */
+    public static void resume(String id) {
+        try { if (id != null) PAUSED.remove(id); } catch (Throwable ignored) {}
+    }
+
+    /** 任务是否已暂停. */
+    public static boolean isPaused(String id) {
+        return id != null && PAUSED.contains(id);
     }
 
     /** 任务是否被取消. */

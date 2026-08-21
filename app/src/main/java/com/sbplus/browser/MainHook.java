@@ -128,6 +128,51 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static String sDetailFileName = null;
     private static final int REQUEST_USERSCRIPT_PICK = 61002;
     public static final int REQUEST_FONT_PICK = 61004;
+    public static final int REQUEST_HOME_LOGO_PICK = 61005;
+    /** 主页美化页 Logo 区引用(用于添加后刷新): [screen, ctx, cl]。 */
+    public static Object[] sHomeLogoScreen = null;
+    private static int sHomeLogoSbHeight;
+    private static android.app.Dialog sHomeLogoPageDlg;
+    private static Runnable sHomeLogoPageRebuild;
+    private static android.view.View sHomeLogoSbView;
+    private static android.view.View sHomeLogoBgView;
+    private static android.widget.ImageView sHomeLogoIv;
+    private static boolean sHomeLogoAnimHookDone;
+    private static float sHomeLogoSbInitY = -1f;
+    private static android.view.Choreographer.FrameCallback sLogoFrameCb;
+    private static boolean sLogoFrameRunning;
+    private static float sLogoSbBaseTop = -1f;
+    private static float sLogoBaseTop = -1f;
+    private static float sLogoSbPrevTop = -1f;
+    private static final android.view.ViewTreeObserver.OnPreDrawListener sLogoPreDraw = new android.view.ViewTreeObserver.OnPreDrawListener() {
+        @Override public boolean onPreDraw() {
+            try {
+                if (sHomeLogoSbView == null && sHomeLogoIv != null) {
+                    try { logoSizeLimitStatic(sHomeLogoIv); } catch (Throwable ignored) {}
+                }
+                if (sHomeLogoSbView == null || sHomeLogoIv == null || sHomeLogoIv.getParent() == null) {
+                    sLogoSbBaseTop = -1f;
+                    sLogoSbPrevTop = -1f;
+                    return true;
+                }
+                if (!HomeLogoHelper.isFollow(sHomeLogoIv.getContext())) return true;
+                int[] sbLoc = new int[2];
+                int[] lgLoc = new int[2];
+                sHomeLogoSbView.getLocationInWindow(sbLoc);
+                sHomeLogoIv.getLocationInWindow(lgLoc);
+                if (sLogoSbPrevTop < 0f) {
+                    sLogoSbPrevTop = sbLoc[1];
+                } else {
+                    float delta = sbLoc[1] - sLogoSbPrevTop;
+                    if (Math.abs(delta) > 0.3f) {
+                        sHomeLogoIv.setTranslationY(sHomeLogoIv.getTranslationY() + delta);
+                    }
+                    sLogoSbPrevTop = sbLoc[1];
+                }
+            } catch (Throwable ignored) {}
+            return true;
+        }
+    };
     private static final String KEY_USERSCRIPT_SOURCES = "userscript_sources";
 
     // Default target downloaders (overridable).
@@ -3447,7 +3492,6 @@ private static final String[] RANDOM_UAS = new String[]{
                                             android.view.ViewParent par = tvd.getParent();
                                             if (par instanceof android.view.ViewGroup) {
                                                 android.view.ViewGroup pg = (android.view.ViewGroup) par;
-                                                XposedBridge.log("[SBPlus] TABS parent=" + par.getClass().getName() + " bg=" + (pg.getBackground()!=null?pg.getBackground().getClass().getSimpleName():"null") + " children=" + pg.getChildCount());
                                                 for (int ci=0; ci<pg.getChildCount(); ci++) {
                                                     android.view.View cv = pg.getChildAt(ci);
                                                     String cidn="";
@@ -3458,7 +3502,6 @@ private static final String[] RANDOM_UAS = new String[]{
                                                         android.graphics.drawable.Drawable dd = ((android.widget.ImageView)cv).getDrawable();
                                                         draw = "drawable="+(dd!=null?dd.getClass().getSimpleName():"null");
                                                     }
-                                                    XposedBridge.log("[SBPlus] TABS child" + ci + " id=" + cidn + " cls=" + cv.getClass().getSimpleName() + " " + bid + " " + draw);
                                                 }
                                             }
                                         } catch (Throwable ignoredT) {}
@@ -3915,14 +3958,17 @@ private boolean isThemeMasterEnabled() {
                 if (vidn.startsWith("toolbar_") && !vidn.equals("toolbar_reload")
                         && !vidn.equals("toolbar_bookmarks") && !vidn.equals("toolbar_bookmark") && !vidn.equals("bookmark_star_icon")) return false;
             } catch (Throwable ignoredV) {}
-            // 排除主页背景层级
+            // 排除主页背景层级 + 标签页网格(网页缩略图/多标签页缩略图绝不染)
             try {
                 android.view.ViewParent pp0 = v.getParent();
                 while (pp0 != null) {
                     String pn0 = pp0.getClass().getName().toLowerCase();
                     if (pn0.contains("custombackground") || pn0.contains("quickaccess")
                             || pn0.contains("videoview") || pn0.contains("textureview")
-                            || pn0.contains("reelbackground") || pn0.contains("mainlayoutbackground")) return false;
+                            || pn0.contains("reelbackground") || pn0.contains("mainlayoutbackground")
+                            || pn0.contains("multitab") || pn0.contains("tabgrid") || pn0.contains("tabpage")
+                            || pn0.contains("tabswitcher") || pn0.contains("gallerygrid")
+                            || pn0.contains("recyclerview") || pn0.contains("gridview")) return false;
                     pp0 = pp0.getParent();
                 }
             } catch (Throwable ignored) {}
@@ -4001,10 +4047,888 @@ private boolean isThemeMasterEnabled() {
             XposedBridge.log("[SBPlus] font entry error: " + t);
         }
 
+
+        // -- 主页 Logo 入口 --
+        try {
+            sHomeLogoScreen = new Object[]{ screen, ctx, cl };
+            Object logoEntry = buildHomeLogoEntry(ctx, cl);
+            if (logoEntry != null) { XposedHelpers.callMethod(screen, "addPreference", logoEntry); }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] home logo entry error: " + t);
+        }
+
+        // -- 主页时钟入口 --
+        try {
+            Object clockEntry = buildHomeClockEntry(ctx, cl);
+            if (clockEntry != null) { XposedHelpers.callMethod(screen, "addPreference", clockEntry); }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] home clock entry error: " + t);
+        }
+
         XposedBridge.log("[SBPlus] home beautify page injected (theme color + font)");
     }
 
-    /** 开关:去除主页搜索框内文字(搜索或输入网址)。 */
+        /** 入口:添加主页 Logo(选本地图片/GIF),显示在搜索框上方居中。 */
+    /** 入口:添加主页 Logo(选本地图片/GIF),纯文字条目(无开关)+竖线图标。 */
+    /** 入口:主页 Logo(带启用开关+竖线)。行点击弹列表对话框: 显示已导入图片+删除+应用状态。 */
+    /** 入口:主页 Logo(Switch 条目: 右侧开关=启用/停用; 行点击=弹管理列表; 竖线图标)。 */
+    private Object buildHomeLogoEntry(Context ctx, ClassLoader cl) {
+        try {
+            Class<?> switchPrefCls = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+            Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{android.content.Context.class}, ctx);
+            int cnt = HomeLogoHelper.listLogos(ctx).size();
+            XposedHelpers.callMethod(pref, "setTitle", T("主页 Logo", "Home Logo"));
+            XposedHelpers.callMethod(pref, "setKey", "sbplus_home_logo_entry");
+            if (cnt == 0) {
+                XposedHelpers.callMethod(pref, "setSummary", T("点击添加 Logo 图片到主页", "Tap to add a logo image"));
+            } else if (HomeLogoHelper.isEnabled(ctx)) {
+                XposedHelpers.callMethod(pref, "setSummary",
+                        T("已添加 " + cnt + " 张，点按管理（使用中）", cnt + " logo(s), tap to manage (in use)"));
+            } else {
+                XposedHelpers.callMethod(pref, "setSummary",
+                        T("已添加 " + cnt + " 张，点按管理（已停用）", cnt + " logo(s), tap to manage (off)"));
+            }
+            XposedHelpers.callMethod(pref, "setChecked", HomeLogoHelper.isEnabled(ctx));
+            XposedHelpers.callMethod(pref, "setSelectable", true);
+            try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+            // 开关: 独立切换启用/停用(不弹列表)
+            try {
+                Class<?> chgType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+                Object chgL = java.lang.reflect.Proxy.newProxyInstance(cl,
+                        new Class[]{chgType},
+                        new java.lang.reflect.InvocationHandler() {
+                            @Override
+                            public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                                try {
+                                    if (m.getName().equals("onPreferenceChange")) {
+                                        boolean on = Boolean.TRUE.equals(args[1]);
+                                        HomeLogoHelper.setEnabled(ctx, on);
+                                        toastOnMain(on ? T("已启用主页 Logo", "Logo on") : T("已停用主页 Logo", "Logo off"));
+                                        refreshHomeLogoSection();
+                                        return Boolean.TRUE;
+                                    }
+                                } catch (Throwable t) {
+                                    XposedBridge.log("[SBPlus] logo switch err: " + t);
+                                }
+                                return Boolean.FALSE;
+                            }
+                        });
+                XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", chgL);
+            } catch (Throwable ignored) {}
+            // 行点击: 拦截默认切换,弹管理列表
+            try {
+                Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
+                Object onPreferenceClick = java.lang.reflect.Proxy.newProxyInstance(cl,
+                        new Class[]{listenerType},
+                        new java.lang.reflect.InvocationHandler() {
+                            @Override
+                            public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                                try {
+                                    if (m.getName().equals("onPreferenceClick")) {
+                                        Object clicked = args[0];
+                                        Object actObj = XposedHelpers.callMethod(clicked, "getContext");
+                                        while (actObj instanceof android.content.ContextWrapper
+                                                && !(actObj instanceof android.app.Activity)) {
+                                            actObj = ((android.content.ContextWrapper) actObj).getBaseContext();
+                                        }
+                                        if (actObj instanceof android.app.Activity) {
+                                            showHomeLogoListDialog((android.app.Activity) actObj, ctx);
+                                        }
+                                        return Boolean.TRUE;
+                                    }
+                                } catch (Throwable t) {
+                                    XposedBridge.log("[SBPlus] home logo click err: " + t);
+                                }
+                                return Boolean.FALSE;
+                            }
+                        });
+                XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", onPreferenceClick);
+            } catch (Throwable ignored) {}
+            return pref;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] buildHomeLogoEntry err: " + t);
+            return null;
+        }
+    }
+
+    /** 入口: 主页时钟(Switch 条目, 右侧开关=启用/停用; 行点击=设置样式/秒/位置/大小)。 */
+    private Object buildHomeClockEntry(Context ctx, ClassLoader cl) {
+        try {
+            Class<?> switchPrefCls = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
+            Object pref = XposedHelpers.newInstance(switchPrefCls, new Class[]{android.content.Context.class}, ctx);
+            XposedHelpers.callMethod(pref, "setTitle", T("主页时钟", "Home Clock"));
+            XposedHelpers.callMethod(pref, "setKey", "sbplus_home_clock_entry");
+            boolean en = HomeClockHelper.isEnabled(ctx);
+            XposedHelpers.callMethod(pref, "setSummary",
+                    en ? T("使用中，点按设置", "On, tap to set")
+                       : T("点击设置主页时钟", "Tap to set home clock"));
+            XposedHelpers.callMethod(pref, "setChecked", en);
+            XposedHelpers.callMethod(pref, "setSelectable", true);
+            try { XposedHelpers.callMethod(pref, "setDividerVisible", true); } catch (Throwable ignored) {}
+            // 开关: 独立切换启用/停用
+            try {
+                Class<?> chgType = listenerParamType(pref.getClass(), "setOnPreferenceChangeListener");
+                Object chgL = java.lang.reflect.Proxy.newProxyInstance(cl,
+                        new Class[]{chgType},
+                        new java.lang.reflect.InvocationHandler() {
+                            @Override
+                            public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                                try {
+                                    if (m.getName().equals("onPreferenceChange")) {
+                                        boolean on = Boolean.TRUE.equals(args[1]);
+                                        HomeClockHelper.setEnabled(ctx, on);
+                                        toastOnMain(on ? T("已启用主页时钟", "Clock on") : T("已停用主页时钟", "Clock off"));
+                                        refreshHomeClock();
+                                        return Boolean.TRUE;
+                                    }
+                                } catch (Throwable t) {
+                                    XposedBridge.log("[SBPlus] clock switch err: " + t);
+                                }
+                                return Boolean.FALSE;
+                            }
+                        });
+                XposedHelpers.callMethod(pref, "setOnPreferenceChangeListener", chgL);
+            } catch (Throwable ignored) {}
+            // 行点击: 拦截默认切换,弹设置对话框
+            try {
+                Class<?> listenerType = listenerParamType(pref.getClass(), "setOnPreferenceClickListener");
+                Object onPreferenceClick = java.lang.reflect.Proxy.newProxyInstance(cl,
+                        new Class[]{listenerType},
+                        new java.lang.reflect.InvocationHandler() {
+                            @Override
+                            public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+                                try {
+                                    if (m.getName().equals("onPreferenceClick")) {
+                                        Object clicked = args[0];
+                                        Object actObj = XposedHelpers.callMethod(clicked, "getContext");
+                                        while (actObj instanceof android.content.ContextWrapper
+                                                && !(actObj instanceof android.app.Activity)) {
+                                            actObj = ((android.content.ContextWrapper) actObj).getBaseContext();
+                                        }
+                                        if (actObj instanceof android.app.Activity) {
+                                            showHomeClockSettingsDialog((android.app.Activity) actObj, ctx);
+                                        }
+                                        return Boolean.TRUE;
+                                    }
+                                } catch (Throwable t) {
+                                    XposedBridge.log("[SBPlus] home clock click err: " + t);
+                                }
+                                return Boolean.FALSE;
+                            }
+                        });
+                XposedHelpers.callMethod(pref, "setOnPreferenceClickListener", onPreferenceClick);
+            } catch (Throwable ignored) {}
+            return pref;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] buildHomeClockEntry err: " + t);
+            return null;
+        }
+    }
+
+    /** 主页时钟设置对话框: 样式(普通/翻页) + 精确到秒 + 位置/大小。 */
+    private void showHomeClockSettingsDialog(final android.app.Activity act, final android.content.Context ctx) {
+        try {
+            final android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(act)
+                    .setTitle(T("主页时钟设置", "Home Clock Settings"))
+                    .setPositiveButton(T("确定", "OK"), null)
+                    .setNegativeButton(T("取消", "Cancel"), null)
+                    .create();
+            final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int pad = dp(act, 20);
+            root.setPadding(pad, dp(act,8), pad, 0);
+
+            // 精确到秒
+            final android.widget.LinearLayout rowSec = new android.widget.LinearLayout(act);
+            rowSec.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            rowSec.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            android.widget.LinearLayout.LayoutParams rowSecLp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            rowSecLp.topMargin = dp(act, 10);
+            rowSec.setLayoutParams(rowSecLp);
+            final android.widget.TextView tvSec = new android.widget.TextView(act);
+            tvSec.setText(T("精确到秒", "Show seconds"));
+            tvSec.setTextSize(14);
+            tvSec.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            final android.widget.Switch swSec = new android.widget.Switch(act);
+            swSec.setChecked(HomeClockHelper.isSeconds(ctx));
+            rowSec.addView(tvSec);
+            rowSec.addView(swSec);
+            root.addView(rowSec);
+
+            // 跟随搜索框动画
+            final android.widget.LinearLayout rowFol = new android.widget.LinearLayout(act);
+            rowFol.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            rowFol.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            android.widget.LinearLayout.LayoutParams rowFolLp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            rowFolLp.topMargin = dp(act, 6);
+            rowFol.setLayoutParams(rowFolLp);
+            final android.widget.TextView tvFol = new android.widget.TextView(act);
+            tvFol.setText(T("跟随搜索框动画", "Follow search-bar"));
+            tvFol.setTextSize(14);
+            tvFol.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            final android.widget.Switch swFol = new android.widget.Switch(act);
+            swFol.setChecked(HomeClockHelper.isFollow(ctx));
+            rowFol.addView(tvFol);
+            rowFol.addView(swFol);
+            root.addView(rowFol);
+
+            // 位置/大小按钮
+            final android.widget.Button btnPos = new android.widget.Button(act);
+            btnPos.setText(T("位置与大小", "Position & size"));
+            android.widget.LinearLayout.LayoutParams btnLp = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            btnLp.topMargin = dp(act, 12);
+            btnPos.setLayoutParams(btnLp);
+            btnPos.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try { showClockPosDialog(act, ctx); }
+                    catch (Throwable t) { XposedBridge.log("[SBPlus] clock pos err: " + t); }
+                }
+            });
+            root.addView(btnPos);
+
+            // 复位按钮
+            final android.widget.Button btnReset = new android.widget.Button(act);
+            btnReset.setText(T("复位", "Reset"));
+            android.widget.LinearLayout.LayoutParams btnLp2 = new android.widget.LinearLayout.LayoutParams(-1, -2);
+            btnLp2.topMargin = dp(act, 6);
+            btnReset.setLayoutParams(btnLp2);
+            btnReset.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try {
+                        HomeClockHelper.setPosX(ctx, 50);
+                        HomeClockHelper.setPosY(ctx, 30);
+                        HomeClockHelper.setSizePct(ctx, 100);
+                        toastOnMain(T("已恢复默认", "Reset to default"));
+                        refreshHomeClock();
+                    } catch (Throwable ignored) {}
+                }
+            });
+            root.addView(btnReset);
+
+            dlg.setView(root);
+            dlg.setOnShowListener(new android.content.DialogInterface.OnShowListener() {
+                @Override public void onShow(android.content.DialogInterface d) {
+                    try {
+                        dlg.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener(new android.view.View.OnClickListener() {
+                            @Override public void onClick(android.view.View v) {
+                                try {
+                                    HomeClockHelper.setSeconds(ctx, swSec.isChecked());
+                                    HomeClockHelper.setFollow(ctx, swFol.isChecked());
+                                    try { refreshHomeClock(); } catch (Throwable ignored2) {}
+                                    toastOnMain(T("已保存", "Saved"));
+                                    dlg.dismiss();
+                                    refreshHomeClock();
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                    } catch (Throwable ignored) {}
+                }
+            });
+            dlg.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showHomeClockSettingsDialog err: " + t);
+        }
+    }
+
+    /** 时钟位置/大小对话框: X/Y 百分比 + 大小, SeekBar + 输入框, 含复位。 */
+    private void showClockPosDialog(final android.app.Activity act, final android.content.Context ctx) {
+        try {
+            final android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(act)
+                    .setTitle(T("时钟位置与大小", "Clock position & size"))
+                    .setPositiveButton(T("保存", "Save"), null)
+                    .setNegativeButton(T("取消", "Cancel"), null)
+                    .create();
+            final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int pad = dp(act, 20);
+            root.setPadding(pad, dp(act,8), pad, 0);
+
+            final int[] curX = { HomeClockHelper.getPosX(ctx) };
+            final int[] curY = { HomeClockHelper.getPosY(ctx) };
+            final int[] curSize = { HomeClockHelper.getSizePct(ctx) };
+
+            // X
+            final android.widget.TextView tvX = new android.widget.TextView(act);
+            tvX.setText(T("X 位置: " + curX[0] + "%", "X position: " + curX[0] + "%"));
+            tvX.setTextSize(13);
+            final android.widget.SeekBar sbX = new android.widget.SeekBar(act);
+            sbX.setMax(100);
+            sbX.setProgress(curX[0]);
+            final android.widget.EditText etX = new android.widget.EditText(act);
+            etX.setText(String.valueOf(curX[0]));
+            etX.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            etX.setSingleLine(true);
+            etX.setTextSize(13);
+            android.widget.LinearLayout rowX = new android.widget.LinearLayout(act);
+            rowX.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            rowX.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            etX.setLayoutParams(new android.widget.LinearLayout.LayoutParams(dp(act,64), -2));
+            rowX.addView(sbX, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            rowX.addView(etX);
+            sbX.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(android.widget.SeekBar sb, int p, boolean fromUser) {
+                    if (fromUser) { curX[0] = p; tvX.setText(T("X 位置: " + p + "%", "X position: " + p + "%")); etX.setText(String.valueOf(p)); }
+                }
+                @Override public void onStartTrackingTouch(android.widget.SeekBar sb) {}
+                @Override public void onStopTrackingTouch(android.widget.SeekBar sb) {}
+            });
+            root.addView(tvX);
+            root.addView(rowX);
+
+            // Y
+            final android.widget.TextView tvY = new android.widget.TextView(act);
+            tvY.setText(T("Y 位置: " + curY[0] + "%", "Y position: " + curY[0] + "%"));
+            tvY.setTextSize(13);
+            android.widget.LinearLayout.LayoutParams mpY = new android.widget.LinearLayout.LayoutParams(-2,-2);
+            mpY.topMargin = dp(act,8);
+            tvY.setLayoutParams(mpY);
+            final android.widget.SeekBar sbY = new android.widget.SeekBar(act);
+            sbY.setMax(100);
+            sbY.setProgress(curY[0]);
+            final android.widget.EditText etY = new android.widget.EditText(act);
+            etY.setText(String.valueOf(curY[0]));
+            etY.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            etY.setSingleLine(true);
+            etY.setTextSize(13);
+            android.widget.LinearLayout rowY = new android.widget.LinearLayout(act);
+            rowY.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            rowY.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            etY.setLayoutParams(new android.widget.LinearLayout.LayoutParams(dp(act,64), -2));
+            rowY.addView(sbY, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            rowY.addView(etY);
+            sbY.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(android.widget.SeekBar sb, int p, boolean fromUser) {
+                    if (fromUser) { curY[0] = p; tvY.setText(T("Y 位置: " + p + "%", "Y position: " + p + "%")); etY.setText(String.valueOf(p)); }
+                }
+                @Override public void onStartTrackingTouch(android.widget.SeekBar sb) {}
+                @Override public void onStopTrackingTouch(android.widget.SeekBar sb) {}
+            });
+            root.addView(tvY);
+            root.addView(rowY);
+
+            // 大小
+            final android.widget.TextView tvSize = new android.widget.TextView(act);
+            tvSize.setText(T("大小: " + curSize[0] + "%", "Size: " + curSize[0] + "%"));
+            tvSize.setTextSize(13);
+            android.widget.LinearLayout.LayoutParams mpS = new android.widget.LinearLayout.LayoutParams(-2,-2);
+            mpS.topMargin = dp(act,8);
+            tvSize.setLayoutParams(mpS);
+            final android.widget.SeekBar sbSize = new android.widget.SeekBar(act);
+            sbSize.setMax(180);
+            sbSize.setProgress(curSize[0] - 20);
+            final android.widget.EditText etSize = new android.widget.EditText(act);
+            etSize.setText(String.valueOf(curSize[0]));
+            etSize.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            etSize.setSingleLine(true);
+            etSize.setTextSize(13);
+            android.widget.LinearLayout rowS = new android.widget.LinearLayout(act);
+            rowS.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            rowS.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            etSize.setLayoutParams(new android.widget.LinearLayout.LayoutParams(dp(act,64), -2));
+            rowS.addView(sbSize, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            rowS.addView(etSize);
+            sbSize.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(android.widget.SeekBar sb, int p, boolean fromUser) {
+                    if (fromUser) { curSize[0] = p + 20; tvSize.setText(T("大小: " + curSize[0] + "%", "Size: " + curSize[0] + "%")); etSize.setText(String.valueOf(curSize[0])); }
+                }
+                @Override public void onStartTrackingTouch(android.widget.SeekBar sb) {}
+                @Override public void onStopTrackingTouch(android.widget.SeekBar sb) {}
+            });
+            root.addView(tvSize);
+            root.addView(rowS);
+
+            // 复位
+            final android.widget.Button btnReset = new android.widget.Button(act);
+            btnReset.setText(T("复位", "Reset"));
+            android.widget.LinearLayout.LayoutParams resetLp = new android.widget.LinearLayout.LayoutParams(-2, -2);
+            resetLp.topMargin = dp(act, 10);
+            resetLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            btnReset.setLayoutParams(resetLp);
+            btnReset.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try {
+                        HomeClockHelper.setPosX(ctx, 50);
+                        HomeClockHelper.setPosY(ctx, 30);
+                        HomeClockHelper.setSizePct(ctx, 100);
+                        toastOnMain(T("已恢复默认", "Reset to default"));
+                        refreshHomeClock();
+                        dlg.dismiss();
+                    } catch (Throwable ignored) {}
+                }
+            });
+            root.addView(btnReset);
+
+            dlg.setView(root);
+            dlg.setOnShowListener(new android.content.DialogInterface.OnShowListener() {
+                @Override public void onShow(android.content.DialogInterface d) {
+                    try {
+                        dlg.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener(new android.view.View.OnClickListener() {
+                            @Override public void onClick(android.view.View v) {
+                                try {
+                                    int vx = Integer.parseInt(etX.getText().toString().trim());
+                                    int vy = Integer.parseInt(etY.getText().toString().trim());
+                                    int vs = Integer.parseInt(etSize.getText().toString().trim());
+                                    if (vx < 0) vx = 0; if (vx > 100) vx = 100;
+                                    if (vy < 0) vy = 0; if (vy > 100) vy = 100;
+                                    if (vs < 20) vs = 20; if (vs > 200) vs = 200;
+                                    HomeClockHelper.setPosX(ctx, vx);
+                                    HomeClockHelper.setPosY(ctx, vy);
+                                    HomeClockHelper.setSizePct(ctx, vs);
+                                    toastOnMain(T("位置已保存", "Position saved"));
+                                    dlg.dismiss();
+                                    refreshHomeClock();
+                                } catch (Throwable t2) { toastShort(T("输入无效", "Invalid input")); }
+                            }
+                        });
+                    } catch (Throwable ignored) {}
+                }
+            });
+            dlg.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showClockPosDialog err: " + t);
+        }
+    }
+
+    /** 主页 Logo 管理[全屏页面]: 图片列表 + 启用开关 + 应用/删除 + 添加。 */
+    private void showHomeLogoListDialog(final android.app.Activity act, final android.content.Context ctx) {
+        try {
+            final android.app.Dialog dlg = new android.app.Dialog(act);
+            try { dlg.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE); } catch (Throwable ignored) {}
+            final android.widget.LinearLayout page = new android.widget.LinearLayout(act);
+            page.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int dm = (int) act.getResources().getDisplayMetrics().density;
+
+            // ===== 顶部栏: 标题 + 关闭 =====
+            final android.widget.LinearLayout topBar = new android.widget.LinearLayout(act);
+            topBar.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            topBar.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            topBar.setPadding(dp(act,16), dp(act,14), dp(act,16), dp(act,14));
+            try { topBar.setBackgroundColor(0xFFF0F1F3); } catch (Throwable ignored) {}
+            final android.widget.TextView tvTitle = new android.widget.TextView(act);
+            tvTitle.setTextSize(18);
+            tvTitle.setText(T("主页 Logo", "Home Logo"));
+            tvTitle.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            final android.widget.Button btnClose = new android.widget.Button(act);
+            btnClose.setText(T("关闭", "Close"));
+            btnClose.setTextSize(14);
+            btnClose.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { try { dlg.dismiss(); } catch (Throwable ignored) {} }
+            });
+            topBar.addView(tvTitle);
+            topBar.addView(btnClose);
+            page.addView(topBar);
+
+            // 跟随搜索框动画开关
+            final android.widget.LinearLayout folRow = new android.widget.LinearLayout(act);
+            folRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            folRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            folRow.setPadding(dp(act,16), dp(act,4), dp(act,16), dp(act,4));
+            final android.widget.TextView folTxt = new android.widget.TextView(act);
+            folTxt.setText(T("跟随搜索框动画", "Follow search-bar"));
+            folTxt.setTextSize(15);
+            folTxt.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            final android.widget.Switch folSw = new android.widget.Switch(act);
+            folSw.setChecked(HomeLogoHelper.isFollow(ctx));
+            folSw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean on) {
+                    try {
+                        HomeLogoHelper.setFollow(ctx, on);
+                        toastOnMain(on ? T("已开启跟随", "Follow on") : T("已关闭跟随", "Follow off"));
+                    } catch (Throwable ignored) {}
+                }
+            });
+            folRow.addView(folTxt);
+            folRow.addView(folSw);
+            page.addView(folRow);
+            try { folRow.setBackgroundColor(0x0DFFFFFF); } catch (Throwable ignored) {}
+
+            // 列表区(可滚动)
+            final android.widget.ScrollView sv = new android.widget.ScrollView(act);
+            final android.widget.LinearLayout listBox = new android.widget.LinearLayout(act);
+            listBox.setOrientation(android.widget.LinearLayout.VERTICAL);
+            listBox.setPadding(dp(act,16), dp(act,8), dp(act,16), dp(act,8));
+            sv.addView(listBox);
+
+            final Runnable[] rebuildListRef = new Runnable[1];
+            final Runnable rebuildList = new Runnable() {
+                @Override public void run() {
+                    try {
+                        listBox.removeAllViews();
+                        final java.util.List<String> logos = HomeLogoHelper.listLogos(ctx);
+                        final String cur = HomeLogoHelper.currentPath(ctx);
+                        tvTitle.setText(T("主页 Logo（" + logos.size() + " 张）", "Home Logo (" + logos.size() + ")"));
+                        if (logos.isEmpty()) {
+                            android.widget.TextView tvEmpty = new android.widget.TextView(act);
+                            tvEmpty.setText(T("还没有 Logo，点下方按钮添加一张", "No logos yet. Add one below."));
+                            tvEmpty.setPadding(0, dp(act,30), 0, dp(act,30));
+                            tvEmpty.setGravity(android.view.Gravity.CENTER);
+                            tvEmpty.setTextColor(0xFF888888);
+                            listBox.addView(tvEmpty);
+                            return;
+                        }
+                        for (final String name : logos) {
+                            java.io.File f = new java.io.File(HomeLogoHelper.dirFor(ctx), name);
+                            boolean isCur = f.getAbsolutePath().equals(cur);
+                            final android.widget.LinearLayout row = new android.widget.LinearLayout(act);
+                            row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                            row.setPadding(dp(act,8), dp(act,10), dp(act,8), dp(act,10));
+                            row.setBackgroundResource(android.R.drawable.list_selector_background);
+                            // 缩略图
+                            final android.widget.ImageView iv = new android.widget.ImageView(act);
+                            android.view.ViewGroup.LayoutParams ilp = new android.view.ViewGroup.LayoutParams(dp(act,52), dp(act,52));
+                            iv.setLayoutParams(ilp);
+                            iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                            try {
+                                android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath());
+                                if (bmp != null) iv.setImageBitmap(bmp);
+                            } catch (Throwable ignored) {}
+                            row.addView(iv);
+                            // 文件名 + 状态
+                            final android.widget.LinearLayout col = new android.widget.LinearLayout(act);
+                            col.setOrientation(android.widget.LinearLayout.VERTICAL);
+                            col.setPadding(dp(act,12), 0, dp(act,8), 0);
+                            col.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+                            android.widget.TextView tvName = new android.widget.TextView(act);
+                            tvName.setText(name);
+                            tvName.setTextSize(14);
+                            tvName.setSingleLine(true);
+                            tvName.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+                            android.widget.TextView tvState = new android.widget.TextView(act);
+                            tvState.setTextSize(12);
+                            if (isCur) {
+                                tvState.setText(T("● 使用中", "● In use"));
+                                tvState.setTextColor(0xFF2E7CF6);
+                            } else {
+                                tvState.setText(T("点按应用此 Logo", "Tap to apply"));
+                                tvState.setTextColor(0xFF888888);
+                            }
+                            col.addView(tvName);
+                            col.addView(tvState);
+                            // 透明背景小开关
+                            final android.widget.LinearLayout alphaRow = new android.widget.LinearLayout(act);
+                            alphaRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                            alphaRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+                            android.widget.TextView tvAlpha = new android.widget.TextView(act);
+                            tvAlpha.setText(T("透明背景", "Transparent bg"));
+                            tvAlpha.setTextSize(11);
+                            tvAlpha.setTextColor(0xFF666666);
+                            final android.widget.Switch swAlpha = new android.widget.Switch(act);
+                            swAlpha.setChecked(HomeLogoHelper.isAlphaBg(ctx, name));
+                            swAlpha.setScaleX(0.7f);
+                            swAlpha.setScaleY(0.7f);
+                            swAlpha.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                                @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean on) {
+                                    try {
+                                        HomeLogoHelper.setAlphaBg(ctx, name, on);
+                                        toastOnMain(on ? T("已开启透明背景", "Transparent bg on") : T("已关闭透明背景", "Transparent bg off"));
+                                    } catch (Throwable t) { XposedBridge.log("[SBPlus] alpha sw err: " + t); }
+                                }
+                            });
+                            alphaRow.addView(tvAlpha);
+                            alphaRow.addView(swAlpha);
+                            col.addView(alphaRow);
+                            row.addView(col);
+                            // 位置按钮
+                            final android.widget.Button btnPos = new android.widget.Button(act);
+                            btnPos.setText(T("位置", "Pos"));
+                            btnPos.setTextSize(12);
+                            btnPos.setMinWidth(dp(act,40));
+                            btnPos.setMinHeight(dp(act,44));
+                            btnPos.setOnClickListener(new android.view.View.OnClickListener() {
+                                @Override public void onClick(android.view.View v) {
+                                    try { showLogoPosDialog(act, ctx, name); }
+                                    catch (Throwable t) { XposedBridge.log("[SBPlus] logo pos err: " + t); }
+                                }
+                            });
+                            row.addView(btnPos);
+                            // 删除按钮
+                            final android.widget.Button btnDel = new android.widget.Button(act);
+                            btnDel.setText("✕");
+                            btnDel.setTextSize(16);
+                            btnDel.setMinWidth(dp(act,44));
+                            btnDel.setMinHeight(dp(act,44));
+                            btnDel.setOnClickListener(new android.view.View.OnClickListener() {
+                                @Override public void onClick(android.view.View v) {
+                                    try {
+                                        HomeLogoHelper.removeLogo(ctx, name);
+                                        toastOnMain(T("已删除", "Deleted"));
+                                        refreshHomeLogoSection();
+                                        rebuildListRef[0].run();
+                                    } catch (Throwable t) { XposedBridge.log("[SBPlus] logo del err: " + t); }
+                                }
+                            });
+                            row.addView(btnDel);
+                            // 整行点击 = 应用
+                            row.setOnClickListener(new android.view.View.OnClickListener() {
+                                @Override public void onClick(android.view.View v) {
+                                    try {
+                                        HomeLogoHelper.setCurrent(ctx, name);
+                                        HomeLogoHelper.setEnabled(ctx, true);
+                                        toastOnMain(T("已应用 Logo", "Logo applied"));
+                                        refreshHomeLogoSection();
+                                        rebuildListRef[0].run();
+                                    } catch (Throwable t) { XposedBridge.log("[SBPlus] logo apply err: " + t); }
+                                }
+                            });
+                            listBox.addView(row);
+                        }
+                    } catch (Throwable t) { XposedBridge.log("[SBPlus] logo list rebuild err: " + t); }
+                }
+            };
+
+            // ===== 底部: 添加图片 =====
+            final android.widget.Button btnAdd = new android.widget.Button(act);
+            btnAdd.setText(T("＋ 添加图片", "+ Add image"));
+            btnAdd.setTextSize(15);
+            btnAdd.setAllCaps(false);
+            btnAdd.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try {
+                        android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+                        intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+                        intent.setType("image/*");
+                        act.startActivityForResult(intent, REQUEST_HOME_LOGO_PICK);
+                    } catch (Throwable t) { XposedBridge.log("[SBPlus] logo add err: " + t); }
+                }
+            });
+
+            page.addView(sv, new android.widget.LinearLayout.LayoutParams(-1, 0, 1f));
+            page.addView(btnAdd, new android.widget.LinearLayout.LayoutParams(-1, dp(act,52)));
+            dlg.setContentView(page);
+            android.view.Window w = dlg.getWindow();
+            if (w != null) {
+                w.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT);
+                w.setGravity(android.view.Gravity.CENTER);
+            }
+            dlg.show();
+            rebuildListRef[0] = rebuildList;
+            rebuildList.run();
+
+            // onActivityResult 里 addLogoFromUri 成功后要刷新此页
+            sHomeLogoPageDlg = dlg;
+            sHomeLogoPageRebuild = rebuildList;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showHomeLogoListDialog err: " + t);
+        }
+    }
+    /** 位置设置对话框: X/Y 百分比 + 大小百分比, SeekBar + 输入框。 */
+    private void showLogoPosDialog(final android.app.Activity act, final android.content.Context ctx, final String name) {
+        try {
+            final android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(act)
+                    .setTitle(T("位置与大小 - " + name, "Position & size - " + name))
+                    .setPositiveButton(T("保存", "Save"), null)
+                    .setNegativeButton(T("取消", "Cancel"), null)
+                    .create();
+            final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
+            root.setOrientation(android.widget.LinearLayout.VERTICAL);
+            int pad = dp(act, 20);
+            root.setPadding(pad, dp(act,8), pad, 0);
+
+            final int[] curX = { HomeLogoHelper.getPosX(ctx, name) };
+            final int[] curY = { HomeLogoHelper.getPosY(ctx, name) };
+            final int[] curSize = { HomeLogoHelper.getSizePct(ctx, name) };
+
+            // ===== X =====
+            final android.widget.TextView tvX = new android.widget.TextView(act);
+            tvX.setText(T("X 位置: " + curX[0] + "%", "X position: " + curX[0] + "%"));
+            tvX.setTextSize(13);
+            final android.widget.SeekBar sbX = new android.widget.SeekBar(act);
+            sbX.setMax(100);
+            sbX.setProgress(curX[0]);
+            final android.widget.EditText etX = new android.widget.EditText(act);
+            etX.setText(String.valueOf(curX[0]));
+            etX.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            etX.setSingleLine(true);
+            etX.setTextSize(13);
+            android.widget.LinearLayout rowX = new android.widget.LinearLayout(act);
+            rowX.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            rowX.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            etX.setLayoutParams(new android.widget.LinearLayout.LayoutParams(dp(act,64), -2));
+            rowX.addView(sbX, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            rowX.addView(etX);
+            sbX.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(android.widget.SeekBar sb, int p, boolean fromUser) {
+                    if (fromUser) { curX[0] = p; tvX.setText(T("X 位置: " + p + "%", "X position: " + p + "%")); etX.setText(String.valueOf(p)); }
+                }
+                @Override public void onStartTrackingTouch(android.widget.SeekBar sb) {}
+                @Override public void onStopTrackingTouch(android.widget.SeekBar sb) {}
+            });
+            root.addView(tvX);
+            root.addView(rowX);
+
+            // ===== Y =====
+            final android.widget.TextView tvY = new android.widget.TextView(act);
+            tvY.setText(T("Y 位置: " + curY[0] + "%", "Y position: " + curY[0] + "%"));
+            tvY.setTextSize(13);
+            android.widget.LinearLayout.MarginLayoutParams mpY = new android.widget.LinearLayout.LayoutParams(-2,-2);
+            mpY.topMargin = dp(act,8);
+            tvY.setLayoutParams(mpY);
+            final android.widget.SeekBar sbY = new android.widget.SeekBar(act);
+            sbY.setMax(100);
+            sbY.setProgress(curY[0]);
+            final android.widget.EditText etY = new android.widget.EditText(act);
+            etY.setText(String.valueOf(curY[0]));
+            etY.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            etY.setSingleLine(true);
+            etY.setTextSize(13);
+            android.widget.LinearLayout rowY = new android.widget.LinearLayout(act);
+            rowY.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            rowY.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            etY.setLayoutParams(new android.widget.LinearLayout.LayoutParams(dp(act,64), -2));
+            rowY.addView(sbY, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            rowY.addView(etY);
+            sbY.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(android.widget.SeekBar sb, int p, boolean fromUser) {
+                    if (fromUser) { curY[0] = p; tvY.setText(T("Y 位置: " + p + "%", "Y position: " + p + "%")); etY.setText(String.valueOf(p)); }
+                }
+                @Override public void onStartTrackingTouch(android.widget.SeekBar sb) {}
+                @Override public void onStopTrackingTouch(android.widget.SeekBar sb) {}
+            });
+            root.addView(tvY);
+            root.addView(rowY);
+
+            // ===== 大小 =====
+            final android.widget.TextView tvSize = new android.widget.TextView(act);
+            tvSize.setText(T("大小: " + curSize[0] + "%", "Size: " + curSize[0] + "%"));
+            tvSize.setTextSize(13);
+            android.widget.LinearLayout.MarginLayoutParams mpS = new android.widget.LinearLayout.LayoutParams(-2,-2);
+            mpS.topMargin = dp(act,8);
+            tvSize.setLayoutParams(mpS);
+            final android.widget.SeekBar sbSize = new android.widget.SeekBar(act);
+            sbSize.setMax(180);
+            sbSize.setProgress(curSize[0] - 20);
+            final android.widget.EditText etSize = new android.widget.EditText(act);
+            etSize.setText(String.valueOf(curSize[0]));
+            etSize.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            etSize.setSingleLine(true);
+            etSize.setTextSize(13);
+            android.widget.LinearLayout rowS = new android.widget.LinearLayout(act);
+            rowS.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            rowS.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            etSize.setLayoutParams(new android.widget.LinearLayout.LayoutParams(dp(act,64), -2));
+            rowS.addView(sbSize, new android.widget.LinearLayout.LayoutParams(0, -2, 1f));
+            rowS.addView(etSize);
+            sbSize.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(android.widget.SeekBar sb, int p, boolean fromUser) {
+                    if (fromUser) { curSize[0] = p + 20; tvSize.setText(T("大小: " + curSize[0] + "%", "Size: " + curSize[0] + "%")); etSize.setText(String.valueOf(curSize[0])); }
+                }
+                @Override public void onStartTrackingTouch(android.widget.SeekBar sb) {}
+                @Override public void onStopTrackingTouch(android.widget.SeekBar sb) {}
+            });
+            root.addView(tvSize);
+            root.addView(rowS);
+
+            // 复位按钮: 恢复默认位置和大小
+            final android.widget.Button btnReset = new android.widget.Button(act);
+            btnReset.setText(T("复位", "Reset"));
+            btnReset.setTextSize(13);
+            final android.widget.LinearLayout.LayoutParams resetLp = new android.widget.LinearLayout.LayoutParams(-2, -2);
+            resetLp.topMargin = dp(act, 10);
+            resetLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            btnReset.setLayoutParams(resetLp);
+            btnReset.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try {
+                        HomeLogoHelper.setPosX(ctx, name, 50);
+                        HomeLogoHelper.setPosY(ctx, name, 20);
+                        HomeLogoHelper.setSizePct(ctx, name, 100);
+                        toastOnMain(T("已恢复默认位置与大小", "Reset to default"));
+                        dlg.dismiss();
+                        refreshHomeLogoSection();
+                    } catch (Throwable t) { XposedBridge.log("[SBPlus] reset pos err: " + t); }
+                }
+            });
+            root.addView(btnReset);
+
+            dlg.setView(root);
+            dlg.setOnShowListener(new android.content.DialogInterface.OnShowListener() {
+                @Override public void onShow(android.content.DialogInterface d) {
+                    try {
+                        android.widget.Button pos = dlg.getButton(android.content.DialogInterface.BUTTON_POSITIVE);
+                        pos.setOnClickListener(new android.view.View.OnClickListener() {
+                            @Override public void onClick(android.view.View v) {
+                                try {
+                                    // 输入框覆盖 seekbar
+                                    int vx = Integer.parseInt(etX.getText().toString().trim());
+                                    int vy = Integer.parseInt(etY.getText().toString().trim());
+                                    int vs = Integer.parseInt(etSize.getText().toString().trim());
+                                    if (vx < 0) vx = 0; if (vx > 100) vx = 100;
+                                    if (vy < 0) vy = 0; if (vy > 100) vy = 100;
+                                    if (vs < 50) vs = 50; if (vs > 200) vs = 200;
+                                    HomeLogoHelper.setPosX(ctx, name, vx);
+                                    HomeLogoHelper.setPosY(ctx, name, vy);
+                                    HomeLogoHelper.setSizePct(ctx, name, vs);
+                                    toastOnMain(T("位置已保存", "Position saved"));
+                                    dlg.dismiss();
+                                    refreshHomeLogoSection();
+                                } catch (Throwable t) { toastShort(T("输入无效", "Invalid input")); }
+                            }
+                        });
+                    } catch (Throwable ignored) {}
+                }
+            });
+            dlg.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showLogoPosDialog err: " + t);
+        }
+    }
+
+
+    /** 刷新主页美化页的 Logo 区(开关状态+数字) + 重绘主页 Logo。 */
+    private void refreshHomeLogoSection() {
+        try {
+            // 重绘主页 Logo: 移除旧的再从 bgView 重新挂载
+            try {
+                if (sHomeLogoBgView != null) {
+                    android.view.View bg = sHomeLogoBgView;
+                    android.view.ViewGroup parent = (android.view.ViewGroup) bg.getParent();
+                    if (parent != null) {
+                        for (int i = parent.getChildCount() - 1; i >= 0; i--) {
+                            android.view.View c = parent.getChildAt(i);
+                            if (c instanceof android.widget.ImageView && c.getTag() != null
+                                    && "sbplus_home_logo".equals(c.getTag())) {
+                                parent.removeViewAt(i);
+                                if (c == sHomeLogoIv) sHomeLogoIv = null;
+                            }
+                        }
+                    }
+                    try { attachHomeLogo(bg); } catch (Throwable ignored) {}
+                }
+            } catch (Throwable ignored) {}
+            if (sHomeLogoScreen == null) return;
+            Object screen = sHomeLogoScreen[0];
+            Context ctx = (android.content.Context) sHomeLogoScreen[1];
+            ClassLoader cl = (ClassLoader) sHomeLogoScreen[2];
+            try {
+                // 不重建条目: 只更新旧条目的摘要/开关状态, 保证列表顺序完全不变
+                Object oldEntry = XposedHelpers.callMethod(screen, "findPreference", "sbplus_home_logo_entry");
+                if (oldEntry != null) {
+                    int cnt = HomeLogoHelper.listLogos(ctx).size();
+                    if (cnt == 0) {
+                        XposedHelpers.callMethod(oldEntry, "setSummary", T("点击添加 Logo 图片到主页", "Tap to add a logo image"));
+                    } else if (HomeLogoHelper.isEnabled(ctx)) {
+                        XposedHelpers.callMethod(oldEntry, "setSummary",
+                                T("已添加 " + cnt + " 张，点按管理（使用中）", cnt + " logo(s), tap to manage (in use)"));
+                    } else {
+                        XposedHelpers.callMethod(oldEntry, "setSummary",
+                                T("已添加 " + cnt + " 张，点按管理（已停用）", cnt + " logo(s), tap to manage (off)"));
+                    }
+                    XposedHelpers.callMethod(oldEntry, "setChecked", HomeLogoHelper.isEnabled(ctx));
+                    try { XposedHelpers.callMethod(screen, "notifyChanged"); } catch (Throwable ignored2) {}
+                }
+            } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] refreshHomeLogoSection err: " + t);
+        }
+    }
+
+
+
+
+/** 开关:去除主页搜索框内文字(搜索或输入网址)。 */
     private Object buildHomeClearTextSwitch(Context ctx, ClassLoader cl) {
         Class<?> switchPrefCls = XposedHelpers.findClass(
                 "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
@@ -5426,6 +6350,38 @@ private void showUaGroupDialog(final Context ctx) {
                                     }
                                     return;
                                 }
+                                if (req == REQUEST_HOME_LOGO_PICK) {
+                                    int res = (Integer) param.args[1];
+                                    android.content.Intent data = (android.content.Intent) param.args[2];
+                                    if (res != android.app.Activity.RESULT_OK || data == null
+                                            || data.getData() == null) return;
+                                    android.net.Uri uri = data.getData();
+                                    String saved = HomeLogoHelper.addLogoFromUri((android.content.Context) param.thisObject, uri);
+                                    if (saved != null && !saved.isEmpty()) {
+                                        // 永久读取权限(ACTION_OPEN_DOCUMENT 返回的 URI 需要 takePersistableUriPermission)
+                                        try {
+                                            int flags = data.getFlags() & (android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                                    | android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                                            ((android.app.Activity) param.thisObject).getContentResolver().takePersistableUriPermission(uri, flags);
+                                        } catch (Throwable ignoredPerm) {}
+                                        android.widget.Toast.makeText((android.content.Context) param.thisObject,
+                                                T("Logo 已添加", "Logo added"), android.widget.Toast.LENGTH_SHORT).show();
+                                        XposedBridge.log("[SBPlus] home logo saved: " + saved);
+                                        // 刷新主页美化页的 Logo 区(数字+列表)
+                                        refreshHomeLogoSection();
+                                        // 若管理页面还开着,就地刷新图片列表
+                                        try {
+                                            if (sHomeLogoPageRebuild != null && sHomeLogoPageDlg != null
+                                                    && sHomeLogoPageDlg.isShowing()) {
+                                                sHomeLogoPageRebuild.run();
+                                            }
+                                        } catch (Throwable ignoredRebuild) {}
+                                    } else {
+                                        android.widget.Toast.makeText((android.content.Context) param.thisObject,
+                                                T("Logo 添加失败", "Failed to add logo"), android.widget.Toast.LENGTH_SHORT).show();
+                                    }
+                                    return;
+                                }
                                 if (req != 61001) return;
                                 int res = (Integer) param.args[1];
                                 android.content.Intent data = (android.content.Intent) param.args[2];
@@ -5469,6 +6425,8 @@ private void showUaGroupDialog(final Context ctx) {
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 attachVideoBackground(param.thisObject);
+                                try { attachHomeLogo(param.thisObject); } catch (Throwable ignoredLogo) {}
+                                try { attachHomeClock(param.thisObject); } catch (Throwable ignoredClock) {}
                                 // 主页背景出现 -> 隐藏嗅探/油猴图标(确保主页不显示)
                                 try {
                                     final android.view.View bgV = (android.view.View) param.thisObject;
@@ -5824,6 +6782,11 @@ private void showUaGroupDialog(final Context ctx) {
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 final android.view.View bar = (android.view.View) param.thisObject;
+                                // 主页搜索框(假地址栏)实例: logo/时钟跟随动画的基准目标
+                                sHomeLogoSbView = bar;
+                                try {
+                                    sHomeLogoSbHeight = bar.getHeight();
+                                } catch (Throwable ignored) {}
                                 if (!isHomeClearTextEnabled()) return;
                                 // 延后执行两步,防止 viewmodel/observer 重置样式
                                 android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -5860,6 +6823,20 @@ private void showUaGroupDialog(final Context ctx) {
                                     } catch (Throwable t) {
                                         XposedBridge.log("[SBPlus] rearrange err: " + t);
                                     }
+                                    // 主页布局每次重建时, 按最新偏好重新挂载 logo/时钟(开关/大小修改后回主页立即生效)
+                                    try {
+                                        if (sHomeLogoBgView != null) {
+                                            android.view.ViewGroup bgp = (android.view.ViewGroup) sHomeLogoBgView.getParent();
+                                            if (bgp != null && sHomeLogoBgView.isAttachedToWindow()) {
+                                                refreshHomeLogoSection();
+                                            }
+                                        }
+                                    } catch (Throwable t2) { XposedBridge.log("[SBPlus] relogo err: " + t2); }
+                                    try {
+                                        if (sHomeClockBg != null && sHomeClockBg.isAttachedToWindow()) {
+                                            refreshHomeClock();
+                                        }
+                                    } catch (Throwable t3) { XposedBridge.log("[SBPlus] reclock err: " + t3); }
                                 }
                             }, 400);
                         }
@@ -5867,6 +6844,38 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] QuickAccessMainLayout.onFinishInflate hooked");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] main layout hook failed: " + t);
+        }
+
+        // 视图挂回窗口时(从后台恢复/重建), 按最新偏好重新挂载 logo/时钟
+        try {
+            Class<?> mainLayout2 = XposedHelpers.findClass(
+                    "com.sec.android.app.sbrowser.quickaccess.ui.page.QuickAccessMainLayout", cl);
+            XposedHelpers.findAndHookMethod(mainLayout2, "onAttachedToWindow",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                            try {
+                                final android.view.View root = (android.view.View) param.thisObject;
+                                root.postDelayed(new Runnable() {
+                                    @Override public void run() {
+                                        try {
+                                            if (sHomeLogoBgView != null && sHomeLogoBgView.isAttachedToWindow()) {
+                                                refreshHomeLogoSection();
+                                            }
+                                        } catch (Throwable t2) { XposedBridge.log("[SBPlus] relogo2 err: " + t2); }
+                                        try {
+                                            if (sHomeClockBg != null && sHomeClockBg.isAttachedToWindow()) {
+                                                refreshHomeClock();
+                                            }
+                                        } catch (Throwable t3) { XposedBridge.log("[SBPlus] reclock2 err: " + t3); }
+                                    }
+                                }, 500);
+                            } catch (Throwable ignored) {}
+                        }
+                    });
+            XposedBridge.log("[SBPlus] QuickAccessMainLayout.onAttachedToWindow hooked");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] main layout attach hook failed: " + t);
         }
     }
 
@@ -6181,7 +7190,7 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /** 遍历所有 View (递归). */
-    private void collectAllViews(android.view.View v, java.util.List<android.view.View> out) {
+    private static void collectAllViews(android.view.View v, java.util.List<android.view.View> out) {
         if (v == null) return;
         out.add(v);
         if (v instanceof android.view.ViewGroup) {
@@ -6307,7 +7316,7 @@ private void showUaGroupDialog(final Context ctx) {
                             } catch (Throwable ignored) {}
                             try { iv.setImageTintList(null); } catch (Throwable ignored) {}
                             try { iv.clearColorFilter(); } catch (Throwable ignored) {}
-                            XposedBridge.log("[SBPlus] IC-SKIP addrbar id=" + idn + " cf=" + cfinfo + " cleared");
+                            if (false) XposedBridge.log("[SBPlus] IC-SKIP addrbar id=" + idn + " cf=" + cfinfo + " cleared");
                             return;
                         }
                         break;
@@ -6325,6 +7334,17 @@ private void showUaGroupDialog(final Context ctx) {
                 } catch (Throwable ignored) {}
                 return;
             }
+            // 网页真实内容图标/缩略图绝不染色(favicon/thumbnail/screenshot 等)
+            try {
+                String idn2 = iv.getResources().getResourceEntryName(iv.getId());
+                String idl2 = idn2.toLowerCase();
+                if (idl2.contains("favicon") || idl2.contains("thumb") || idl2.contains("screenshot")
+                        || idl2.contains("snapshot") || idl2.contains("capture") || idl2.contains("preview")
+                        || idl2.contains("site_icon") || idl2.contains("website_icon")
+                        || idl2.contains("webpage") || idl2.contains("page_icon")) {
+                    return;
+                }
+            } catch (Throwable ignored) {}
             try {
                 android.graphics.drawable.Drawable d = iv.getDrawable();
                 // 诊断+保护: 大尺寸/位图背景不染(避免背景图被染蓝); onDraw 时 view 宽高可能为0, 用 drawable intrinsic 判断
@@ -6368,7 +7388,7 @@ private void showUaGroupDialog(final Context ctx) {
                                             {
                             String idn = "";
                             try { idn = iv.getResources().getResourceEntryName(iv.getId()); } catch (Throwable ignored) {}
-                            XposedBridge.log("[SBPlus] IC-TINT icol=" + Integer.toHexString(icol) + " id=" + idn + " class=" + iv.getClass().getSimpleName()
+                            if (false) XposedBridge.log("[SBPlus] IC-TINT icol=" + Integer.toHexString(icol) + " id=" + idn + " class=" + iv.getClass().getSimpleName()
                                     + " w=" + iv.getWidth() + " h=" + iv.getHeight() + " dr=" + d.getClass().getSimpleName()
                                     + " ctx=" + (iv.getContext()!=null?iv.getContext().getClass().getName():"null"));
                         }
@@ -6641,6 +7661,536 @@ private void showUaGroupDialog(final Context ctx) {
             return true;
         } catch (Throwable ignored) {}
         return false;
+    }
+
+    /** 在主页背景上叠加主页 Logo(居中偏上,搜索框上方;支持 GIF 动画)。 */
+    /** 按父容器类型创建匹配的 LayoutParams(RelativeLayout/FrameLayout/LinearLayout)。 */
+    private static android.view.ViewGroup.LayoutParams makeLp(android.view.ViewGroup parent, int w, int h) {
+        try {
+            if (parent instanceof android.widget.RelativeLayout) {
+                return new android.widget.RelativeLayout.LayoutParams(w, h);
+            }
+            if (parent instanceof android.widget.LinearLayout) {
+                return new android.widget.LinearLayout.LayoutParams(w, h);
+            }
+        } catch (Throwable ignored) {}
+        return new android.widget.FrameLayout.LayoutParams(w, h);
+    }
+
+    /** 统一设置 Logo 布局参数居中(按 LayoutParams 类型) + topMargin。 */
+    private static void centerLogoLp(android.view.ViewGroup.LayoutParams lp, int topMargin) {
+        try {
+            if (lp instanceof android.widget.FrameLayout.LayoutParams) {
+                ((android.widget.FrameLayout.LayoutParams) lp).gravity =
+                        android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
+                ((android.widget.FrameLayout.LayoutParams) lp).topMargin = topMargin;
+            } else if (lp instanceof android.widget.RelativeLayout.LayoutParams) {
+                android.widget.RelativeLayout.LayoutParams rl = (android.widget.RelativeLayout.LayoutParams) lp;
+                rl.addRule(android.widget.RelativeLayout.CENTER_HORIZONTAL);
+                rl.topMargin = topMargin;
+            } else if (lp instanceof android.widget.LinearLayout.LayoutParams) {
+                ((android.widget.LinearLayout.LayoutParams) lp).gravity =
+                        android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
+                ((android.widget.LinearLayout.LayoutParams) lp).topMargin = topMargin;
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** 计算 Logo 尺寸上限: [maxW, maxH] = 搜索框宽度 x 2x搜索框高度(找不到搜索框则屏幕宽90% x 屏高20%)。static 版供 onPreDraw 使用。 */
+    private static int[] logoSizeLimitStatic(android.view.View anyView) {
+        return logoSizeLimit(anyView);
+    }
+
+    /** 计算 Logo 尺寸上限: [maxW, maxH] = 搜索框宽度 x 2x搜索框高度(找不到搜索框则屏幕宽90% x 屏高20%)。 */
+    private static int[] logoSizeLimit(android.view.View anyView) {
+        try {
+            android.util.DisplayMetrics dm = anyView.getResources().getDisplayMetrics();
+            int maxW = (int)(dm.widthPixels * 0.9f);
+            int maxH = (int)(dm.heightPixels * 0.20f);
+            // 优先使用 hook 到的 QuickAccessDummyUrlBar(主页搜索框)
+            try {
+                if (sHomeLogoSbView != null && sHomeLogoSbView.getWidth() > 0) {
+                    maxW = sHomeLogoSbView.getWidth();
+                    maxH = (int)(sHomeLogoSbView.getHeight() * 2.0f);
+                    sHomeLogoSbHeight = sHomeLogoSbView.getHeight();
+                    return new int[]{ maxW, maxH };
+                }
+            } catch (Throwable ignored) {}
+            // 尝试从视图树找搜索框(omnibox/search); 避免命中地址栏 url_bar_parent
+            try {
+                android.view.ViewGroup root = (android.view.ViewGroup) anyView.getRootView();
+                java.util.List<android.view.View> all = new java.util.ArrayList<android.view.View>();
+                collectAllViews(root, all);
+                for (android.view.View v : all) {
+                    String idn = "";
+                    try { idn = v.getResources().getResourceEntryName(v.getId()); } catch (Throwable ignored) { continue; }
+                    if (idn == null || idn.length() == 0) continue;
+                    String idl = idn.toLowerCase();
+                    if (idl.contains("url_bar_parent") || idl.contains("urlbar") && idl.contains("parent")) continue;
+                    String cls = v.getClass().getName().toLowerCase();
+                    boolean isQuickDummy = cls.contains("quickaccessdummyurlbar");
+                    if (isQuickDummy || idl.contains("search") || idl.contains("omnibox") || idl.contains("quickaccess_header")
+                            || idl.contains("address")) {
+                        if (v.getWidth() > 0) {
+                            maxW = v.getWidth();
+                            maxH = (int)(v.getHeight() * 2.0f);
+                            sHomeLogoSbHeight = v.getHeight();
+                            sHomeLogoSbView = v;
+                            break;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            return new int[]{ maxW, maxH };
+        } catch (Throwable t) {
+            return new int[]{ 360, 120 };
+        }
+    }
+
+    /** 把 Logo 图片纯色背景变透明: 取四角平均色为背景色, 容差内像素alpha=0, 边缘轻微羽化。GIF动画不处理。 */
+    private static android.graphics.Bitmap makeLogoBgTransparent(android.graphics.Bitmap src) {
+        try {
+            if (src == null) return null;
+            int w = src.getWidth(), h = src.getHeight();
+            if (w <= 0 || h <= 0) return null;
+            android.graphics.Bitmap out = src.copy(android.graphics.Bitmap.Config.ARGB_8888, true);
+            // 采样四角颜色(取 3x3 区域均值)
+            long r = 0, g = 0, b = 0;
+            int n = 0;
+            int[][] corners = { {0,0}, {w-1,0}, {0,h-1}, {w-1,h-1} };
+            int[] px = new int[4];
+            for (int[] c : corners) {
+                px[0] = c[0]; px[1] = c[1];
+                if (px[0] < 0) px[0] = 0; if (px[1] < 0) px[1] = 0;
+                if (px[0] >= w) px[0] = w-1; if (px[1] >= h) px[1] = h-1;
+                int col = out.getPixel(px[0], px[1]);
+                r += (col >> 16) & 0xFF; g += (col >> 8) & 0xFF; b += col & 0xFF;
+                n++;
+            }
+            int br = (int)(r / n), bg = (int)(g / n), bb = (int)(b / n);
+            // 容差
+            int tol = 48;
+            int[] buf = new int[w * h];
+            out.getPixels(buf, 0, w, 0, 0, w, h);
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int i = y * w + x;
+                    int col = buf[i];
+                    int cr = (col >> 16) & 0xFF, cg = (col >> 8) & 0xFF, cb = col & 0xFF;
+                    int dist = Math.abs(cr - br) + Math.abs(cg - bg) + Math.abs(cb - bb);
+                    if (dist < tol) {
+                        // 边缘柔化: 越接近背景色 alpha 越低
+                        int a = 255 * (dist * 3) / (tol * 3 + 1);
+                        if (a > 255) a = 255;
+                        if (a < 0) a = 0;
+                        buf[i] = (a << 24) | (cr << 16) | (cg << 8) | cb;
+                    }
+                }
+            }
+            out.setPixels(buf, 0, w, 0, 0, w, h);
+            XposedBridge.log("[SBPlus] logo bg transparent bg=#" + Integer.toHexString(br) + Integer.toHexString(bg) + Integer.toHexString(bb));
+            return out;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] makeLogoBgTransparent err: " + t);
+            return null;
+        }
+    }
+
+    /** GIF 逐帧背景透明化: Movie 解码每帧抠背景, 组装 AnimationDrawable。失败返回 null。 */
+    private static android.graphics.drawable.AnimationDrawable decodeGifTransparent(android.content.Context ctx, java.io.File f) {
+        try {
+            android.graphics.Movie mv = android.graphics.Movie.decodeFile(f.getAbsolutePath());
+            if (mv == null) return null;
+            int w = mv.width();
+            int h = mv.height();
+            if (w <= 0 || h <= 0) return null;
+            int dur = mv.duration();
+            if (dur <= 0) dur = 800;
+            // 每 100ms 一帧, 最多 30 帧控制内存
+            int step = 100;
+            int frameCount = Math.max(1, Math.min(30, dur / step + 1));
+            android.graphics.drawable.AnimationDrawable ad = new android.graphics.drawable.AnimationDrawable();
+            for (int i = 0; i < frameCount; i++) {
+                android.graphics.Bitmap frm = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
+                android.graphics.Canvas c = new android.graphics.Canvas(frm);
+                int t = i * step;
+                if (t > dur) t = dur;
+                mv.setTime(t);
+                mv.draw(c, 0, 0);
+                android.graphics.Bitmap bt = makeLogoBgTransparent(frm);
+                if (bt != null) {
+                    ad.addFrame(new android.graphics.drawable.BitmapDrawable(ctx.getResources(), bt), step);
+                } else {
+                    ad.addFrame(new android.graphics.drawable.BitmapDrawable(ctx.getResources(), frm), step);
+                }
+                if (i != frameCount - 1) { try { Thread.sleep(1); } catch (Throwable ignored) {} }
+            }
+            ad.setOneShot(false);
+            return ad;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] decodeGifTransparent err: " + t);
+            return null;
+        }
+    }
+
+    private void attachHomeLogo(Object bgViewObj) {
+        try {
+            if (!(bgViewObj instanceof android.view.View)) return;
+            android.view.View bg = (android.view.View) bgViewObj;
+            sHomeLogoBgView = bg;
+            if (!HomeLogoHelper.isEnabled(bg.getContext())) return;
+            String path = HomeLogoHelper.currentPath(bg.getContext());
+            if (path == null || path.isEmpty()) return;
+            java.io.File f = new java.io.File(path);
+            if (!f.exists()) return;
+
+            android.view.ViewGroup parent = (android.view.ViewGroup) bg.getParent();
+            if (parent == null) return;
+
+            // 清掉旧的 Logo ImageView,避免重复叠加
+            try {
+                for (int i = parent.getChildCount() - 1; i >= 0; i--) {
+                    android.view.View c = parent.getChildAt(i);
+                    if (c instanceof android.widget.ImageView && c.getTag() != null
+                            && "sbplus_home_logo".equals(c.getTag())) parent.removeViewAt(i);
+                }
+            } catch (Throwable ignored) {}
+
+            final android.widget.ImageView iv = new android.widget.ImageView(bg.getContext());
+            iv.setTag("sbplus_home_logo");
+            iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+            final boolean alphaOn = HomeLogoHelper.isAlphaBg(bg.getContext(), new java.io.File(path).getName());
+            try {
+                // API 28+: ImageDecoder 解码, 自动得到 AnimatedImageDrawable(GIF/WebP 动画) 或 BitmapDrawable
+                android.graphics.ImageDecoder.Source src = android.graphics.ImageDecoder.createSource(new java.io.File(path));
+                android.graphics.drawable.Drawable dr = android.graphics.ImageDecoder.decodeDrawable(src);
+                if (dr instanceof android.graphics.drawable.AnimatedImageDrawable) {
+                    if (alphaOn) {
+                        // GIF 透明化: 逐帧抠背景, 用 AnimationDrawable 重建动画
+                        android.graphics.drawable.AnimationDrawable ad = decodeGifTransparent(bg.getContext(), new java.io.File(path));
+                        if (ad != null && ad.getNumberOfFrames() > 0) {
+                            iv.setImageDrawable(ad);
+                            ad.start();
+                        } else {
+                            iv.setImageDrawable(dr);
+                            ((android.graphics.drawable.AnimatedImageDrawable) dr).start();
+                        }
+                    } else {
+                        iv.setImageDrawable(dr);
+                        ((android.graphics.drawable.AnimatedImageDrawable) dr).start();
+                    }
+                } else if (dr instanceof android.graphics.drawable.BitmapDrawable && alphaOn) {
+                    android.graphics.Bitmap bmp2 = ((android.graphics.drawable.BitmapDrawable) dr).getBitmap();
+                    android.graphics.Bitmap bt = makeLogoBgTransparent(bmp2);
+                    if (bt != null) iv.setImageBitmap(bt);
+                } else {
+                    iv.setImageDrawable(dr);
+                }
+            } catch (Throwable t1) {
+                try {
+                    // 兕底: BitmapFactory 静态解码
+                    android.graphics.Bitmap bmp = android.graphics.BitmapFactory.decodeFile(path);
+                    if (bmp != null) {
+                        if (HomeLogoHelper.isAlphaBg(bg.getContext(), new java.io.File(path).getName())) {
+                            android.graphics.Bitmap bt = makeLogoBgTransparent(bmp);
+                            if (bt != null) iv.setImageBitmap(bt);
+                            else iv.setImageBitmap(bmp);
+                        } else {
+                            iv.setImageBitmap(bmp);
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+
+            // 尺寸限制: 宽<=搜索框宽度, 高<=3x搜索框高度; 超出等比缩小
+            int[] lim = logoSizeLimit(bg);
+            int iw = 0, ih = 0;
+            try {
+                android.graphics.drawable.Drawable drp = iv.getDrawable();
+                if (drp != null) {
+                    iw = drp.getIntrinsicWidth();
+                    ih = drp.getIntrinsicHeight();
+                }
+            } catch (Throwable ignored) {}
+            if (iw <= 0 || ih <= 0) { iw = 400; ih = 200; }
+            float ratio = Math.min(1.0f, Math.min((float)lim[0] / iw, (float)lim[1] / ih));
+            int lw = Math.max(1, (int)(iw * ratio));
+            int lh = Math.max(1, (int)(ih * ratio));
+            android.view.ViewGroup.LayoutParams lp = makeLp(parent, lw, lh);
+            centerLogoLp(lp, 1);
+            parent.addView(iv, lp);
+            sHomeLogoIv = iv;
+            XposedBridge.log("[SBPlus] home logo size " + iw + "x" + ih + " -> " + lw + "x" + lh + " (lim " + lim[0] + "x" + lim[1] + ")");
+            // 等布局完成后精确定位: 屏幕垂直约 18% 高度处(搜索框上方), 水平居中
+            // 若父视图尚未布局(宽高为0), 延迟重试直到就绪, 确保大小/位置必然生效
+            iv.post(new Runnable() {
+                @Override public void run() {
+                    try {
+                        android.view.ViewGroup p2 = (android.view.ViewGroup) iv.getParent();
+                        if (p2 == null) return;
+                        int pw2 = p2.getWidth();
+                        int ph2 = p2.getHeight();
+                        if (pw2 <= 0 || ph2 <= 0) {
+                            try { iv.postDelayed(this, 150); } catch (Throwable ignored) {}
+                            return;
+                        }
+                        // 搜索框基准尚未就绪(QuickAccessDummyUrlBar 未 attach) -> 延迟重试, 确保尺寸限制正确
+                        if (sHomeLogoSbView == null) {
+                            try { logoSizeLimitStatic(p2); } catch (Throwable ignored) {}
+                            if (sHomeLogoSbView == null) {
+                                try { iv.postDelayed(this, 150); } catch (Throwable ignored) {}
+                                return;
+                            }
+                        }
+                        int pw = pw2;
+                        int ph = ph2;
+                        if (pw > 0 && ph > 0) {
+                            String nm = new java.io.File(path).getName();
+                            int[] lim2 = logoSizeLimit((android.view.View) iv.getParent());
+                            int iw2 = iv.getWidth();
+                            int ih2 = iv.getHeight();
+                            if (iw2 <= 0 || ih2 <= 0) { iw2 = 200; ih2 = 100; }
+                            float ratio2 = Math.min(1.0f, Math.min((float)lim2[0] / iw2, (float)lim2[1] / ih2));
+                            int sizePct = HomeLogoHelper.getSizePct(bg.getContext(), nm);
+                            float sizeMul = sizePct / 100f;
+                            int lw2 = Math.max(1, (int)(iw2 * ratio2 * sizeMul));
+                            int lh2 = Math.max(1, (int)(ih2 * ratio2 * sizeMul));
+                            // 自定义位置: X/Y 百分比(锚点=中心)
+                            int px = HomeLogoHelper.getPosX(bg.getContext(), nm);
+                            int py = HomeLogoHelper.getPosY(bg.getContext(), nm);
+                            int left = (int)(pw * px / 100f) - lw2 / 2;
+                            int top = (int)(ph * py / 100f) - lh2 / 2;
+                            if (left < 0) left = 0;
+                            if (left + lw2 > pw) left = Math.max(0, pw - lw2);
+                            if (top < 0) top = 0;
+                            if (top + lh2 > ph) top = Math.max(0, ph - lh2);
+                            android.view.ViewGroup.LayoutParams lp2 = makeLp(p2, lw2, lh2);
+                            // 用 margin 精确定位(不用 gravity, 直接设置位置)
+                            if (lp2 instanceof android.widget.FrameLayout.LayoutParams) {
+                                android.widget.FrameLayout.LayoutParams fl = (android.widget.FrameLayout.LayoutParams) lp2;
+                                fl.gravity = android.view.Gravity.TOP | android.view.Gravity.LEFT;
+                                fl.leftMargin = left;
+                                fl.topMargin = top;
+                            } else if (lp2 instanceof android.widget.RelativeLayout.LayoutParams) {
+                                android.widget.RelativeLayout.LayoutParams rl = (android.widget.RelativeLayout.LayoutParams) lp2;
+                                rl.leftMargin = left;
+                                rl.topMargin = top;
+                            } else if (lp2 instanceof android.widget.LinearLayout.LayoutParams) {
+                                android.widget.LinearLayout.LayoutParams ll = (android.widget.LinearLayout.LayoutParams) lp2;
+                                ll.gravity = android.view.Gravity.TOP | android.view.Gravity.LEFT;
+                                ll.leftMargin = left;
+                                ll.topMargin = top;
+                            }
+                            iv.setLayoutParams(lp2);
+                            XposedBridge.log("[SBPlus] logo pos x=" + px + "% y=" + py + "% size=" + sizePct + "% -> left=" + left + " top=" + top + " " + lw2 + "x" + lh2);
+                            // 搜索框动画跟随: 挂到搜索框 VTO(动画期间搜索框每帧重绘, 必然触发), 每帧跟随
+                            try {
+                                sHomeLogoIv.setTranslationY(0f);
+                                if (sHomeLogoSbView == null) { logoSizeLimitStatic(iv); }
+                                if (sHomeLogoSbView != null) {
+                                    sLogoSbPrevTop = -1f;
+                                    sLogoSbBaseTop = -1f;
+                                    final android.view.ViewTreeObserver vtoSb = sHomeLogoSbView.getViewTreeObserver();
+                                    if (vtoSb != null && vtoSb.isAlive()) {
+                                        vtoSb.removeOnPreDrawListener(sLogoPreDraw);
+                                        vtoSb.addOnPreDrawListener(sLogoPreDraw);
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            });
+            XposedBridge.log("[SBPlus] home logo attached " + path);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] attachHomeLogo error: " + t);
+        }
+    }
+
+    // ===== 主页时钟 =====
+    private static android.view.View sHomeClockTv;
+    private static android.view.View sHomeClockBg;
+    private static android.os.Handler sHomeClockHandler;
+    private static Runnable sHomeClockTick;
+    private static final int sHomeClockCharColor = 0xFFE8EAED;
+    private static float sClockSbPrevTop = -1f;
+    private static boolean sClockFollowLogged = false;
+    private static boolean sClockFollowRegistered = false;
+    private static final android.view.ViewTreeObserver.OnPreDrawListener sClockPreDraw = new android.view.ViewTreeObserver.OnPreDrawListener() {
+        @Override public boolean onPreDraw() {
+            try {
+                if (sHomeLogoSbView == null || sHomeClockTv == null || sHomeClockTv.getParent() == null) {
+                    sClockSbPrevTop = -1f;
+                    return true;
+                }
+                if (!HomeClockHelper.isFollow(sHomeClockTv.getContext())) return true;
+                int[] sbLoc = new int[2];
+                sHomeLogoSbView.getLocationInWindow(sbLoc);
+                if (sClockSbPrevTop < 0f) {
+                    sClockSbPrevTop = sbLoc[1];
+                } else {
+                    float delta = sbLoc[1] - sClockSbPrevTop;
+                    if (Math.abs(delta) > 0.3f) {
+                        sHomeClockTv.setTranslationY(sHomeClockTv.getTranslationY() + delta);
+                    }
+                    sClockSbPrevTop = sbLoc[1];
+                }
+            } catch (Throwable ignored) {}
+            return true;
+        }
+    };
+    /** 主页时钟: 支持秒, 自定义位置大小。挂载到主页背景父容器。 */
+    private void attachHomeClock(Object bgViewObj) {
+        try {
+            if (!(bgViewObj instanceof android.view.View)) return;
+            final android.view.View bg = (android.view.View) bgViewObj;
+            sHomeClockBg = bg;
+            if (!HomeClockHelper.isEnabled(bg.getContext())) return;
+            // 确保搜索框 view 已探测(时钟跟随用; logo 可能未挂载导致未探测)
+            try {
+                if (sHomeLogoSbView == null) {
+                    logoSizeLimit(bg);
+                }
+            } catch (Throwable ignored) {}
+            final android.view.ViewGroup parent = (android.view.ViewGroup) bg.getParent();
+            if (parent == null) return;
+
+            // 清掉旧的时钟,避免重复叠加
+            try {
+                for (int i = parent.getChildCount() - 1; i >= 0; i--) {
+                    android.view.View c = parent.getChildAt(i);
+                    if (c.getTag() != null && "sbplus_home_clock".equals(c.getTag())) {
+                        parent.removeViewAt(i);
+                        if (c == sHomeClockTv) sHomeClockTv = null;
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+            final android.widget.TextView tv = new android.widget.TextView(bg.getContext());
+            tv.setTag("sbplus_home_clock");
+            tv.setTextColor(sHomeClockCharColor);
+            tv.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
+            tv.setShadowLayer(6f, 0f, 2f, 0xAA000000);
+            tv.setGravity(android.view.Gravity.CENTER);
+            try { tv.setIncludeFontPadding(false); } catch (Throwable ignored) {}
+            int sizePct = HomeClockHelper.getSizePct(bg.getContext());
+            float baseFont = bg.getContext().getResources().getDisplayMetrics().widthPixels * 0.11f;
+            final float fontPx = baseFont * sizePct / 100f;
+            tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, fontPx);
+
+            // 先写入初始时间
+            try {
+                java.util.Date now0 = new java.util.Date();
+                boolean secs0 = HomeClockHelper.isSeconds(bg.getContext());
+                tv.setText(secs0
+                        ? String.format("%02d:%02d:%02d", now0.getHours(), now0.getMinutes(), now0.getSeconds())
+                        : String.format("%02d:%02d", now0.getHours(), now0.getMinutes()));
+            } catch (Throwable ignored) {}
+
+            // WRAP_CONTENT 自适应, 避免文字被裁剪
+            parent.addView(tv, makeLp(parent, -2, -2));
+            sHomeClockTv = tv;
+
+            sHomeClockTick = new Runnable() {
+                @Override public void run() {
+                    try {
+                        if (sHomeClockTv == null || sHomeClockTv.getParent() == null) return;
+                        boolean secs = HomeClockHelper.isSeconds(bg.getContext());
+                        java.util.Date now = new java.util.Date();
+                        String t = secs
+                                ? String.format("%02d:%02d:%02d", now.getHours(), now.getMinutes(), now.getSeconds())
+                                : String.format("%02d:%02d", now.getHours(), now.getMinutes());
+                        android.widget.TextView tt = (android.widget.TextView) sHomeClockTv;
+                        if (!t.equals(tt.getText().toString())) tt.setText(t);
+                        // 跟随自愈: 每 200ms 检查 onPreDraw 监听是否挂好; 探测已完成(hook QuickAccessDummyUrlBar), 一般一次即成
+                        try {
+                            if (sHomeLogoSbView != null && !sClockFollowRegistered) {
+                                android.view.ViewTreeObserver vtoSb = sHomeLogoSbView.getViewTreeObserver();
+                                if (vtoSb != null && vtoSb.isAlive()) {
+                                    sClockSbPrevTop = -1f;
+                                    sHomeClockTv.setTranslationY(0f);
+                                    vtoSb.removeOnPreDrawListener(sClockPreDraw);
+                                    vtoSb.addOnPreDrawListener(sClockPreDraw);
+                                    sClockFollowRegistered = true;
+                                }
+                            }
+                        } catch (Throwable ignored2) {}
+                        sHomeClockHandler.postDelayed(this, 200);
+                    } catch (Throwable ignored) {}
+                }
+            };
+            if (sHomeClockHandler == null) sHomeClockHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+            sHomeClockHandler.removeCallbacksAndMessages(null);
+            sHomeClockHandler.post(sHomeClockTick);
+
+            // 布局完成后精确定位(百分比锚点中心); 若父视图尚未布局, 延迟重试直到就绪
+            tv.post(new Runnable() {
+                @Override public void run() {
+                    try {
+                        android.view.ViewGroup p2 = (android.view.ViewGroup) tv.getParent();
+                        if (p2 == null) return;
+                        int pw = p2.getWidth();
+                        int ph = p2.getHeight();
+                        if (pw <= 0 || ph <= 0) {
+                            try { tv.postDelayed(this, 150); } catch (Throwable ignored) {}
+                            return;
+                        }
+                        int px = HomeClockHelper.getPosX(bg.getContext());
+                        int py = HomeClockHelper.getPosY(bg.getContext());
+                        int tw = tv.getWidth();
+                        int th = tv.getHeight();
+                        if (tw <= 0 || th <= 0) { tv.measure(android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED), android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED)); tw = tv.getMeasuredWidth(); th = tv.getMeasuredHeight(); }
+                        int left = (int)(pw * px / 100f) - tw / 2;
+                        int top = (int)(ph * py / 100f) - th / 2;
+                        if (left < 0) left = 0;
+                        if (left + tw > pw) left = Math.max(0, pw - tw);
+                        if (top < 0) top = 0;
+                        if (top + th > ph) top = Math.max(0, ph - th);
+                        android.view.ViewGroup.LayoutParams lp2 = makeLp(p2, tw, th);
+                        if (lp2 instanceof android.widget.FrameLayout.LayoutParams) {
+                            android.widget.FrameLayout.LayoutParams fl = (android.widget.FrameLayout.LayoutParams) lp2;
+                            fl.gravity = android.view.Gravity.TOP | android.view.Gravity.LEFT;
+                            fl.leftMargin = left;
+                            fl.topMargin = top;
+                        } else if (lp2 instanceof android.widget.RelativeLayout.LayoutParams) {
+                            android.widget.RelativeLayout.LayoutParams rl = (android.widget.RelativeLayout.LayoutParams) lp2;
+                            rl.leftMargin = left;
+                            rl.topMargin = top;
+                        } else if (lp2 instanceof android.widget.LinearLayout.LayoutParams) {
+                            android.widget.LinearLayout.LayoutParams ll = (android.widget.LinearLayout.LayoutParams) lp2;
+                            ll.gravity = android.view.Gravity.TOP | android.view.Gravity.LEFT;
+                            ll.leftMargin = left;
+                            ll.topMargin = top;
+                        }
+                        tv.setLayoutParams(lp2);
+                        // 跟随: 由 tick 轮询自愈挂载, 这里仅清零基准
+                        sHomeClockTv.setTranslationY(0f);
+                        sClockSbPrevTop = -1f;
+                        sClockFollowRegistered = false;
+                    } catch (Throwable t2) { XposedBridge.log("[SBPlus] clock pos err: " + t2); }
+                }
+            });
+            XposedBridge.log("[SBPlus] home clock attached");
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] attachHomeClock error: " + t);
+        }
+    }
+
+    /** 刷新主页时钟(设置变更后重挂载)。 */
+    private void refreshHomeClock() {
+        try {
+            if (sHomeClockTv != null && sHomeClockTv.getParent() != null) {
+                android.view.ViewGroup parent = (android.view.ViewGroup) sHomeClockTv.getParent();
+                try { parent.removeView(sHomeClockTv); } catch (Throwable ignored) {}
+                sHomeClockTv = null;
+                if (sHomeClockHandler != null) sHomeClockHandler.removeCallbacksAndMessages(null);
+            }
+            if (sHomeClockTv == null && sHomeClockBg != null) {
+                try { attachHomeClock(sHomeClockBg); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] refreshHomeClock err: " + t);
+        }
     }
 
     private void attachVideoBackground(Object bgViewObj) {
@@ -6996,7 +8546,7 @@ private void showUaGroupDialog(final Context ctx) {
         try {
             // 下载方式
             final Object modePref = buildPreferenceCustom(ctx, cl);
-            XposedHelpers.callMethod(modePref, "setTitle", T("下载方式", "Download mode"));
+            XposedHelpers.callMethod(modePref, "setTitle", T("视频下载方式", "Video download mode"));
             XposedHelpers.callMethod(modePref, "setKey", "sbplus_dl_mode");
             refreshModeSummary(ctx, modePref);
             final Object[] modePrefRef = new Object[]{modePref};
@@ -7149,7 +8699,7 @@ private void showUaGroupDialog(final Context ctx) {
                                            T("外部下载器(转交第三方)", "External downloader") };
             int idx = "external".equals(cur) ? 1 : 0;
             android.app.AlertDialog d = new android.app.AlertDialog.Builder(ctx)
-                .setTitle(T("下载方式", "Download mode"))
+                .setTitle(T("视频下载方式", "Video download mode"))
                 .setSingleChoiceItems(items, idx, new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface dlg, int which) {
                         String mode = (which == 1) ? "external" : "internal";
@@ -9965,6 +11515,18 @@ private void showUaGroupDialog(final Context ctx) {
         "if(!isIframe){var iframes=doc.querySelectorAll('iframe');for(var fi=0;fi<iframes.length;fi++){try{var ifrm=iframes[fi];if(ifrm.contentDocument){scanDoc(ifrm.contentDocument,true);}}catch(e){}}}" +
         "}catch(e){}}" +
         "function scanNow(){try{" +
+        "function biliApi(){try{var ww=window;try{ww=ww.wrappedJSObject||ww;}catch(e){}var ist=ww.__INITIAL_STATE__;var bv='',cid=0;if(ist){if(ist.vi" +
+        "deoData&&ist.videoData.bvid)bv=ist.videoData.bvid;if(ist.videoData&&ist.videoData.cid)cid=ist.videoData.cid;if(!bv&&ist.epInfo&&ist.epInfo.b" +
+        "vid)bv=ist.epInfo.bvid;if(!cid&&ist.epInfo&&ist.epInfo.cid)cid=ist.epInfo.cid;}if(!bv||!cid)return;var xhr=new XMLHttpRequest();xhr.open('GE" +
+        "T','https://api.bilibili.com/x/player/playurl?bvid='+encodeURIComponent(bv)+'&cid='+cid+'&qn=127&fnval=4048&fourk=1',false);xhr.send(null);v" +
+        "ar jt=JSON.parse(xhr.responseText);var dd=jt&&jt.data&&jt.data.dash?jt.data.dash:null;if(!dd)return;var dv=dd.video||[];var da=dd.audio||[];" +
+        "var op={};var tag='biliApi:'+dv.length+'v';for(var oi=0;oi<dv.length;oi++){var vo=dv[oi];if(!vo||!vo.baseUrl)continue;var wid=vo.width||0,he" +
+        "i=vo.height||0;var key=wid+'x'+hei+'|'+(vo.codecs||'');if(op[key])continue;op[key]=1;var qn=vo.id||0;var lb2='';if(qn===127)lb2='8K';else if" +
+        "(qn===126)lb2='Dolby';else if(qn===125)lb2='HDR';else if(qn===120)lb2='4K';else if(qn===116)lb2='1080P60';else if(qn===112)lb2='1080P+';else" +
+        " if(qn===80)lb2='1080P';else if(qn===74)lb2='720P60';else if(qn===64)lb2='720P';else if(qn===32)lb2='480P';else if(qn===16)lb2='360P';else l" +
+        "b2=wid+'x'+hei;var cc=(vo.codecs||'').indexOf('avc')>=0?'AVC':((vo.codecs||'').indexOf('hev')>=0?'HEVC':'AV1');add(vo.baseUrl,'video',lb2+' " +
+        "'+cc+' ['+tag+']',wid,hei,0,'bilibili');}for(var oi2=0;oi2<da.length;oi2++){var ao=da[oi2];if(ao&&ao.baseUrl)add(ao.baseUrl,'audio','audio '" +
+        "+Math.round((ao.bandwidth||0)/1000)+'k ['+tag+']',0,0,0,'bilibili');}}catch(e){}}try{biliApi();}catch(e){}" +
         "scanDoc(document,false);" +
         "try{var scs=document.querySelectorAll('script');for(var si=0;si<scs.length;si++){var st=scs[si].textContent||'';if(st.indexOf('m3u8')<0&&st.indexOf('.mp4')<0&&st.indexOf('.ts')<0&&st.indexOf('m4s')<0)continue;var sp=st.split(/['\"]/);for(var sj=0;sj<sp.length;sj++){var sv=sp[sj];if(sv.length<10||sv.length>500)continue;if(sv.indexOf('m3u8')<0&&sv.indexOf('.mp4')<0&&sv.indexOf('.ts')<0&&sv.indexOf('m4s')<0)continue;var su=sv.replace(/\\\\/g,'');if(su.indexOf('http://')!==0&&su.indexOf('https://')!==0){if(su.indexOf('//')===0)su='https:'+su;else if(su.indexOf('/')===0)su='https:'+su;else continue;}var st2=typeOf(su);if(st2)add(su,st2,'');}}}catch(e){}" +
         "var rs=performance.getEntriesByType('resource');" +
@@ -10251,6 +11813,50 @@ private void showUaGroupDialog(final Context ctx) {
                 XposedBridge.log("[SBPlus] m3u8 branch error: " + t);
             }
             // ---- 需求2: 分段(视频音频)自动识别合并,与包装zip不冲突 ----
+            // ---- B站 DASH 音视频配对识别: 优先于普通分段(避免把 -1视频/-2音频 当分段拼坏) ----
+            try {
+                final java.util.Set<Integer> pairIdx = new java.util.HashSet<Integer>();
+                final java.util.List<int[]> pairs = findAllDashPairs(idxList, urls, types);
+                for (int[] p : pairs) { pairIdx.add(Integer.valueOf(p[0])); pairIdx.add(Integer.valueOf(p[1])); }
+                if (!pairs.isEmpty()) {
+                    final java.util.List<int[]> fPairs = pairs;
+                    final java.util.List<String> fUrls = urls, fTypes = types, fTitles = titles;
+                    final java.util.List<Integer> fRest = new java.util.ArrayList<Integer>();
+                    for (int i : idxList) if (!pairIdx.contains(Integer.valueOf(i))) fRest.add(Integer.valueOf(i));
+                    final boolean hasRest = !fRest.isEmpty();
+                    new Thread(new Runnable() {
+                        @Override public void run() {
+                            final int[] ok = new int[]{0};
+                            try {
+                                com.sbplus.browser.SbDownloadManager.acquireTaskSlot(1);
+                                try {
+                                    for (int[] p : fPairs) {
+                                        try {
+                                            String ti = (p[0] < fTitles.size()) ? fTitles.get(p[0]) : null;
+                                            if (ti == null || ti.isEmpty()) ti = (p[1] < fTitles.size()) ? fTitles.get(p[1]) : null;
+                                            java.io.File out = downloadBiliDashPair(fUrls.get(p[0]), fUrls.get(p[1]), ti);
+                                            if (out != null) ok[0]++;
+                                        } catch (Throwable t) { XposedBridge.log("[SBPlus] dash pair download error: " + t); }
+                                    }
+                                } finally {
+                                    com.sbplus.browser.SbDownloadManager.releaseTaskSlot();
+                                }
+                            } catch (Throwable t) { XposedBridge.log("[SBPlus] dash pairs error: " + t); }
+                            int don = ok[0];
+                            android.os.Handler hh = new android.os.Handler(android.os.Looper.getMainLooper());
+                            hh.post(new Runnable() { @Override public void run() {
+                                toastShort(don > 0 ? T("B站视频合并完成: " + don, "Bilibili done: " + don) : T("B站视频合并失败", "Bilibili merge failed"));
+                            }});
+                            if (hasRest && !fRest.isEmpty()) {
+                                try { downloadMany(fRest, fUrls, fTypes, fTitles); } catch (Throwable t) { XposedBridge.log("[SBPlus] dash rest error: " + t); }
+                            }
+                        }
+                    }).start();
+                    return;
+                }
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] dash pair branch error: " + t);
+            }
             try {
                 java.util.List<java.util.List<Integer>> groups = groupSegments(idxList, urls, types);
                 if (groups != null && !groups.isEmpty()) {
@@ -10296,15 +11902,7 @@ private void showUaGroupDialog(final Context ctx) {
                 XposedBridge.log("[SBPlus] segment grouping error: " + t);
             }
             int c = idxList.size();
-            if (c <= 10) {
-                for (int i : idxList) {
-                    try { sniffDownload(urls.get(i), types.get(i), titles.get(i)); } catch (Throwable ignored) {}
-                }
-                toastShort(T("已加入下载: " + c, "Added to downloads: " + c));
-                return;
-            }
-            toastShort(T("正在打包 " + c + " 个文件...", "Packaging " + c + " files..."));
-            final int total = c;
+            // 所有项(无论多少)逐个下载: 分段已在前面合并处理, 这里每个独立项单独下载为任务.
             final java.util.List<Integer> fIdx = new java.util.ArrayList<Integer>(idxList);
             final java.util.List<String> fUrls = urls, fTypes = types, fTitles = titles;
             new Thread(new Runnable() {
@@ -10312,60 +11910,50 @@ private void showUaGroupDialog(final Context ctx) {
                     final int[] done = new int[]{0};
                     final int[] failed = new int[]{0};
                     try {
-                        java.io.File zipFile = null;
+                        int cfgParallel = 2;
+                        try { cfgParallel = prefs.getInt("download_parallel", 2); } catch (Throwable ignored) {}
+                        if (cfgParallel < 1) cfgParallel = 1;
+                        if (cfgParallel > 10) cfgParallel = 10;
+                        com.sbplus.browser.SbDownloadManager.acquireTaskSlot(cfgParallel);
                         try {
-                            java.io.File tmp = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
-                                    android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus/zips");
-                            if (!tmp.exists()) tmp.mkdirs();
-                            zipFile = new java.io.File(tmp, "sbplus_" + System.currentTimeMillis() + ".zip");
-                            java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(
-                                    new java.io.BufferedOutputStream(new java.io.FileOutputStream(zipFile)));
-                            for (int realIdx : fIdx) {
-                                try {
-                                    String url = fUrls.get(realIdx);
-                                    String type = fTypes.get(realIdx);
-                                    String ti = fTitles.get(realIdx);
-                                    byte[] bytes = httpGetBytes(url);
-                                    if (bytes == null || bytes.length == 0) { failed[0]++; continue; }
-                                    String ext = parseExt(url, type);
-                                    String name;
-                                    if (ti != null && !ti.isEmpty()) name = sanitizeFileName(ti) + ext;
-                                    else name = "media_" + realIdx + ext;
-                                    zos.putNextEntry(new java.util.zip.ZipEntry(name));
-                                    zos.write(bytes);
-                                    zos.closeEntry();
-                                    done[0]++;
-                                } catch (Throwable t) { failed[0]++; }
-                            }
-                            zos.close();
-                            if (done[0] == 0) { zipFile.delete(); zipFile = null; }
-                        } catch (Throwable t) {
-                            XposedBridge.log("[SBPlus] zip packaging error: " + t);
-                            zipFile = null;
-                        }
-                        final java.io.File zf = zipFile;
-                        final int dOk = done[0], dFail = failed[0];
-                        android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
-                        h.post(new Runnable() { @Override public void run() {
-                            try {
-                                if (zf != null && zf.exists() && sAppContext != null) {
-                                    android.content.Intent it = new android.content.Intent(android.content.Intent.ACTION_VIEW);
-                                    it.setDataAndType(android.net.Uri.fromFile(zf), "application/zip");
-                                    it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-                                    try { sAppContext.startActivity(it); }
-                                    catch (Throwable te) {
-                                        toastShort(T("打包完成: 成功 " + dOk + " 失败 " + dFail + ",文件在 " + zf.getAbsolutePath(),
-                                                "ZIP done: ok " + dOk + " fail " + dFail + " at " + zf.getAbsolutePath()));
+                            int cfgThreads = 16;
+                            try { cfgThreads = prefs.getInt("download_threads", 16); } catch (Throwable ignored) {}
+                            final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(Math.max(1, Math.min(6, cfgThreads / 2)));
+                            final java.util.concurrent.atomic.AtomicInteger next = new java.util.concurrent.atomic.AtomicInteger(0);
+                            int N = fIdx.size();
+                            for (int w = 0; w < Math.max(1, Math.min(4, cfgParallel)); w++) {
+                                pool.execute(new Runnable() {
+                                    @Override public void run() {
+                                        while (true) {
+                                            int k = next.getAndIncrement();
+                                            if (k >= fIdx.size()) break;
+                                            int realIdx = fIdx.get(k).intValue();
+                                            try {
+                                                boolean ok = downloadOneItem(fUrls.get(realIdx), fTypes.get(realIdx),
+                                                        (realIdx < fTitles.size()) ? fTitles.get(realIdx) : null);
+                                                if (ok) done[0]++; else failed[0]++;
+                                            } catch (Throwable t) { failed[0]++; }
+                                        }
                                     }
-                                    toastShort(T("打包完成: 成功 " + dOk + " 失败 " + dFail, "ZIP done: ok " + dOk + " fail " + dFail));
-                                } else {
-                                    toastShort(T("打包失败", "Packaging failed"));
-                                }
-                            } catch (Throwable ignored) {}
-                        }});
+                                });
+                            }
+                            pool.shutdown();
+                            try { pool.awaitTermination(60, java.util.concurrent.TimeUnit.MINUTES); } catch (Throwable ignored) {}
+                        } finally {
+                            com.sbplus.browser.SbDownloadManager.releaseTaskSlot();
+                        }
                     } catch (Throwable t) {
-                        XposedBridge.log("[SBPlus] downloadMany thread error: " + t);
+                        XposedBridge.log("[SBPlus] batch download error: " + t);
                     }
+                    final int dOk = done[0], dFail = failed[0];
+                    android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+                    h.post(new Runnable() { @Override public void run() {
+                        try {
+                            if (dFail > 0) toastShort(T("下载完成: 成功 " + dOk + " 失败 " + dFail, "Done: ok " + dOk + " fail " + dFail));
+                            else toastShort(T("全部 " + dOk + " 个下载完成", "All " + dOk + " downloaded"));
+                        } catch (Throwable ignored) {}
+                    }});
+                    XposedBridge.log("[SBPlus] batch download done ok=" + dOk + " fail=" + dFail);
                 }
             }).start();
         } catch (Throwable t) {
@@ -10373,6 +11961,107 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
+
+    /** 展示嗅探结果对话框;用户选择媒体后 dispatch 到第三方下载器。 */
+    /** 单个媒体项下载(注册任务,支持取消清理): 视频/音频落盘 Download/SBPlus/, 视频 .ts 直链转 MP4. 返回 success. */
+    private boolean downloadOneItem(final String url, final String type, final String title) {
+        try {
+            String baseName = null;
+            if (title != null && !title.isEmpty()) baseName = sanitizeFileName(title);
+            if (baseName == null || baseName.isEmpty()) {
+                String uu = url;
+                int hq = uu.indexOf('?'); if (hq > 0) uu = uu.substring(0, hq);
+                int hh = uu.indexOf('#'); if (hh > 0) uu = uu.substring(0, hh);
+                int slash = uu.lastIndexOf('/');
+                String last = slash >= 0 ? uu.substring(slash + 1) : uu;
+                if (last == null || last.isEmpty()) last = uu;
+                int dot = last.lastIndexOf('.');
+                if (dot > 0) last = last.substring(0, dot);
+                if (last == null || last.isEmpty()) last = "media";
+                baseName = sanitizeFileName(last);
+            }
+            java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
+            if (!dir.exists()) dir.mkdirs();
+
+            String path = url.split("[?#]")[0].toLowerCase();
+            boolean isTs = path.endsWith(".ts");
+            boolean isM4s = path.endsWith(".m4s");
+            boolean isVideoLike = "video".equals(type) || isTs || isM4s || path.endsWith(".mp4") || path.endsWith(".m4v");
+            boolean isAudio = "audio".equals(type) || path.endsWith(".mp3") || path.endsWith(".m4a")
+                    || path.endsWith(".aac") || path.endsWith(".ogg") || path.endsWith(".opus");
+
+            final String taskId = "dl_" + System.currentTimeMillis();
+            final com.sbplus.browser.SbDownloadManager.Task task =
+                    com.sbplus.browser.SbDownloadManager.register(taskId, baseName);
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING;
+            task.url = url;
+            task.kind = "single";
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+
+            byte[] b = httpGetBytes(url);
+            if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) {
+                try { com.sbplus.browser.SbDownloadManager.remove(taskId); } catch (Throwable ignored) {}
+                return false;
+            }
+            if (b == null || b.length == 0) {
+                task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED;
+                task.detail = "下载失败";
+                com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+                return false;
+            }
+
+            java.io.File outFile;
+            if (isTs) {
+                // .ts 直链: 先落盘 .ts 再转 MP4
+                java.io.File tsTmp = new java.io.File(dir, baseName + ".ts");
+                int nn = 1;
+                while (tsTmp.exists()) { tsTmp = new java.io.File(dir, baseName + "_" + nn + ".ts"); nn++; }
+                java.io.FileOutputStream fo = new java.io.FileOutputStream(tsTmp);
+                try { fo.write(b); } finally { fo.close(); }
+                task.status = com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING;
+                task.detail = "转换 MP4";
+                com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+                java.io.File mp4 = smartConvert(tsTmp, baseName, task, sAppContext);
+                if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) {
+                    try { tsTmp.delete(); } catch (Throwable ignored) {}
+                    try { if (mp4 != null) mp4.delete(); } catch (Throwable ignored) {}
+                    try { com.sbplus.browser.SbDownloadManager.remove(taskId); } catch (Throwable ignored) {}
+                    return false;
+                }
+                if (mp4 != null && mp4.exists() && mp4.length() > 0) {
+                    try { tsTmp.delete(); } catch (Throwable ignored) {}
+                    outFile = mp4;
+                } else {
+                    outFile = tsTmp;
+                }
+            } else {
+                String ext = parseExt(url, type);
+                if (!ext.startsWith(".")) ext = isAudio ? ".mp3" : ".mp4";
+                outFile = new java.io.File(dir, baseName + ext);
+                int nn = 1;
+                while (outFile.exists()) { outFile = new java.io.File(dir, baseName + "_" + nn + ext); nn++; }
+                java.io.FileOutputStream fo = new java.io.FileOutputStream(outFile);
+                try { fo.write(b); } finally { fo.close(); }
+            }
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_DONE;
+            task.outPath = outFile.getAbsolutePath();
+            task.totalBytes = outFile.length();
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+            try {
+                if (sAppContext != null) {
+                    android.content.Intent scan = new android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                    scan.setData(android.net.Uri.fromFile(outFile));
+                    sAppContext.sendBroadcast(scan);
+                }
+            } catch (Throwable ignored) {}
+            XposedBridge.log("[SBPlus] single item downloaded -> " + outFile.getAbsolutePath());
+            return true;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] downloadOneItem error: " + t);
+            return false;
+        }
+    }
 
     /** 展示嗅探结果对话框;用户选择媒体后 dispatch 到第三方下载器。 */
     /** 需求2: 识别分段组。返回 group 列表(每个 group 是 idxList 中属于同一分段视频的多个索引,按序号排序)。*/
@@ -10389,6 +12078,14 @@ private void showUaGroupDialog(final Context ctx) {
                 String[] sb = segmentInfo(url);
                 String base = sb[0];
                 if (base == null) continue;
+                // B站 DASH m4s 音视频分离流不参与普通分段合并(避免把 -1视频/-2音频 当分段拼坏)
+                if (url != null) {
+                    String ul = url.toLowerCase();
+                    if ((ul.contains("bilivideo.com") || ul.contains("upos-sz") || ul.contains("upgcx"))
+                            && ul.contains(".m4s")) {
+                        continue;
+                    }
+                }
                 int seq = 0;
                 try { seq = Integer.parseInt(sb[1]); } catch (Throwable ignored) { seq = 0; }
                 java.util.TreeMap<Integer, Integer> m = map.get(base);
@@ -10409,6 +12106,247 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] groupSegments error: " + t);
         }
         return result;
+    }
+
+    /** 返回 {base, seq}。若 URL 是分段 m4s 则 base!=null;否则 base==null。 */
+    /** B站 DASH 音视频配对检测. 返回所有 [videoIdx, audioIdx] 对. 规则: 同 base(bilivideo m4s) 下 video尾号-1 + audio尾号-2. */
+    private java.util.List<int[]> findAllDashPairs(final java.util.List<Integer> idxList,
+                                                  final java.util.List<String> urls,
+                                                  final java.util.List<String> types) {
+        java.util.List<int[]> result = new java.util.ArrayList<int[]>();
+        try {
+            // base -> audioIdx (bilivideo m4s 音频)
+            java.util.Map<String, Integer> audioByBase = new java.util.HashMap<String, Integer>();
+            for (int i : idxList) {
+                if (i < 0 || i >= urls.size()) continue;
+                String url = urls.get(i);
+                if (url == null) continue;
+                String lower = url.toLowerCase();
+                boolean bili = lower.contains("bilivideo.com") || lower.contains("upos-sz") || lower.contains("upgcx");
+                if (!bili) continue;
+                String path = url.split("[?#]")[0];
+                String lowerPath = path.toLowerCase();
+                if (!lowerPath.endsWith(".m4s") && !lowerPath.endsWith(".m4a")) continue;
+                String noExt = path.substring(0, path.lastIndexOf('.'));
+                java.util.regex.Matcher mm = java.util.regex.Pattern.compile("([-_])(\\d+)$").matcher(noExt);
+                if (!mm.find()) continue;
+                String base = noExt.substring(0, mm.start());
+                if (base.isEmpty()) continue;
+                String seq = mm.group(2);
+                String type = (i < types.size()) ? types.get(i) : "";
+                boolean looksAudio = "audio".equals(type) || seq.equals("2") || lower.contains("mime=audio") || lower.contains("audio/mp4");
+                boolean looksVideo = "video".equals(type) || seq.equals("1") || lower.contains("mime=video") || lower.contains("video/mp4");
+                if (looksAudio && !looksVideo) audioByBase.put(base, Integer.valueOf(i));
+            }
+            // 第二遍: 找视频流与音频配对
+            java.util.Set<Integer> used = new java.util.HashSet<Integer>();
+            for (int i : idxList) {
+                if (i < 0 || i >= urls.size()) continue;
+                String url = urls.get(i);
+                if (url == null) continue;
+                String lower = url.toLowerCase();
+                if (!(lower.contains("bilivideo.com") || lower.contains("upos-sz") || lower.contains("upgcx"))) continue;
+                String path = url.split("[?#]")[0];
+                if (!path.toLowerCase().endsWith(".m4s")) continue;
+                String noExt = path.substring(0, path.lastIndexOf('.'));
+                java.util.regex.Matcher mm = java.util.regex.Pattern.compile("([-_])(\\d+)$").matcher(noExt);
+                if (!mm.find()) continue;
+                String base = noExt.substring(0, mm.start());
+                String seq = mm.group(2);
+                String type = (i < types.size()) ? types.get(i) : "";
+                boolean looksVideo = "video".equals(type) || seq.equals("1") || lower.contains("mime=video") || lower.contains("video/mp4");
+                if (!looksVideo) continue;
+                if (used.contains(Integer.valueOf(i))) continue;
+                Integer ai = audioByBase.get(base);
+                if (ai == null && audioByBase.size() == 1) ai = audioByBase.values().iterator().next();
+                if (ai != null && !used.contains(ai) && ai.intValue() != i) {
+                    result.add(new int[]{i, ai.intValue()});
+                    used.add(Integer.valueOf(i)); used.add(ai);
+                }
+            }
+            return result;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] findAllDashPairs error: " + t);
+            return result;
+        }
+    }
+
+    /** 下载 B站 DASH 音视频对: 分别下载 video/audio m4s, 然后用 MediaMuxer 双轨合并为一个 MP4. */
+    private java.io.File downloadBiliDashPair(String vUrl, String aUrl, String title) {
+        java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
+                android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
+        if (!dir.exists()) dir.mkdirs();
+        String baseName = null;
+        if (title != null && !title.isEmpty()) baseName = sanitizeFileName(title);
+        if (baseName == null || baseName.isEmpty()) baseName = "bilibili_" + System.currentTimeMillis();
+        String n = baseName;
+        int nn = 1;
+        while (new java.io.File(dir, n + ".mp4").exists()) { n = baseName + "_" + nn; nn++; }
+
+        final String taskId = "dl_" + System.currentTimeMillis();
+        final com.sbplus.browser.SbDownloadManager.Task task =
+                com.sbplus.browser.SbDownloadManager.register(taskId, baseName);
+        task.status = com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING;
+        task.url = vUrl;
+        task.kind = "dash";
+        task.detail = "下载音视频流";
+        com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+
+        try {
+            byte[] v = httpGetBytes(vUrl);
+            if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) { cleanupTaskFile(task); return null; }
+            if (v == null || v.length == 0) {
+                task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED; task.detail = "视频流下载失败";
+                com.sbplus.browser.SbDownloadManager.post(sAppContext, task); return null;
+            }
+            byte[] a = httpGetBytes(aUrl);
+            if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) { cleanupTaskFile(task); return null; }
+            if (a == null || a.length == 0) {
+                task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED; task.detail = "音频流下载失败";
+                com.sbplus.browser.SbDownloadManager.post(sAppContext, task); return null;
+            }
+            // 落盘临时文件 (.video.m4s / .audio.m4s)
+            java.io.File vTmp = new java.io.File(dir, n + ".video.m4s");
+            java.io.File aTmp = new java.io.File(dir, n + ".audio.m4s");
+            java.io.FileOutputStream vf = new java.io.FileOutputStream(vTmp);
+            try { vf.write(v); } finally { vf.close(); }
+            java.io.FileOutputStream af = new java.io.FileOutputStream(aTmp);
+            try { af.write(a); } finally { af.close(); }
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING;
+            task.detail = "合并音视频";
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+            java.io.File out = muxTwoFiles(vTmp, aTmp, new java.io.File(dir, n + ".mp4"), task);
+            vTmp.delete(); aTmp.delete();
+            if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) { cleanupTaskFile(task); try { if (out != null) out.delete(); } catch (Throwable ignored) {} return null; }
+            if (out == null || !out.exists() || out.length() <= 0) {
+                task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED; task.detail = "合并失败";
+                com.sbplus.browser.SbDownloadManager.post(sAppContext, task); return null;
+            }
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_DONE;
+            task.outPath = out.getAbsolutePath();
+            task.totalBytes = out.length();
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+            try {
+                if (sAppContext != null) {
+                    android.content.Intent scan = new android.content.Intent(android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
+                    scan.setData(android.net.Uri.fromFile(out));
+                    sAppContext.sendBroadcast(scan);
+                }
+            } catch (Throwable ignored) {}
+            XposedBridge.log("[SBPlus] bili dash merged -> " + out.getAbsolutePath() + " (" + out.length() + ")");
+            return out;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] downloadBiliDashPair error: " + t);
+            return null;
+        }
+    }
+
+    /** 双文件 mux 合并: 将 videoFile 的视频轨 + audioFile 的音频轨写入 mp4Out. */
+    private java.io.File muxTwoFiles(java.io.File videoFile, java.io.File audioFile, java.io.File mp4Out,
+                                     com.sbplus.browser.SbDownloadManager.Task task) {
+        android.media.MediaExtractor vx = null, ax = null;
+        android.media.MediaMuxer mx = null;
+        try {
+            vx = new android.media.MediaExtractor();
+            vx.setDataSource(videoFile.getAbsolutePath());
+            ax = new android.media.MediaExtractor();
+            ax.setDataSource(audioFile.getAbsolutePath());
+            int vTrack = -1, aTrack = -1;
+            String vMime = null, aMime = null;
+            android.media.MediaFormat vfmt = null, afmt = null;
+            for (int i = 0; i < vx.getTrackCount(); i++) {
+                android.media.MediaFormat f = vx.getTrackFormat(i);
+                String mime = f.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")) { vTrack = i; vMime = mime; vfmt = f; break; }
+            }
+            for (int i = 0; i < ax.getTrackCount(); i++) {
+                android.media.MediaFormat f = ax.getTrackFormat(i);
+                String mime = f.getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("audio/")) { aTrack = i; aMime = mime; afmt = f; break; }
+            }
+            if (vTrack < 0 || aTrack < 0) {
+                XposedBridge.log("[SBPlus] muxTwoFiles: missing track v=" + vTrack + " a=" + aTrack);
+                return null;
+            }
+            mx = new android.media.MediaMuxer(mp4Out.getAbsolutePath(), android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            int mv = mx.addTrack(vfmt);
+            int ma = mx.addTrack(afmt);
+            mx.start();
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(4 * 1024 * 1024);
+            android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+            // 写视频轨
+            vx.selectTrack(vTrack);
+            long vFirst = -1;
+            while (true) {
+                int sz = vx.readSampleData(buf, 0);
+                if (sz < 0) break;
+                long t = vx.getSampleTime();
+                if (vFirst < 0) vFirst = t;
+                info.offset = 0; info.size = sz;
+                info.presentationTimeUs = t - vFirst;
+                info.flags = (vx.getSampleFlags() & android.media.MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                        ? android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                mx.writeSampleData(mv, buf, info);
+                if (!vx.advance()) break;
+                if (task != null && com.sbplus.browser.SbDownloadManager.isCancelled(task.id)) return null;
+            }
+            // 写音频轨
+            ax.selectTrack(aTrack);
+            long aFirst = -1;
+            while (true) {
+                int sz = ax.readSampleData(buf, 0);
+                if (sz < 0) break;
+                long t = ax.getSampleTime();
+                if (aFirst < 0) aFirst = t;
+                info.offset = 0; info.size = sz;
+                info.presentationTimeUs = t - aFirst;
+                info.flags = (ax.getSampleFlags() & android.media.MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                        ? android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                mx.writeSampleData(ma, buf, info);
+                if (!ax.advance()) break;
+                if (task != null && com.sbplus.browser.SbDownloadManager.isCancelled(task.id)) return null;
+            }
+            mx.stop();
+            mx.release(); mx = null;
+            return mp4Out;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] muxTwoFiles error: " + t);
+            try { mp4Out.delete(); } catch (Throwable ignored) {}
+            return null;
+        } finally {
+            try { if (vx != null) vx.release(); } catch (Throwable ignored) {}
+            try { if (ax != null) ax.release(); } catch (Throwable ignored) {}
+            try { if (mx != null) mx.release(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 取消时清理任务文件并移除任务. */
+    private void cleanupTaskFile(com.sbplus.browser.SbDownloadManager.Task task) {
+        try {
+            if (task == null) return;
+            if (task.outPath != null && !task.outPath.isEmpty()) {
+                try { new java.io.File(task.outPath).delete(); } catch (Throwable ignored) {}
+            }
+            try {
+                if (task.name != null && !task.name.isEmpty()) {
+                    java.io.File dir = new java.io.File(android.os.Environment.getExternalStoragePublicDirectory(
+                            android.os.Environment.DIRECTORY_DOWNLOADS), "SBPlus");
+                    String base = sanitizeFileName(task.name);
+                    java.io.File[] files = dir.listFiles();
+                    if (files != null) {
+                        for (java.io.File f : files) {
+                            String fn = f.getName();
+                            if (fn.startsWith(base + ".") || fn.startsWith(base + "_")) {
+                                try { f.delete(); } catch (Throwable ignored) {}
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED;
+            task.detail = "已取消";
+            try { com.sbplus.browser.SbDownloadManager.remove(task.id); } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {}
     }
 
     /** 返回 {base, seq}。若 URL 是分段 m4s 则 base!=null;否则 base==null。 */
@@ -10546,6 +12484,30 @@ private void showUaGroupDialog(final Context ctx) {
             final java.io.File fTmp = tmpDir;
             final String fBase = baseName;
             final java.util.concurrent.CountDownLatch allDone = new java.util.concurrent.CountDownLatch(1);
+            final String fTaskId = (task != null) ? task.id : null;
+
+            // 续传: 扫描已存在的 .part_ 文件, 对应序号直接算完成(跳过下载).
+            // 取消续传时也可利用: 重新触发同名下载 => 已下载分片不再重复下载.
+            final boolean[] skipped = new boolean[N];
+            for (int s = 0; s < N; s++) {
+                java.io.File pf = new java.io.File(fTmp, fBase + ".part_" + s);
+                if (pf.exists() && pf.length() > 0) {
+                    skipped[s] = true;
+                    long sz = pf.length();
+                    okCount.incrementAndGet();
+                    bytesDone.addAndGet(sz);
+                    if (task != null) {
+                        task.partCount = (int)(okCount.get());
+                        task.partTotal = N;
+                        task.totalBytes = bytesDone.get();
+                    }
+                }
+            }
+            if (okCount.get() >= N) {
+                // 所有分片已存在 -> 直接拼接
+                java.io.File out = mergeParts(fTmp, fBase, N);
+                if (out != null) { XposedBridge.log("[SBPlus] seg all cached, merged"); return out; }
+            }
 
             java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(CONCURRENCY);
             // 每个工作线程循环取序号下载, 直到取完
@@ -10555,10 +12517,32 @@ private void showUaGroupDialog(final Context ctx) {
                     @Override public void run() {
                         try {
                             while (true) {
+                                // 取消: 立即中断下载循环
+                                if (com.sbplus.browser.SbDownloadManager.isCancelled(fTaskId)) {
+                                    return;
+                                }
+                                // 暂停: 不再取新序号(保留已下载分片). 恢复后由新线程继续.
+                                if (com.sbplus.browser.SbDownloadManager.isPaused(fTaskId)) {
+                                    return;
+                                }
                                 int seq = next.getAndIncrement();
                                 if (seq >= N) break;
+                                if (skipped[seq]) continue;
+                                byte[] b = null;
+                                // 失败自动重试: 最多 3 次, 间隔递增(0.5s/1s/2s)
+                                for (int retry = 0; retry < 3 && b == null; retry++) {
+                                    try {
+                                        b = httpGetBytes(fSegs.get(seq));
+                                    } catch (Throwable t) {
+                                        b = null;
+                                    }
+                                    if (b == null || b.length == 0) {
+                                        if (retry < 2) {
+                                            try { java.lang.Thread.sleep(500L * (retry + 1)); } catch (Throwable ignored) {}
+                                        }
+                                    }
+                                }
                                 try {
-                                    byte[] b = httpGetBytes(fSegs.get(seq));
                                     if (b != null && b.length > 0) {
                                         java.io.File pf = new java.io.File(fTmp, fBase + ".part_" + seq);
                                         java.io.FileOutputStream po = new java.io.FileOutputStream(pf);
@@ -10589,19 +12573,48 @@ private void showUaGroupDialog(final Context ctx) {
                     }
                 });
             }
-            // 等待所有 worker 结束(它们循环直到序号取完)
+            // 等待所有 worker 结束(它们循环直到序号取完或暂停/取消)
             pool.shutdown();
             try { pool.awaitTermination(15, java.util.concurrent.TimeUnit.MINUTES); } catch (Throwable ignored) {}
-            XposedBridge.log("[SBPlus] seg download done ok=" + okCount.get() + " fail=" + failCount.get() + " bytes=" + bytesDone.get());
+            XposedBridge.log("[SBPlus] seg download done ok=" + okCount.get() + " fail=" + failCount.get() + " bytes=" + bytesDone.get()
+                    + " paused=" + com.sbplus.browser.SbDownloadManager.isPaused(fTaskId)
+                    + " cancelled=" + com.sbplus.browser.SbDownloadManager.isCancelled(fTaskId));
+
+            // 取消: 删除所有已下载分片, 返回 null
+            if (com.sbplus.browser.SbDownloadManager.isCancelled(fTaskId)) {
+                XposedBridge.log("[SBPlus] seg cancelled, deleting parts");
+                for (int s = 0; s < N; s++) {
+                    try { new java.io.File(fTmp, fBase + ".part_" + s).delete(); } catch (Throwable ignored) {}
+                }
+                try { new java.io.File(fTmp, fBase + ".ts.merge").delete(); } catch (Throwable ignored) {}
+                return null;
+            }
 
             if (okCount.get() == 0) return null;
 
+            // 暂停: 保留分片文件, 返回 null (任务保持暂停态, 恢复后重新进入续传)
+            if (com.sbplus.browser.SbDownloadManager.isPaused(fTaskId)) {
+                XposedBridge.log("[SBPlus] seg paused, parts kept for resume");
+                return null;
+            }
+
             // 按序拼接
-            java.io.File out = new java.io.File(fTmp, baseName + ".ts.merge");
+            java.io.File out = mergeParts(fTmp, fBase, N);
+            return out;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] downloadSegmentsHighConcurrent error: " + t);
+            return null;
+        }
+    }
+
+    /** 按序拼接 .part_ 文件为单个 .ts.merge 文件. */
+    private java.io.File mergeParts(java.io.File fTmp, String fBase, int N) {
+        try {
+            java.io.File out = new java.io.File(fTmp, fBase + ".ts.merge");
             java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
             try {
                 for (int seq = 0; seq < N; seq++) {
-                    java.io.File pf = new java.io.File(fTmp, baseName + ".part_" + seq);
+                    java.io.File pf = new java.io.File(fTmp, fBase + ".part_" + seq);
                     if (pf.exists()) {
                         java.io.InputStream in = new java.io.FileInputStream(pf);
                         byte[] buf = new byte[65536];
@@ -10617,7 +12630,7 @@ private void showUaGroupDialog(final Context ctx) {
             } finally { fos.close(); }
             return out;
         } catch (Throwable t) {
-            XposedBridge.log("[SBPlus] downloadSegmentsHighConcurrent error: " + t);
+            XposedBridge.log("[SBPlus] mergeParts error: " + t);
             return null;
         }
     }
@@ -10635,6 +12648,12 @@ private void showUaGroupDialog(final Context ctx) {
                         } else if (action.equals("com.sbplus.browser.ACTION_CANCEL_DL")) {
                             String id = i.getStringExtra("task_id");
                             if (id != null) com.sbplus.browser.SbDownloadManager.cancel(sAppContext, id);
+                        } else if (action.equals("com.sbplus.browser.ACTION_PAUSE_DL")) {
+                            String id = i.getStringExtra("task_id");
+                            if (id != null) com.sbplus.browser.SbDownloadManager.pause(id);
+                        } else if (action.equals("com.sbplus.browser.ACTION_RESUME_DL")) {
+                            String id = i.getStringExtra("task_id");
+                            if (id != null) resumeTask(id);
                         }
                     } catch (Throwable t) {
                         XposedBridge.log("[SBPlus] download list receiver error: " + t);
@@ -10644,7 +12663,14 @@ private void showUaGroupDialog(final Context ctx) {
             android.content.IntentFilter flt = new android.content.IntentFilter();
             flt.addAction("com.sbplus.browser.ACTION_SHOW_DOWNLOADS");
             flt.addAction("com.sbplus.browser.ACTION_CANCEL_DL");
-            ctx.registerReceiver(rcv, flt);
+            flt.addAction("com.sbplus.browser.ACTION_PAUSE_DL");
+            flt.addAction("com.sbplus.browser.ACTION_RESUME_DL");
+            try {
+                // Android 13+ 需指定导出标志; 通知按钮广播由系统代发, 需 EXPORTED
+                ctx.registerReceiver(rcv, flt, android.content.Context.RECEIVER_EXPORTED);
+            } catch (Throwable t2) {
+                ctx.registerReceiver(rcv, flt);
+            }
             XposedBridge.log("[SBPlus] download list receiver registered");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] registerDownloadListReceiver error: " + t);
@@ -10761,7 +12787,7 @@ private void showUaGroupDialog(final Context ctx) {
                         final android.widget.Button bClear = new android.widget.Button(act);
                         bAll.setText(T("全选", "Select all"));
                         bDel.setText(T("删除选中", "Delete selected"));
-                        bClear.setText(T("清除记录", "Clear records"));
+                        bClear.setText(T("取消任务", "Cancel tasks"));
                         bAll.setTextSize(12); bDel.setTextSize(12); bClear.setTextSize(12);
                         int bpd = dp(act,6);
                         bAll.setPadding(bpd,bpd,bpd,bpd); bDel.setPadding(bpd,bpd,bpd,bpd); bClear.setPadding(bpd,bpd,bpd,bpd);
@@ -10781,7 +12807,12 @@ private void showUaGroupDialog(final Context ctx) {
 
                         final android.widget.LinearLayout list = new android.widget.LinearLayout(act);
                         list.setOrientation(android.widget.LinearLayout.VERTICAL);
-                        root.addView(list);
+                        // 列表包一层 ScrollView, 任务多时可滚动, 最大高度占屏幕~75%
+                        final android.widget.ScrollView listScroller = new android.widget.ScrollView(act);
+                        listScroller.setFillViewport(false);
+                        listScroller.addView(list, new android.widget.FrameLayout.LayoutParams(-1, -2));
+                        android.widget.LinearLayout.LayoutParams svLp = new android.widget.LinearLayout.LayoutParams(-1, 0, 1f);
+                        root.addView(listScroller, svLp);
                         final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
 
                         bAll.setOnClickListener(new android.view.View.OnClickListener() {
@@ -10811,13 +12842,21 @@ private void showUaGroupDialog(final Context ctx) {
                             @Override public void onClick(android.view.View v) {
                                 try {
                                     java.util.List<com.sbplus.browser.SbDownloadManager.Task> ts = com.sbplus.browser.SbDownloadManager.all();
-                                    if (ts.isEmpty()) { toastShort(T("无记录", "No records")); return; }
+                                    boolean any = false;
                                     for (com.sbplus.browser.SbDownloadManager.Task tt : ts) {
-                                        com.sbplus.browser.SbDownloadManager.remove(tt.id);
-                                        com.sbplus.browser.SbDownloadManager.cancel(sAppContext, tt.id);
+                                        if (tt.status == com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING
+                                                || tt.status == com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING) {
+                                            if (tt.outPath != null && !tt.outPath.isEmpty()) {
+                                                try { new java.io.File(tt.outPath).delete(); } catch (Throwable ignored) {}
+                                            }
+                                            com.sbplus.browser.SbDownloadManager.cancel(sAppContext, tt.id);
+                                            com.sbplus.browser.SbDownloadManager.remove(tt.id);
+                                            any = true;
+                                        }
                                     }
                                     selectedSet.clear();
-                                    toastShort(T("已清除下载记录(文件保留)", "Records cleared (files kept)"));
+                                    if (any) toastShort(T("已取消进行中任务(文件已删除)", "Cancelled running tasks (files removed)"));
+                                    else toastShort(T("没有进行中的任务", "No running tasks"));
                                     refreshListIn(act, root, list, h, selectedSet, bAll, bDel);
                                 } catch (Throwable ignored) {}
                             }
@@ -10825,9 +12864,13 @@ private void showUaGroupDialog(final Context ctx) {
 
                         final Object[] dlgRef = new Object[1];
                         refreshListIn(act, root, list, h, selectedSet, bAll, bDel);
+                        // 限制对话框最大高度≈屏幕 85%, 避免列表溢出屏幕无法滚动
+                        android.widget.FrameLayout wrap = new android.widget.FrameLayout(act);
+                        int maxH = (int)(act.getResources().getDisplayMetrics().heightPixels * 0.85f);
+                        wrap.addView(root, new android.widget.FrameLayout.LayoutParams(-1, maxH));
                         dlgRef[0] = new android.app.AlertDialog.Builder(act)
                             .setTitle((CharSequence) null)
-                            .setView(root)
+                            .setView(wrap)
                             .setPositiveButton(T("关闭", "Close"), null)
                             .create();
                         ((android.app.AlertDialog) dlgRef[0]).show();
@@ -10897,6 +12940,40 @@ private void showUaGroupDialog(final Context ctx) {
                 android.widget.LinearLayout.LayoutParams colLp = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
                 colLp.gravity = android.view.Gravity.CENTER_VERTICAL;
                 row.addView(col, colLp);
+                // 暂停/继续按钮 (仅 m3u8 支持续传)
+                boolean canPause = "m3u8".equals(t.kind);
+                boolean isPaused = com.sbplus.browser.SbDownloadManager.isPaused(t.id);
+                if (canPause && (t.status == com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING || isPaused)) {
+                    final String fid = t.id;
+                    final android.widget.Button btnPause = new android.widget.Button(act);
+                    btnPause.setAllCaps(false);
+                    btnPause.setTextSize(12);
+                    btnPause.setMinWidth(0);
+                    btnPause.setMinimumWidth(0);
+                    btnPause.setPadding(dp(act, 6), 0, dp(act, 6), 0);
+                    btnPause.setText(isPaused ? T("继续", "Resume") : T("暂停", "Pause"));
+                    btnPause.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) {
+                            try {
+                                if (com.sbplus.browser.SbDownloadManager.isPaused(fid)) {
+                                    android.content.Intent ri = new android.content.Intent("com.sbplus.browser.ACTION_RESUME_DL");
+                                    ri.putExtra("task_id", fid);
+                                    sAppContext.sendBroadcast(ri);
+                                } else {
+                                    android.content.Intent pi = new android.content.Intent("com.sbplus.browser.ACTION_PAUSE_DL");
+                                    pi.putExtra("task_id", fid);
+                                    sAppContext.sendBroadcast(pi);
+                                    toastShort(T("已暂停,已下载分片保留", "Paused, parts kept"));
+                                }
+                                refreshListIn(act, root, list, h, selectedSet, bAll, bDel);
+                            } catch (Throwable t2) { XposedBridge.log("[SBPlus] pause btn error: " + t2); }
+                        }
+                    });
+                    android.widget.LinearLayout.LayoutParams bpLp = new android.widget.LinearLayout.LayoutParams(-2, -2);
+                    bpLp.gravity = android.view.Gravity.CENTER_VERTICAL;
+                    bpLp.leftMargin = dp(act, 4);
+                    row.addView(btnPause, bpLp);
+                }
                 list.addView(row);
             }
             // 刷新按钮状态
@@ -11016,11 +13093,18 @@ private void showUaGroupDialog(final Context ctx) {
         try {
             switch (t.status) {
                 case com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING:
-                    return T("下载中 " + t.percent() + "%", "DL " + t.percent() + "%");
+                    String sizeTxt = "";
+                    if (t.totalSizeBytes > 0) {
+                        sizeTxt = fmtSize(t.totalBytes) + "/" + fmtSize(t.totalSizeBytes);
+                    } else if (t.totalBytes > 0) {
+                        sizeTxt = fmtSize(t.totalBytes);
+                    }
+                    return T((!sizeTxt.isEmpty() ? sizeTxt + " · " : "") + "下载中 " + t.percent() + "%", (!sizeTxt.isEmpty() ? sizeTxt + " · " : "") + "DL " + t.percent() + "%");
                 case com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING:
                     return T("转换 MP4 中...", "Converting MP4...");
                 case com.sbplus.browser.SbDownloadManager.STATUS_DONE:
-                    return T("已完成", "Done");
+                    String sizeDone = t.totalSizeBytes > 0 ? fmtSize(t.totalSizeBytes) : (t.totalBytes > 0 ? fmtSize(t.totalBytes) : "");
+                    return T((!sizeDone.isEmpty() ? sizeDone + " · " : "") + "已完成", (!sizeDone.isEmpty() ? sizeDone + " · " : "") + "Done");
                 default:
                     return T("失败", "Failed");
             }
@@ -11035,7 +13119,44 @@ private void showUaGroupDialog(final Context ctx) {
         } catch (Throwable t2) { return ""; }
     }
 
+    /** 继续被暂停的任务: 清除暂停标记后重新触发下载(利用已存在分片续传). */
+    private void resumeTask(final String id) {
+        try {
+            com.sbplus.browser.SbDownloadManager.Task t = com.sbplus.browser.SbDownloadManager.get(id);
+            if (t == null) return;
+            com.sbplus.browser.SbDownloadManager.resume(id);
+            t.status = com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING;
+            t.detail = "续传中";
+            t.partCount = 0;
+            t.partTotal = 0;
+            com.sbplus.browser.SbDownloadManager.post(sAppContext, t);
+            final String url = t.url;
+            final String name = t.name;
+            if (url == null || url.isEmpty()) { toastShort(T("该任务不支持续传", "This task cannot resume")); return; }
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    try {
+                        com.sbplus.browser.SbDownloadManager.acquireTaskSlot(2);
+                        try {
+                            downloadM3u8Internal(url, name, id);
+                        } finally {
+                            com.sbplus.browser.SbDownloadManager.releaseTaskSlot();
+                        }
+                    } catch (Throwable t2) {
+                        XposedBridge.log("[SBPlus] resumeTask error: " + t2);
+                    }
+                }
+            }).start();
+        } catch (Throwable t2) {
+            XposedBridge.log("[SBPlus] resumeTask error: " + t2);
+        }
+    }
+
     private boolean downloadM3u8(String m3u8Url, String title) {
+        return downloadM3u8Internal(m3u8Url, title, null);
+    }
+
+    private boolean downloadM3u8Internal(String m3u8Url, String title, String reuseId) {
         try {
             XposedBridge.log("[SBPlus] downloadM3u8 start: " + m3u8Url);
             // 文件名
@@ -11061,10 +13182,22 @@ private void showUaGroupDialog(final Context ctx) {
             if (!dir.exists()) dir.mkdirs();
 
             // register task for notification + list
-            final String taskId = "dl_" + System.currentTimeMillis();
-            final com.sbplus.browser.SbDownloadManager.Task task =
-                    com.sbplus.browser.SbDownloadManager.register(taskId, baseName);
+            final String taskId;
+            final com.sbplus.browser.SbDownloadManager.Task task;
+            if (reuseId != null && com.sbplus.browser.SbDownloadManager.get(reuseId) != null) {
+                taskId = reuseId;
+                task = com.sbplus.browser.SbDownloadManager.get(reuseId);
+                com.sbplus.browser.SbDownloadManager.resume(reuseId);   // 清暂停标记
+            } else {
+                taskId = "dl_" + System.currentTimeMillis();
+                task = com.sbplus.browser.SbDownloadManager.register(taskId, baseName);
+            }
             task.status = com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING;
+            task.url = m3u8Url;
+            task.kind = "m3u8";
+            task.detail = "解析中";
+            task.partCount = 0;
+            task.partTotal = 0;
             com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
 
             // 1. 下载主列表
@@ -11093,9 +13226,33 @@ private void showUaGroupDialog(final Context ctx) {
             XposedBridge.log("[SBPlus] m3u8 segments: " + segs.size());
 
             // 3. 高并发下载分片 -> 顺序拼接 .ts
+            XposedBridge.log("[SBPlus] m3u8 parts dl start, id=" + taskId);
             java.io.File tsTmp = downloadSegmentsHighConcurrent(segs, dir, baseName, task, sAppContext);
+            if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) {
+                XposedBridge.log("[SBPlus] m3u8 cancelled, cleanup");
+                try { if (tsTmp != null) tsTmp.delete(); } catch (Throwable ignored) {}
+                if (task != null) {
+                    task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED;
+                    task.detail = "已取消";
+                }
+                return false;
+            }
+            if (com.sbplus.browser.SbDownloadManager.isPaused(taskId)) {
+                XposedBridge.log("[SBPlus] m3u8 paused, keep parts");
+                if (task != null) {
+                    task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED;
+                    task.detail = "已暂停";
+                    com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+                }
+                return false;
+            }
             if (tsTmp == null || !tsTmp.exists() || tsTmp.length() <= 0) {
                 XposedBridge.log("[SBPlus] m3u8: all segments failed");
+                if (task != null) {
+                    task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED;
+                    task.detail = "分片下载失败(已重试)";
+                    com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+                }
                 return false;
             }
             XposedBridge.log("[SBPlus] m3u8 merged ts " + tsTmp.getAbsolutePath() + " (" + tsTmp.length() + " bytes, parts=" + segs.size() + ")");
@@ -11103,7 +13260,15 @@ private void showUaGroupDialog(final Context ctx) {
             task.status = com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING;
             task.detail = "TS " + (tsTmp.length()/1048576) + "MB";
             com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
-            java.io.File mp4 = tsToMp4(tsTmp, baseName);
+            java.io.File mp4 = smartConvert(tsTmp, baseName, task, sAppContext);
+            // 转换期间被取消: 删产物
+            if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) {
+                XposedBridge.log("[SBPlus] m3u8 cancelled during convert, delete files");
+                try { tsTmp.delete(); } catch (Throwable ignored) {}
+                try { if (mp4 != null) mp4.delete(); } catch (Throwable ignored) {}
+                if (task != null) { task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED; task.detail = "已取消"; }
+                return false;
+            }
             if (mp4 != null && mp4.exists() && mp4.length() > 0) {
                 try { tsTmp.delete(); } catch (Throwable ignored) {}
                 try {
@@ -11148,7 +13313,7 @@ private void showUaGroupDialog(final Context ctx) {
                 }
             }
             if (baseName == null || baseName.isEmpty()) {
-                baseName = sanitizeFileName(urls.get(group.get(0)));
+                baseName = sanitizeFileName(fileNameFromUrl(urls.get(group.get(0))));
                 int q = baseName.indexOf('.');
                 if (q > 0) baseName = baseName.substring(0, q);
             } else {
@@ -11173,6 +13338,8 @@ private void showUaGroupDialog(final Context ctx) {
             final com.sbplus.browser.SbDownloadManager.Task task =
                     com.sbplus.browser.SbDownloadManager.register(taskId, baseName);
             task.status = com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING;
+            task.url = urls.get(group.get(0));
+            task.kind = "seg";
             com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
             final int N = group.size();
             if (N == 0) return null;
@@ -11182,7 +13349,18 @@ private void showUaGroupDialog(final Context ctx) {
                 if (i >= 0 && i < urls.size()) segUrls.add(urls.get(i));
             }
             if (segUrls.isEmpty()) return null;
-            java.io.File tsTmp = downloadSegmentsHighConcurrent(segUrls, dir, baseName, null, sAppContext);
+            java.io.File tsTmp = downloadSegmentsHighConcurrent(segUrls, dir, baseName, task, sAppContext);
+            if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) {
+                XposedBridge.log("[SBPlus] merge cancelled, cleanup");
+                try { if (tsTmp != null) tsTmp.delete(); } catch (Throwable ignored) {}
+                if (task != null) { task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED; task.detail = "已取消"; }
+                return null;
+            }
+            if (com.sbplus.browser.SbDownloadManager.isPaused(taskId)) {
+                XposedBridge.log("[SBPlus] merge paused, keep parts");
+                if (task != null) { task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED; task.detail = "已暂停"; com.sbplus.browser.SbDownloadManager.post(sAppContext, task); }
+                return null;
+            }
             if (tsTmp == null || !tsTmp.exists() || tsTmp.length() <= 0) {
                 XposedBridge.log("[SBPlus] downloadAndMergeSegments: all segments failed");
                 return null;
@@ -11195,7 +13373,7 @@ private void showUaGroupDialog(final Context ctx) {
             java.io.File result = null;
             boolean isVideo = ext.equals(".ts") || ext.equals(".mp4");
             if (isVideo) {
-                java.io.File mp4 = tsToMp4(tsTmp, baseName);
+                java.io.File mp4 = smartConvert(tsTmp, baseName, task, sAppContext);
                 if (mp4 != null && mp4.exists() && mp4.length() > 0) {
                     result = mp4;
                     try { tsTmp.delete(); } catch (Throwable ignored) {}
@@ -11244,8 +13422,27 @@ private void showUaGroupDialog(final Context ctx) {
             return null;
         }
     }
+    /** 智能转换: TS 一律优先真转码(H.264 也转, remux TS 坑太多: 音频多帧/时间戳/格式兼容),
+     *  转码失败回退 remux。 */
+    private java.io.File smartConvert(final java.io.File tsFile, final String baseName,
+                                      final com.sbplus.browser.SbDownloadManager.Task task,
+                                      final android.content.Context ctx) {
+        try {
+            // 先试真转码(H.264+AAC 输出, 播放器 100% 兼容)
+            java.io.File r = transcodeTsToMp4(tsFile, baseName, task, ctx);
+            if (r != null && r.exists() && r.length() > 0) return r;
+            XposedBridge.log("[SBPlus] smartConvert transcode failed/unusable, fallback remux");
+            return tsToMp4(tsFile, baseName, task, ctx);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] smartConvert error: " + t);
+            return tsToMp4(tsFile, baseName, task, ctx);
+        }
+    }
+
     /** 用 MediaExtractor 读 TS, MediaMuxer 封装成 MP4 (纯 remux 不重编码)。返回 mp4 文件或 null。 */
-    private java.io.File tsToMp4(final java.io.File tsFile, final String baseName) {
+    private java.io.File tsToMp4(final java.io.File tsFile, final String baseName,
+                                  final com.sbplus.browser.SbDownloadManager.Task task,
+                                  final android.content.Context ctx) {
         try {
             final android.media.MediaExtractor extractor = new android.media.MediaExtractor();
             extractor.setDataSource(tsFile.getAbsolutePath());
@@ -11271,26 +13468,54 @@ private void showUaGroupDialog(final Context ctx) {
                     String mime = "";
                     try { mime = fmt.getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {}
                     if (mime != null && mime.equals("audio/mp4a-latm") && !fmt.containsKey("csd-0")) {
-                        int[] p = sniffAacFromExtractor(extractor, i);
-                        if (p != null) {
-                            byte[] cfg = buildAudioSpecificConfig(p[0], p[1]);
-                            if (cfg != null) {
-                                fmt.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg));
-                                XposedBridge.log("[SBPlus] tsToMp4 audio csd-0 set sr=" + p[0] + " ch=" + p[1]);
+                        byte[] cfg = decodeAacCsdFromExtractor(extractor, i);
+                        if (cfg != null) {
+                            fmt.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg));
+                            XposedBridge.log("[SBPlus] tsToMp4 audio csd-0 via decoder (adv)");
+                            // 从 csd-0 (AudioSpecificConfig) 解析真实采样率/声道并覆盖 format(HE-AAC SBR 关键)
+                            try {
+                                int[] srch = parseAsc(cfg);
+                                if (srch != null) {
+                                    fmt.setInteger(android.media.MediaFormat.KEY_SAMPLE_RATE, srch[0]);
+                                    fmt.setInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT, srch[1]);
+                                    XposedBridge.log("[SBPlus] tsToMp4 audio fmt synced sr=" + srch[0] + " ch=" + srch[1]);
+                                }
+                            } catch (Throwable ignoredAsc) {}
+                        } else {
+                            int[] p = sniffAacFromExtractor(extractor, i);
+                            if (p != null) {
+                                byte[] cfg2 = buildAudioSpecificConfig(p[0], p[1]);
+                                if (cfg2 != null) {
+                                    fmt.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(cfg2));
+                                    XposedBridge.log("[SBPlus] tsToMp4 audio csd-0 set sr=" + p[0] + " ch=" + p[1]);
+                                }
                             }
                         }
                     }
                     muxerTracks.add(Integer.valueOf(muxer.addTrack(fmt)));
                 }
                 muxer.start();
-                java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(2 * 1024 * 1024);
+                // 大 buffer: 高码率关键帧可达数 MB, 小 buffer 截断会写坏帧导致跳帧/花屏
+                java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(16 * 1024 * 1024);
                 android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+                long firstPts = -1;
+                long lastPts = -1;
+                long videoPrevPts = -1;
                 for (int ti = 0; ti < trackCount; ti++) {
+                    firstPts = -1; lastPts = -1; videoPrevPts = -1;
+                    // 转换进度: 按轨更新
+                    if (task != null) {
+                        task.detail = "转换 " + (ti + 1) + "/" + trackCount + " 轨";
+                        task.partCount = (ti + 1);
+                        task.partTotal = trackCount;
+                        com.sbplus.browser.SbDownloadManager.post(ctx, task);
+                    }
                     for (int u = 0; u < trackCount; u++) { try { extractor.unselectTrack(u); } catch (Throwable ignored) {} }
                     extractor.selectTrack(ti);
                     String mime = "";
                     try { mime = formats.get(ti).getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {}
                     boolean isAac = mime != null && mime.equals("audio/mp4a-latm");
+                    boolean isVideo = mime != null && mime.startsWith("video/");
                     int idx = muxerTracks.get(ti).intValue();
                     boolean needSeek = true;
                     while (true) {
@@ -11298,21 +13523,56 @@ private void showUaGroupDialog(final Context ctx) {
                         if (sampleSize < 0) break;
                         int off = 0, size = sampleSize;
                         if (isAac && sampleSize >= 7) {
-                            byte b0 = buf.get(0), b1 = buf.get(1);
-                            if ((b0 & 0xFF) == 0xFF && (b1 & 0xF0) == 0xF0) {
-                                // ADTS header: 7 或 9 字节(带 CRC/ID3)
-                                int protectionAbsent = (b1 >> 1) & 0x01;
-                                int hdr = protectionAbsent == 1 ? 7 : 9;
-                                // frameLength
-                                int fl = 0;
-                                try { fl = ((buf.get(3) & 0x03) << 11) | ((buf.get(4) & 0xFF) << 3) | ((buf.get(5) & 0xE0) >> 5); } catch (Throwable ignored) {}
-                                if (hdr > 0 && hdr <= sampleSize) { off = hdr; size = sampleSize - hdr; }
-                                if (fl > 0 && fl >= hdr && fl <= sampleSize) size = fl - hdr;
+                            // 完整跳过 ID3 标签 + ADTS 头(单帧或多帧都处理)
+                            int pos = 0;
+                            while (pos + 10 <= sampleSize
+                                    && (buf.get(pos) & 0xFF) == 'I' && (buf.get(pos + 1) & 0xFF) == 'D' && (buf.get(pos + 2) & 0xFF) == '3') {
+                                int tagSize = ((buf.get(pos + 6) & 0x7F) << 21) | ((buf.get(pos + 7) & 0x7F) << 14)
+                                        | ((buf.get(pos + 8) & 0x7F) << 7) | (buf.get(pos + 9) & 0x7F);
+                                pos += 10 + tagSize;
+                                if (pos > sampleSize) { pos = sampleSize; break; }
+                            }
+                            if (pos + 7 <= sampleSize) {
+                                byte b0 = buf.get(pos), b1 = buf.get(pos + 1);
+                                if ((b0 & 0xFF) == 0xFF && (b1 & 0xF0) == 0xF0) {
+                                    // 逐帧剥掉 ADTS 头, 帧体前移
+                                    int src = pos, dst = pos;
+                                    while (src + 7 <= sampleSize
+                                            && (buf.get(src) & 0xFF) == 0xFF && (buf.get(src + 1) & 0xF0) == 0xF0) {
+                                        int fl = ((buf.get(src + 3) & 0x03) << 11) | ((buf.get(src + 4) & 0xFF) << 3) | ((buf.get(src + 5) & 0xE0) >> 5);
+                                        int h2 = ((buf.get(src + 1) >> 1) & 0x01) == 1 ? 7 : 9;
+                                        if (fl < h2 || src + fl > sampleSize) break;
+                                        System.arraycopy(buf.array(), src + h2, buf.array(), dst, fl - h2);
+                                        dst += (fl - h2);
+                                        src += fl;
+                                    }
+                                    if (dst > pos) {
+                                        off = pos;
+                                        size = dst - pos;
+                                    }
+                                }
                             }
                         }
                         info.offset = off;
                         info.size = size;
-                        info.presentationTimeUs = extractor.getSampleTime();
+                        long pts0 = extractor.getSampleTime();
+                        if (firstPts < 0) firstPts = pts0;
+                        long pts = pts0 - firstPts;
+                        // 音视频独立做时间戳归一化:
+                        //  - 视频: PTS 原样(允许 B 帧回跳; 若回跳严重则匀速推进兜底)
+                        //  - 音频: 防回退防 0, 保底+1000
+                        if (isVideo) {
+                            if (videoPrevPts >= 0 && pts + 20000 < videoPrevPts) {
+                                // 严重回跳(>20ms): 说明 PTS 乱序严重, 匀速推进避免播放器跳帧
+                                pts = videoPrevPts + 33333; // ~30fps 兜底
+                            }
+                            videoPrevPts = pts;
+                            lastPts = pts;
+                        } else {
+                            if (pts < lastPts) pts = lastPts + 1000;
+                            lastPts = pts;
+                        }
+                        info.presentationTimeUs = pts;
                         info.flags = (extractor.getSampleFlags() & android.media.MediaExtractor.SAMPLE_FLAG_SYNC) != 0
                                 ? android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
                         try {
@@ -11321,11 +13581,18 @@ private void showUaGroupDialog(final Context ctx) {
                             if (needSeek) { needSeek = false; }
                         }
                         if (!extractor.advance()) break;
+                        // 转换期间被取消: 中断并标记
+                        if (task != null && com.sbplus.browser.SbDownloadManager.isCancelled(task.id)) {
+                            XposedBridge.log("[SBPlus] tsToMp4 cancelled mid-convert");
+                            try { out.delete(); } catch (Throwable ignored) {}
+                            return null;
+                        }
                     }
                 }
                 muxer.stop();
                 muxer.release();
                 muxer = null;
+                if (task != null) { task.detail = "转换完成"; task.partCount = task.partTotal; com.sbplus.browser.SbDownloadManager.post(ctx, task); }
                 XposedBridge.log("[SBPlus] tsToMp4 OK -> " + out.getAbsolutePath());
                 return out;
             } finally {
@@ -11333,8 +13600,358 @@ private void showUaGroupDialog(final Context ctx) {
             }
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] tsToMp4 error: " + t);
+            if (task != null) { task.detail = "转换失败: " + t; task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED; com.sbplus.browser.SbDownloadManager.post(ctx, task); }
             return null;
         }
+    }
+
+    /** 真正的转码: MediaCodec 解码任意视频/音频(HEVC/VP9/AV1/AAC...)再重编码为 H.264+AAC MP4。
+     *  解决 remux 产物播放器不兼容导致的跳帧/无声音/花屏。 */
+    private java.io.File transcodeTsToMp4(final java.io.File tsFile, final String baseName,
+                                          final com.sbplus.browser.SbDownloadManager.Task task,
+                                          final android.content.Context ctx) {
+        android.media.MediaExtractor extractor = null;
+        android.media.MediaMuxer muxer = null;
+        android.media.MediaCodec vDec = null, vEnc = null, aDec = null, aEnc = null;
+        android.view.Surface encSurface = null;
+        java.io.File out = null;
+        try {
+            if (android.os.Build.VERSION.SDK_INT < 23) {
+                XposedBridge.log("[SBPlus] transcode requires API 23+, fallback remux");
+                return tsToMp4(tsFile, baseName, task, ctx);
+            }
+            extractor = new android.media.MediaExtractor();
+            extractor.setDataSource(tsFile.getAbsolutePath());
+            int trackCount = extractor.getTrackCount();
+            if (trackCount <= 0) return null;
+            android.media.MediaFormat vFmt = null, aFmt = null;
+            int vTrack = -1, aTrack = -1;
+            for (int i = 0; i < trackCount; i++) {
+                android.media.MediaFormat f = extractor.getTrackFormat(i);
+                String mime = "";
+                try { mime = f.getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {}
+                if (mime != null) {
+                    if (vTrack < 0 && mime.startsWith("video/")) { vFmt = f; vTrack = i; }
+                    else if (aTrack < 0 && mime.startsWith("audio/")) { aFmt = f; aTrack = i; }
+                }
+            }
+            boolean hasVideo = vTrack >= 0, hasAudio = aTrack >= 0;
+            if (!hasVideo && !hasAudio) return null;
+            final int[] aSrHolder = new int[]{44100, 2}; // 音频采样率/声道(方法级, 供两处使用)
+            out = new java.io.File(tsFile.getParentFile(), baseName + ".mp4");
+            muxer = new android.media.MediaMuxer(out.getAbsolutePath(),
+                    android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            int encVTrack = -1, encATrack = -1;
+            boolean needVInfo = hasVideo, needAInfo = hasAudio;
+
+            // ---------- 视频: 解码器 -> Surface -> H.264 编码器 ----------
+            if (hasVideo) {
+                String vMime = "";
+                try { vMime = vFmt.getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {}
+                int vw = 0, vh = 0;
+                try { vw = vFmt.getInteger(android.media.MediaFormat.KEY_WIDTH); vh = vFmt.getInteger(android.media.MediaFormat.KEY_HEIGHT); } catch (Throwable ignored) {}
+                if (vMime == null || vMime.isEmpty() || vw <= 0 || vh <= 0) throw new RuntimeException("bad video fmt");
+                XposedBridge.log("[SBPlus] transcode video " + vMime + " " + vw + "x" + vh);
+                vDec = android.media.MediaCodec.createDecoderByType(vMime);
+                // 保底: 有些封装 csd 缺失, 由解码器自己探测
+                vEnc = android.media.MediaCodec.createEncoderByType("video/avc");
+                int bitrate = Math.max(1200000, vw * vh * 4); // ~4Mbps@1080p, 低分辨率也保底
+                android.media.MediaFormat encFmt = android.media.MediaFormat.createVideoFormat("video/avc", vw, vh);
+                encFmt.setInteger(android.media.MediaFormat.KEY_COLOR_FORMAT,
+                        android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+                encFmt.setInteger(android.media.MediaFormat.KEY_BIT_RATE, bitrate);
+                encFmt.setInteger(android.media.MediaFormat.KEY_FRAME_RATE, 30);
+                encFmt.setInteger(android.media.MediaFormat.KEY_I_FRAME_INTERVAL, 2);
+                encFmt.setInteger(android.media.MediaFormat.KEY_BITRATE_MODE,
+                        android.media.MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR);
+                encFmt.setInteger(android.media.MediaFormat.KEY_PROFILE, android.media.MediaCodecInfo.CodecProfileLevel.AVCProfileHigh);
+                encFmt.setInteger(android.media.MediaFormat.KEY_LEVEL, android.media.MediaCodecInfo.CodecProfileLevel.AVCLevel42);
+                vEnc.configure(encFmt, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE);
+                encSurface = vEnc.createInputSurface();
+                vEnc.start();
+                // 解码器输出 Surface 直连编码器输入
+                vDec.configure(vFmt, encSurface, null, 0);
+                vDec.start();
+                // 编码器输出格式 -> muxer 轨
+                android.media.MediaFormat vOutFmt = vEnc.getOutputFormat();
+                encVTrack = muxer.addTrack(vOutFmt);
+                needVInfo = false;
+            }
+
+            // ---------- 音频: 源已是 AAC, 直接 remux 复制(不重编码, 1秒完成无损不卡死) ----------
+            boolean aRemux = false;
+            if (hasAudio) {
+                String aMime = "";
+                try { aMime = aFmt.getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {}
+                int sr = 0, ch = 0;
+                try { sr = aFmt.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE); ch = aFmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT); } catch (Throwable ignored) {}
+                if (sr <= 0) sr = 44100;
+                if (ch <= 0) ch = 2;
+                aSrHolder[0] = sr;
+                aSrHolder[1] = ch;
+                XposedBridge.log("[SBPlus] transcode audio " + aMime + " sr=" + sr + " ch=" + ch + " -> remux copy");
+                aRemux = true;
+                try {
+                    android.media.MediaFormat aOutFmt = aFmt;
+                    encATrack = muxer.addTrack(aOutFmt);
+                    needAInfo = false;
+                } catch (Throwable at) {
+                    XposedBridge.log("[SBPlus] audio remux addTrack failed: " + at + " (audio will be skipped, video only)");
+                    aRemux = false;
+                    encATrack = -1;
+                    needAInfo = false;
+                }
+            }
+            muxer.start();
+
+            final int TIMEOUT = 12000;
+            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(16 * 1024 * 1024);
+            long totalUs = 0;
+            String vMime2 = "";
+            if (hasVideo) { try { vMime2 = vFmt.getString(android.media.MediaFormat.KEY_MIME); } catch (Throwable ignored) {} }
+            XposedBridge.log("[SBPlus] transcode start, vTrack=" + vTrack + " aTrack=" + aTrack);
+
+            // ---------- 视频转码主循环(解码->渲染->编码->mux) ----------
+            if (hasVideo) {
+                extractor.unselectTrack(vTrack);
+                extractor.selectTrack(vTrack);
+                int[] decIn = new int[0];
+                byte[] decInBufs = null;
+                boolean vEosIn = false, vEosOut = false;
+                long vPts = 0;
+                long vOutBase = -1, vLastOutPts = -1;
+                android.media.MediaCodec.BufferInfo vInfo = new android.media.MediaCodec.BufferInfo();
+                java.nio.ByteBuffer[] decOutBufs = null;
+                int safety = 0;
+                while (!vEosOut && safety < 400000) {
+                    safety++;
+                    if (task != null && com.sbplus.browser.SbDownloadManager.isCancelled(task.id)) {
+                        XposedBridge.log("[SBPlus] transcode video cancelled");
+                        try { out.delete(); } catch (Throwable ignored) {}
+                        return null;
+                    }
+                    // 喂解码器输入
+                    if (!vEosIn) {
+                        int inIdx = vDec.dequeueInputBuffer(TIMEOUT);
+                        if (inIdx >= 0) {
+                            java.nio.ByteBuffer inBuf = vDec.getInputBuffer(inIdx);
+                            int sz = extractor.readSampleData(inBuf, 0);
+                            if (sz < 0) {
+                                vDec.queueInputBuffer(inIdx, 0, 0, 0,
+                                        android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                vEosIn = true;
+                            } else {
+                                long t = extractor.getSampleTime();
+                                vDec.queueInputBuffer(inIdx, 0, sz, t, 0);
+                                if (task != null && (task.partCount % 500 == 0)) {
+                                    task.detail = "转码中 " + (t / 1000000) + "s";
+                                    com.sbplus.browser.SbDownloadManager.post(ctx, task);
+                                }
+                                extractor.advance();
+                            }
+                        }
+                    }
+                    // 解码器输出: 渲染到编码器 Surface
+                    android.media.MediaCodec.BufferInfo dInfo = new android.media.MediaCodec.BufferInfo();
+                    int dOut = vDec.dequeueOutputBuffer(dInfo, 5000);
+                    if (dOut >= 0) {
+                        boolean render = dInfo.size > 0;
+                        vDec.releaseOutputBuffer(dOut, render);
+                        if ((dInfo.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) vEosOut = true;
+                    } else if (dOut == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        // ignore
+                    }
+                    // 编码器输出 -> muxer
+                    int eOut = vEnc.dequeueOutputBuffer(vInfo, 5000);
+                    if (eOut >= 0) {
+                        java.nio.ByteBuffer eBuf = vEnc.getOutputBuffer(eOut);
+                        if (vInfo.size > 0 && eBuf != null) {
+                            // PTS 归一化到 0 起点 + 强制单调(源 PTS 乱序/大数会导致播放器跳帧)
+                            long p = vInfo.presentationTimeUs;
+                            if (vOutBase < 0) vOutBase = p;
+                            long np = p - vOutBase;
+                            if (np < 0) np = 0;
+                            if (vLastOutPts >= 0 && np <= vLastOutPts) np = vLastOutPts + 33333; // ~30fps 兜底顺延
+                            vLastOutPts = np;
+                            vInfo.presentationTimeUs = np;
+                            eBuf.position(vInfo.offset);
+                            eBuf.limit(vInfo.offset + vInfo.size);
+                            try {
+                                totalUs = np;
+                                muxer.writeSampleData(encVTrack, eBuf, vInfo);
+                            } catch (Throwable we) {
+                                XposedBridge.log("[SBPlus] transcode v write err: " + we);
+                            }
+                        }
+                        vEnc.releaseOutputBuffer(eOut, false);
+                        if ((vInfo.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) vEosOut = true;
+                        if (task != null && (task.partCount % 500 == 0)) {
+                            task.detail = "转码 " + (vInfo.presentationTimeUs / 1000000) + "s";
+                            com.sbplus.browser.SbDownloadManager.post(ctx, task);
+                        }
+                    } else if (eOut == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        // ignore
+                    }
+                }
+                // 关闭视频解码器/编码器
+                try { vDec.stop(); vDec.release(); vDec = null; } catch (Throwable ignored) {}
+                try { vEnc.stop(); vEnc.release(); vEnc = null; } catch (Throwable ignored) {}
+                encSurface = null;
+                XposedBridge.log("[SBPlus] transcode video done, lastPts=" + totalUs);
+            }
+
+            // ---------- 音频转码主循环(解码->桥接->编码->mux) ----------
+            // ---------- 音频: 源已是 AAC, 直接 remux 复制到 MP4(每秒千帧级, 不卡死无损) ----------
+            if (hasAudio) {
+                extractor.unselectTrack(aTrack);
+                extractor.selectTrack(aTrack);
+                java.nio.ByteBuffer aBuf = java.nio.ByteBuffer.allocate(4 * 1024 * 1024);
+                android.media.MediaCodec.BufferInfo aInfo = new android.media.MediaCodec.BufferInfo();
+                long aBaseUs = -1, aLastPts = -1;
+                int aSafety = 0;
+                boolean aEos = false;
+                while (!aEos && aSafety < 3000000) {
+                    aSafety++;
+                    if (task != null && com.sbplus.browser.SbDownloadManager.isCancelled(task.id)) {
+                        XposedBridge.log("[SBPlus] transcode audio cancelled");
+                        try { out.delete(); } catch (Throwable ignored) {}
+                        return null;
+                    }
+                    aBuf.clear();
+                    int sz = extractor.readSampleData(aBuf, 0);
+                    if (sz < 0) {
+                        aEos = true;
+                        break;
+                    }
+                    long t = extractor.getSampleTime();
+                    if (aBaseUs < 0) aBaseUs = t;
+                    long np = t - aBaseUs;
+                    if (np < 0) np = 0;
+                    if (aLastPts >= 0 && np <= aLastPts) np = aLastPts + 1000; // 单调兜底
+                    aLastPts = np;
+                    aInfo.offset = 0;
+                    aInfo.size = sz;
+                    aInfo.presentationTimeUs = np;
+                    aInfo.flags = 0;
+                    aBuf.position(0);
+                    aBuf.limit(sz);
+                    try {
+                        muxer.writeSampleData(encATrack, aBuf, aInfo);
+                    } catch (Throwable we) {
+                        XposedBridge.log("[SBPlus] audio copy write err: " + we);
+                    }
+                    extractor.advance();
+                    if (task != null && (aSafety % 5000 == 0)) {
+                        task.detail = "音频 " + (np / 1000000) + "s";
+                        com.sbplus.browser.SbDownloadManager.post(ctx, task);
+                    }
+                }
+                XposedBridge.log("[SBPlus] transcode audio done (remux copy, samples=" + aSafety + ")");
+            }
+
+            if (needVInfo || needAInfo) throw new RuntimeException("codec output format missing");
+            muxer.stop();
+            muxer.release();
+            muxer = null;
+            if (task != null) { task.detail = "转换完成"; task.partCount = task.partTotal; com.sbplus.browser.SbDownloadManager.post(ctx, task); }
+            XposedBridge.log("[SBPlus] transcode OK -> " + out.getAbsolutePath() + " dur=" + (totalUs / 1000000) + "s");
+            return out;
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] transcodeTsToMp4 error: " + t);
+            try { if (out != null) out.delete(); } catch (Throwable ignored) {}
+            if (task != null) { task.detail = "转换失败: " + t; task.status = com.sbplus.browser.SbDownloadManager.STATUS_FAILED; com.sbplus.browser.SbDownloadManager.post(ctx, task); }
+            return null;
+        } finally {
+            try { if (aDec != null) aDec.release(); } catch (Throwable ignored) {}
+            try { if (aEnc != null) aEnc.release(); } catch (Throwable ignored) {}
+            try { if (vDec != null) vDec.release(); } catch (Throwable ignored) {}
+            try { if (vEnc != null) vEnc.release(); } catch (Throwable ignored) {}
+            try { if (extractor != null) extractor.release(); } catch (Throwable ignored) {}
+            try { if (muxer != null) muxer.release(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 解析 AudioSpecificConfig: 返回 [采样率, 声道数], 失败 null。 */
+    private static int[] parseAsc(byte[] asc) {
+        try {
+            if (asc == null || asc.length < 2) return null;
+            int b0 = asc[0] & 0xFF, b1 = asc[1] & 0xFF;
+            int sfIdx = ((b0 & 0x07) << 1) | ((b1 >> 7) & 0x01);
+            int chCfg = (b1 >> 3) & 0x0F;
+            int[] srt = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+                         16000, 12000, 11025, 8000, 7350};
+            if (sfIdx >= 0 && sfIdx < srt.length && chCfg >= 1 && chCfg <= 7) {
+                return new int[]{srt[sfIdx], chCfg};
+            }
+            // SBR/PS: 前 5 bit 是 audioObjectType=5(HE-AAC), 后跟 samplingFrequencyIndex 在更高位
+            // 常见 HE-AAC: 0x2B 0x92... 直接尝试从第 2 字节解析
+            if (sfIdx > 12 || chCfg < 1 || chCfg > 7) {
+                int ext = ((asc[2] & 0xF8) >> 3) & 0x1F; // 简化: 尝试
+                if (ext > 0 && ext < srt.length) return new int[]{srt[ext], chCfg > 0 && chCfg <= 7 ? chCfg : 2};
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /** 解码 AAC 首帧拿真实 csd-0(正确处理 HE-AAC/SBR 采样率), 失败返回 null。
+     *  原理: 用系统 MediaCodec 解码第一帧, 从输出 format 的 csd-0 得到播放器认的 ASC。 */
+    private byte[] decodeAacCsdFromExtractor(android.media.MediaExtractor ext, int track) {
+        try {
+            int tcnt = ext.getTrackCount();
+            for (int u = 0; u < tcnt; u++) { try { ext.unselectTrack(u); } catch (Throwable ignored) {} }
+            ext.selectTrack(track);
+            java.nio.ByteBuffer fb = java.nio.ByteBuffer.allocate(4096);
+            int n = ext.readSampleData(fb, 0);
+            if (n < 7) return null;
+            byte[] raw = new byte[n];
+            fb.position(0);
+            fb.get(raw);
+            // 剥 ADTS 头
+            byte b0 = raw[0], b1 = raw[1];
+            if ((b0 & 0xFF) == 0xFF && (b1 & 0xF0) == 0xF0) {
+                int protectionAbsent = (b1 >> 1) & 0x01;
+                int hdr = protectionAbsent == 1 ? 7 : 9;
+                byte[] payload = new byte[n - hdr];
+                System.arraycopy(raw, hdr, payload, 0, n - hdr);
+                android.media.MediaCodec codec = null;
+                try {
+                    android.media.MediaFormat inFmt = new android.media.MediaFormat();
+                    inFmt.setString(android.media.MediaFormat.KEY_MIME, "audio/mp4a-latm");
+                    inFmt.setInteger(android.media.MediaFormat.KEY_SAMPLE_RATE, 44100);
+                    inFmt.setInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT, 2);
+                    codec = android.media.MediaCodec.createDecoderByType("audio/mp4a-latm");
+                    codec.configure(inFmt, null, null, 0);
+                    codec.start();
+                    int inIdx = codec.dequeueInputBuffer(1000000);
+                    if (inIdx >= 0) {
+                        java.nio.ByteBuffer inBuf = codec.getInputBuffer(inIdx);
+                        inBuf.clear();
+                        inBuf.put(payload);
+                        long pts = ext.getSampleTime();
+                        codec.queueInputBuffer(inIdx, 0, payload.length, pts, 0);
+                    }
+                    android.media.MediaCodec.BufferInfo bi = new android.media.MediaCodec.BufferInfo();
+                    int outIdx = codec.dequeueOutputBuffer(bi, 2000000);
+                    if (outIdx >= 0) {
+                        android.media.MediaFormat outFmt = codec.getOutputFormat();
+                        java.nio.ByteBuffer csd = outFmt.getByteBuffer("csd-0");
+                        if (csd != null) {
+                            byte[] out = new byte[csd.remaining()];
+                            csd.get(out);
+                            return out;
+                        }
+                    }
+                } catch (Throwable t) {
+                    XposedBridge.log("[SBPlus] decodeAacCsd error: " + t);
+                } finally {
+                    try { if (codec != null) codec.stop(); } catch (Throwable ignored) {}
+                    try { if (codec != null) codec.release(); } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] decodeAacCsdFromExtractor error: " + t);
+        }
+        return null;
     }
 
     /** 从 extractor 选中 track 的首个 sample 读 ADTS 头, 返回 {采样率, 声道}. */
@@ -11386,12 +14003,13 @@ private boolean showMediaDialog(String json) {
             final java.util.List<String> urls = new java.util.ArrayList<String>();
             final java.util.List<String> titles = new java.util.ArrayList<String>();
             final java.util.List<String> types = new java.util.ArrayList<String>();
+            final java.util.List<String> vSite = new java.util.ArrayList<String>();
             final java.util.List<Integer> vW = new java.util.ArrayList<Integer>();
             final java.util.List<Integer> vH = new java.util.ArrayList<Integer>();
             final java.util.List<Double> vDur = new java.util.ArrayList<Double>();
             int videoCount = 0, audioCount = 0, imageCount = 0;
             // 合并网络层嗅探的 URL
-            mergeNetworkSniffedUrls(urls, types, titles);
+            mergeNetworkSniffedUrls(urls, types, titles, vSite);
             try {
                 String s = json;
                 try { s = s.replace("\\\"", "\""); } catch (Throwable ignored) {}
@@ -11423,8 +14041,12 @@ private boolean showMediaDialog(String json) {
                         int rr1 = s.indexOf('"', c3 + 1);
                         if (rr1 > 0) { int rr2 = rr1 + 1; while (rr2 < s.length()) { if (s.charAt(rr2) == '"' && s.charAt(rr2 - 1) != '\\') break; rr2++; } ti = s.substring(rr1 + 1, rr2); }
                     }
+                    // 站点标记(嗅探 JS 的 site 字段)
+                    String site = "";
+                    { int s1 = s.indexOf("\"site\"", q2); if (s1 > 0) { int cs = s.indexOf(':', s1); if (cs > 0) { int d1 = s.indexOf(',', cs); int d2 = s.indexOf('}', cs); int de = d1 > 0 ? Math.min(d1, d2) : d2; if (de > cs) { site = s.substring(cs + 1, de).trim(); if (site.startsWith("\"") && site.length() >= 2) site = site.substring(1, site.length() - 1); } } } }
                     if (!u.isEmpty()) {
                         urls.add(u); types.add(tp); titles.add(ti);
+                        vSite.add(site);
                         int w = 0, h = 0; double du = 0;
                         int w1 = s.indexOf("\"w\"", q2);
                         if (w1 > 0) { int cw = s.indexOf(':', w1); if (cw > 0) { int d1 = s.indexOf(',', cw); int d2 = s.indexOf('}', cw); int de = d1 > 0 ? Math.min(d1, d2) : d2; if (de > cw) { try { w = Integer.parseInt(s.substring(cw + 1, de).trim()); } catch (Throwable ignored) {} } } }
@@ -11750,7 +14372,8 @@ private boolean showMediaDialog(String json) {
                     final String ext = parseExt(urls.get(realIdx), types.get(realIdx));
                     final String dur = fmtDuration(vDur.get(realIdx));
                     String ti = titles.get(realIdx);
-                    String titleLine = (ti == null || ti.isEmpty() ? shortUrl(urls.get(realIdx)) : ti);
+                    String siteTag = (realIdx < vSite.size() && !vSite.get(realIdx).isEmpty()) ? "[" + vSite.get(realIdx) + "] " : "";
+                    String titleLine = siteTag + (ti == null || ti.isEmpty() ? fileNameFromUrl(urls.get(realIdx)) : ti);
                     android.widget.TextView tx1 = new android.widget.TextView(act);
                     tx1.setText(titleLine);
                     tx1.setTextSize(14);
@@ -11835,7 +14458,8 @@ private boolean showMediaDialog(String json) {
                     final String ext = parseExt(urls.get(realIdx), types.get(realIdx));
                     final String dur = fmtDuration(vDur.get(realIdx));
                     String ti = titles.get(realIdx);
-                    String titleLine = (ti == null || ti.isEmpty() ? shortUrl(urls.get(realIdx)) : ti);
+                    String siteTag = (realIdx < vSite.size() && !vSite.get(realIdx).isEmpty()) ? "[" + vSite.get(realIdx) + "] " : "";
+                    String titleLine = siteTag + (ti == null || ti.isEmpty() ? fileNameFromUrl(urls.get(realIdx)) : ti);
                     android.widget.TextView tx1 = new android.widget.TextView(act);
                     tx1.setText(titleLine);
                     tx1.setTextSize(14);
@@ -11945,16 +14569,25 @@ private boolean showMediaDialog(String json) {
             final android.widget.Button btnAll = new android.widget.Button(act);
             final android.widget.Button btnDl = new android.widget.Button(act);
             final android.widget.Button btnCancel = new android.widget.Button(act);
+            final android.widget.Button btnPaste = new android.widget.Button(act);
             btnRefresh.setText(T("刷新", "Refresh"));
             btnAll.setText(T("全选", "Select All"));
             btnDl.setText(T("下载", "Download"));
             btnCancel.setText(T("取消", "Cancel"));
+            btnPaste.setText(T("粘贴", "Paste"));
             android.widget.LinearLayout.LayoutParams b0p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
             android.widget.LinearLayout.LayoutParams b1p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
             android.widget.LinearLayout.LayoutParams b2p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
             android.widget.LinearLayout.LayoutParams b3p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
-            btnRow.addView(btnRefresh, b0p); btnRow.addView(btnAll, b1p); btnRow.addView(btnDl, b2p); btnRow.addView(btnCancel, b3p);
+            android.widget.LinearLayout.LayoutParams b4p = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+            btnRow.addView(btnRefresh, b0p); btnRow.addView(btnAll, b1p); btnRow.addView(btnDl, b2p); btnRow.addView(btnCancel, b3p); btnRow.addView(btnPaste, b4p);
             root.addView(btnRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
+
+            btnPaste.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try { showPasteDownloadDialog(act); } catch (Throwable t) { XposedBridge.log("[SBPlus] paste dl error: " + t); }
+                }
+            });
 
             final boolean[] allSelected = new boolean[]{false};
             btnAll.setOnClickListener(new android.view.View.OnClickListener() {
@@ -12002,6 +14635,53 @@ private boolean showMediaDialog(String json) {
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] showMediaDialog error: " + t);
             return false;
+        }
+    }
+
+    /** 手动输入链接下载(m3u8 / mp4 / m4s 直链等)。参考脚本 1166 的"自输入链接下载"。 */
+    private void showPasteDownloadDialog(final android.app.Activity act) {
+        try {
+            final android.widget.LinearLayout ll = new android.widget.LinearLayout(act);
+            ll.setOrientation(android.widget.LinearLayout.VERTICAL);
+            ll.setPadding(48, 24, 48, 8);
+            final android.widget.EditText urlEt = new android.widget.EditText(act);
+            urlEt.setHint(T("粘贴 m3u8/mp4/m4s 等下载链接", "Paste m3u8/mp4/m4s download URL"));
+            urlEt.setInputType(android.text.InputType.TYPE_TEXT_VARIATION_URI);
+            ll.addView(urlEt);
+            // 读取剪贴板自动填入
+            try {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager) act.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null && cm.getPrimaryClip().getItemCount() > 0) {
+                    CharSequence cs = cm.getPrimaryClip().getItemAt(0).coerceToText(act);
+                    if (cs != null) {
+                        String cst = cs.toString().trim();
+                        if (cst.length() > 0 && (cst.startsWith("http://") || cst.startsWith("https://"))) urlEt.setText(cst);
+                    }
+                }
+            } catch (Throwable ignored) {}
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(act);
+            b.setTitle(T("粘贴链接下载", "Paste URL & Download"));
+            b.setView(ll);
+            b.setPositiveButton(T("下载", "Download"), new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface d, int w) {
+                    String u = urlEt.getText().toString().trim();
+                    if (u.isEmpty()) { toastShort(T("链接不能为空", "URL is empty")); return; }
+                    if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
+                    String up = u.toLowerCase();
+                    if (up.contains(".m3u8") || up.contains(".mpd")) {
+                        downloadM3u8(u, "");
+                    } else if (up.indexOf("bilivideo.com") >= 0 || up.indexOf("upos-sz") >= 0 || up.indexOf("upgcx") >= 0) {
+                        // 单个 B 站 m4s 直链:按视频/音频处理
+                        downloadOneItem(u, up.endsWith(".m4a") ? "audio" : "video", "");
+                    } else {
+                        downloadOneItem(u, detectMediaType(u), "");
+                    }
+                }
+            });
+            b.setNegativeButton(T("取消", "Cancel"), null);
+            b.show();
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showPasteDownloadDialog error: " + t);
         }
     }
 
@@ -13662,7 +16342,39 @@ private boolean showMediaDialog(String json) {
     }
 
     /** 合并网络层嗅探的 URL 到 showMediaDialog 的数据中。 */
-    private void mergeNetworkSniffedUrls(java.util.List<String> urls, java.util.List<String> types, java.util.List<String> titles) {
+    /** 从 URL 提取真实文件名(最后路径段, 去 query/fragment, URL解码); 无有效文件名返回短URL。 */
+    private static String fileNameFromUrl(String url) {
+        try {
+            if (url == null) return "";
+            String u = url;
+            int q = u.indexOf('?');
+            if (q >= 0) u = u.substring(0, q);
+            int f = u.indexOf('#');
+            if (f >= 0) u = u.substring(0, f);
+            int slash = u.lastIndexOf('/');
+            String name = slash >= 0 ? u.substring(slash + 1) : u;
+            if (!name.isEmpty()) {
+                try { name = java.net.URLDecoder.decode(name, "UTF-8"); } catch (Throwable ignored) {}
+                name = name.replace('\\', '/');
+                // 排除无意义文件名
+                if (!name.equals("/") && !name.isEmpty()
+                        && !name.equals("index.html") && !name.equals("index.htm")
+                        && !name.matches("^[0-9]+$")) {
+                    return name;
+                }
+            }
+        } catch (Throwable ignored) {}
+        // 静态fallback: 去掉协议后截断
+        try {
+            String t = url.replaceFirst("^[a-zA-Z]+://", "");
+            if (t.length() > 40) t = t.substring(0, 40);
+            return t;
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    private void mergeNetworkSniffedUrls(java.util.List<String> urls, java.util.List<String> types, java.util.List<String> titles,
+                                         java.util.List<String> sites) {
         try {
             synchronized (sNetworkSniffedUrls) {
                 for (String url : sNetworkSniffedUrls) {
@@ -13674,6 +16386,7 @@ private boolean showMediaDialog(String json) {
                         urls.add(url);
                         types.add(type);
                         titles.add(""); // 网络层嗅探没有 title
+                        if (sites != null) sites.add("");
                     }
                 }
 
