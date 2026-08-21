@@ -3871,6 +3871,9 @@ private boolean isThemeMasterEnabled() {
                 String vidn = v.getResources().getResourceEntryName(v.getId());
                 if (vidn.contains("background") || vidn.equals("custom_background")
                         || vidn.contains("backdrop") || vidn.contains("wallpaper")) return false;
+                // 排除地址栏的跳转App图标(open_in_app/launch_app/external_app 等)
+                if (vidn.contains("open_in") || vidn.contains("launch_app") || vidn.contains("external")
+                        || vidn.contains("open_with") || vidn.contains("jump_to")) return false;
             } catch (Throwable ignoredV) {}
             // 排除主页背景层级
             try {
@@ -6895,19 +6898,19 @@ private void showUaGroupDialog(final Context ctx) {
             bindPreferenceClick(modePref, cl, new Runnable() { @Override public void run() { pickDownloadMode(ctx, modePrefRef); } });
             XposedHelpers.callMethod(screen, "addPreference", modePref);
 
-            // 下载后转 MP4 开关
+            // 视频资源转 MP4 开关(右侧按钮切换)
             try {
                 Class<?> switchPrefCls = XposedHelpers.findClass(
                         "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
                 final Object conv = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
-                XposedHelpers.callMethod(conv, "setTitle", T("下载后转 MP4", "Convert to MP4"));
+                XposedHelpers.callMethod(conv, "setTitle", T("视频资源转 MP4", "Convert video to MP4"));
                 XposedHelpers.callMethod(conv, "setKey", "sbplus_dl_convertmp4");
-                XposedHelpers.callMethod(conv, "setSummary", T("关:保留下载的 TS/原格式;开:下载完成后转成 MP4", "Off: keep TS/original; On: convert to MP4 after download"));
+                XposedHelpers.callMethod(conv, "setSummary", T("开:下载完成后转成 MP4;关:保留下载的 TS/原格式", "On: convert to MP4 after download; Off: keep TS/original"));
                 boolean convOn = ctx.getSharedPreferences("samsung_download_bridge", Context.MODE_PRIVATE)
                         .getBoolean("dl_convert_mp4", true);
                 XposedHelpers.callMethod(conv, "setChecked", convOn);
                 XposedHelpers.callMethod(conv, "setSelectable", true);
-                try { XposedHelpers.callMethod(conv, "setDividerVisible", true); } catch (Throwable ignored) {}
+                try { XposedHelpers.callMethod(conv, "setDividerVisible", false); } catch (Throwable ignored) {}
                 Class<?> lt = listenerParamType(conv.getClass(), "setOnPreferenceChangeListener");
                 Object cl2 = java.lang.reflect.Proxy.newProxyInstance(cl, new Class[]{lt},
                     new java.lang.reflect.InvocationHandler() {
@@ -6953,10 +6956,8 @@ private void showUaGroupDialog(final Context ctx) {
             XposedHelpers.callMethod(listPref, "setKey", "sbplus_dl_list");
             bindPreferenceClick(listPref, cl, new Runnable() { @Override public void run() {
                 try {
-                    android.content.Intent it = new android.content.Intent("com.sbplus.browser.ACTION_SHOW_DOWNLOADS");
-                    it.setPackage(ctx.getPackageName());
-                    ctx.sendBroadcast(it);
-                } catch (Throwable ignored) {}
+                    showDownloadList();
+                } catch (Throwable t) { XposedBridge.log("[SBPlus] 下载管理 click err: " + t); }
             } });
             XposedHelpers.callMethod(screen, "addPreference", listPref);
 
@@ -8895,6 +8896,22 @@ private void showUaGroupDialog(final Context ctx) {
                 }
             });
             XposedBridge.log("[SBPlus] LocationBarButtonLayout.onFinishInflate hooked for userscript toolbar");
+
+            // 根据地址栏状态(网页 vs 主页)显示/隐藏油猴+嗅探图标
+            try {
+                XposedHelpers.findAndHookMethod(layoutCls, "updateLocationBarEndIcon",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                try {
+                                    syncToolbarIconsForHomeState(param.thisObject);
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                XposedBridge.log("[SBPlus] LocationBarButtonLayout.updateLocationBarEndIcon hooked");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] hook updateLocationBarEndIcon failed: " + t);
+            }
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] hookUserscriptToolbar failed: " + t);
         }
@@ -9040,6 +9057,34 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
+
+    /** 根据地址栏状态(主页/新标签页 vs 网页)显示或隐藏油猴与嗅探图标。 */
+    private void syncToolbarIconsForHomeState(Object layoutObj) {
+        try {
+            Object urlBarParent = XposedHelpers.getObjectField(layoutObj, "mUrlBarParent");
+            if (!(urlBarParent instanceof android.view.ViewGroup)) return;
+            android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
+            // 判断当前是否主页/新标签页: sCurrentUrl 为空、about:blank、或约空视为主页
+            boolean home = true;
+            String u = sCurrentUrl;
+            if (u != null && !u.isEmpty()) {
+                String t = u.trim();
+                if (!t.isEmpty() && !t.equalsIgnoreCase("about:blank")
+                        && !t.startsWith("about:") && !t.startsWith("chrome:")
+                        && !t.startsWith("edge:") && !t.startsWith("samsung:")) {
+                    home = false;
+                }
+            }
+            int vis = home ? android.view.View.GONE : android.view.View.VISIBLE;
+            android.view.View s = parent.findViewWithTag("sbplus_sniff_btn");
+            android.view.View m = parent.findViewWithTag("sbplus_monkey_btn");
+            if (s != null && s.getVisibility() != vis) s.setVisibility(vis);
+            if (m != null && m.getVisibility() != vis) m.setVisibility(vis);
+            XposedBridge.log("[SBPlus] syncToolbarIcons home=" + home + " url=" + (u == null ? "null" : u) + " sniff=" + (s != null) + " monkey=" + (m != null));
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] syncToolbarIconsForHomeState err: " + t);
+        }
+    }
 
     /** 从 anchor 下方弹出一个列表 PopupWindow。onItem(itemIndex) 回调点击。 */
         private String dumpChars(String s) {
@@ -10391,24 +10436,82 @@ private void showUaGroupDialog(final Context ctx) {
                         final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
                         root.setOrientation(android.widget.LinearLayout.VERTICAL);
                         int pad = (int)(act.getResources().getDisplayMetrics().density * 14 + 0.5f);
-                        root.setPadding(pad, pad, pad, pad);
-                        android.widget.TextView title = new android.widget.TextView(act);
-                        title.setText(T("下载任务", "Downloads"));
-                        title.setTextSize(18);
-                        title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-                        root.addView(title);
+
+                        // 操作栏: 全选 | 删除选中 | 清除记录
+                        final android.widget.LinearLayout opBar = new android.widget.LinearLayout(act);
+                        opBar.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                        final android.widget.Button bAll = new android.widget.Button(act);
+                        final android.widget.Button bDel = new android.widget.Button(act);
+                        final android.widget.Button bClear = new android.widget.Button(act);
+                        bAll.setText(T("全选", "Select all"));
+                        bDel.setText(T("删除选中", "Delete selected"));
+                        bClear.setText(T("清除记录", "Clear records"));
+                        bAll.setTextSize(12); bDel.setTextSize(12); bClear.setTextSize(12);
+                        java.util.Set<String> selectedSet = java.util.concurrent.ConcurrentHashMap.newKeySet();
+                        boolean[] allChecked = new boolean[]{false};
+                        android.widget.LinearLayout.LayoutParams ob1 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+                        android.widget.LinearLayout.LayoutParams ob2 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+                        android.widget.LinearLayout.LayoutParams ob3 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+                        ob1.setMargins(0,0,dp(act,4),dp(act,8));
+                        ob2.setMargins(dp(act,4),0,dp(act,4),dp(act,8));
+                        ob3.setMargins(dp(act,4),0,0,dp(act,8));
+                        opBar.addView(bAll, ob1);
+                        opBar.addView(bDel, ob2);
+                        opBar.addView(bClear, ob3);
+                        root.addView(opBar);
+
                         final android.widget.LinearLayout list = new android.widget.LinearLayout(act);
                         list.setOrientation(android.widget.LinearLayout.VERTICAL);
                         root.addView(list);
-                        // 新启线程定时刷新
                         final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
-                        refreshListIn(act, root, list, h);
 
-                        new android.app.AlertDialog.Builder(act)
-                            .setTitle(T("下载管理", "Download Manager"))
+                        bAll.setOnClickListener(new android.view.View.OnClickListener() {
+                            @Override public void onClick(android.view.View v) {
+                                allChecked[0] = !allChecked[0];
+                                java.util.List<com.sbplus.browser.SbDownloadManager.Task> ts = com.sbplus.browser.SbDownloadManager.all();
+                                selectedSet.clear();
+                                if (allChecked[0]) for (com.sbplus.browser.SbDownloadManager.Task tt : ts) selectedSet.add(tt.id);
+                                bAll.setText(allChecked[0] ? T("全不选", "Deselect all") : T("全选", "Select all"));
+                                refreshListIn(act, root, list, h, selectedSet, bAll, bDel);
+                            }
+                        });
+                        bDel.setOnClickListener(new android.view.View.OnClickListener() {
+                            @Override public void onClick(android.view.View v) {
+                                try {
+                                    if (selectedSet.isEmpty()) { toastShort(T("未选中任务", "No task selected")); return; }
+                                    if (selectedSet.size() == 1) {
+                                        confirmDeleteDownload(act, selectedSet.iterator().next());
+                                    } else {
+                                        java.util.List<String> ids = new java.util.ArrayList<String>(selectedSet);
+                                        confirmDeleteBatch(act, ids);
+                                    }
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                        bClear.setOnClickListener(new android.view.View.OnClickListener() {
+                            @Override public void onClick(android.view.View v) {
+                                try {
+                                    java.util.List<com.sbplus.browser.SbDownloadManager.Task> ts = com.sbplus.browser.SbDownloadManager.all();
+                                    if (ts.isEmpty()) { toastShort(T("无记录", "No records")); return; }
+                                    for (com.sbplus.browser.SbDownloadManager.Task tt : ts) {
+                                        com.sbplus.browser.SbDownloadManager.remove(tt.id);
+                                        com.sbplus.browser.SbDownloadManager.cancel(sAppContext, tt.id);
+                                    }
+                                    selectedSet.clear();
+                                    toastShort(T("已清除下载记录(文件保留)", "Records cleared (files kept)"));
+                                    refreshListIn(act, root, list, h, selectedSet, bAll, bDel);
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+
+                        final Object[] dlgRef = new Object[1];
+                        refreshListIn(act, root, list, h, selectedSet, bAll, bDel);
+                        dlgRef[0] = new android.app.AlertDialog.Builder(act)
+                            .setTitle((CharSequence) null)
                             .setView(root)
                             .setPositiveButton(T("关闭", "Close"), null)
-                            .create().show();
+                            .create();
+                        ((android.app.AlertDialog) dlgRef[0]).show();
                     } catch (Throwable t) { XposedBridge.log("[SBPlus] showDownloadList ui error: " + t); }
                 }
             });
@@ -10416,7 +10519,9 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     private void refreshListIn(final android.app.Activity act, final android.widget.LinearLayout root,
-                               final android.widget.LinearLayout list, final android.os.Handler h) {
+                               final android.widget.LinearLayout list, final android.os.Handler h,
+                               final java.util.Set<String> selectedSet,
+                               final android.widget.Button bAll, final android.widget.Button bDel) {
         try {
             list.removeAllViews();
             java.util.List<com.sbplus.browser.SbDownloadManager.Task> tasks = com.sbplus.browser.SbDownloadManager.all();
@@ -10427,65 +10532,111 @@ private void showUaGroupDialog(final Context ctx) {
                 empty.setPadding(0, dp(act, 8), 0, 0);
                 list.addView(empty);
             }
+            boolean any = false;
             for (final com.sbplus.browser.SbDownloadManager.Task t : tasks) {
-                android.widget.LinearLayout row = new android.widget.LinearLayout(act);
-                row.setOrientation(android.widget.LinearLayout.VERTICAL);
-                row.setPadding(0, dp(act, 6), 0, dp(act, 6));
+                any = true;
+                // 每任务一行: 勾选框 + 信息 + 进度
+                final android.widget.LinearLayout row = new android.widget.LinearLayout(act);
+                row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+                row.setPadding(0, dp(act, 4), 0, dp(act, 4));
+                final android.widget.CheckBox cb = new android.widget.CheckBox(act);
+                cb.setChecked(selectedSet.contains(t.id));
+                cb.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean isChecked) {
+                        if (isChecked) selectedSet.add(t.id); else selectedSet.remove(t.id);
+                        if (bAll != null) {
+                            java.util.List<com.sbplus.browser.SbDownloadManager.Task> ts = com.sbplus.browser.SbDownloadManager.all();
+                            boolean all = !ts.isEmpty();
+                            for (com.sbplus.browser.SbDownloadManager.Task tt : ts) if (!selectedSet.contains(tt.id)) { all = false; break; }
+                            bAll.setText(all ? T("全不选", "Deselect all") : T("全选", "Select all"));
+                        }
+                    }
+                });
+                row.addView(cb, new android.widget.LinearLayout.LayoutParams(-2, -2));
+
+                android.widget.LinearLayout col = new android.widget.LinearLayout(act);
+                col.setOrientation(android.widget.LinearLayout.VERTICAL);
                 android.widget.TextView name = new android.widget.TextView(act);
-                name.setText(t.name + "  ·  " + statusText(t));
+                name.setText(t.name);
                 name.setTextSize(14);
                 name.setTextColor(0xFF1B1B1B);
-                row.addView(name);
-                android.widget.ProgressBar pb = new android.widget.ProgressBar(act, null,
-                        android.R.attr.progressBarStyleHorizontal);
-                if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING) {
-                    if (t.partTotal > 0) { pb.setMax(100); pb.setProgress(t.percent()); }
-                    else pb.setIndeterminate(true);
-                } else if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING) {
-                    pb.setIndeterminate(true);
-                } else {
-                    pb.setMax(100); pb.setProgress(100);
-                }
-                row.addView(pb);
+                name.setMaxLines(1);
+                col.addView(name);
                 android.widget.TextView sub = new android.widget.TextView(act);
-                sub.setText(detailText(t));
+                sub.setText(statusText(t) + (t.speedBps > 0 && t.status == com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING
+                    ? " · " + com.sbplus.browser.SbDownloadManager.fmtSpeed(t.speedBps) + " · " + etaText(t) : ""));
                 sub.setTextSize(12);
                 sub.setTextColor(0xFF888888);
-                row.addView(sub);
-                // 操作按钮行: 打开文件 / 删除
-                if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_DONE) {
-                    android.widget.LinearLayout opRow = new android.widget.LinearLayout(act);
-                    opRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-                    android.widget.Button bOpen = new android.widget.Button(act);
-                    bOpen.setText(T("打开", "Open"));
-                    bOpen.setTextSize(12);
-                    android.widget.Button bDel = new android.widget.Button(act);
-                    bDel.setText(T("删除", "Delete"));
-                    bDel.setTextSize(12);
-                    android.widget.LinearLayout.LayoutParams op1 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
-                    android.widget.LinearLayout.LayoutParams op2 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
-                    op1.setMargins(0, dp(act,4), dp(act,4), 0);
-                    op2.setMargins(dp(act,4), dp(act,4), 0, 0);
-                    opRow.addView(bOpen, op1);
-                    opRow.addView(bDel, op2);
-                    row.addView(opRow);
-                    final String fid = t.id;
-                    bOpen.setOnClickListener(new android.view.View.OnClickListener() {
-                        @Override public void onClick(android.view.View v) { try { openDownloadedFile(act, fid); } catch (Throwable ignored) {} }
-                    });
-                    bDel.setOnClickListener(new android.view.View.OnClickListener() {
-                        @Override public void onClick(android.view.View v) { confirmDeleteDownload(act, fid); }
-                    });
-                }
+                col.addView(sub);
+                android.widget.ProgressBar pb = new android.widget.ProgressBar(act, null, android.R.attr.progressBarStyleHorizontal);
+                pb.setMax(100);
+                pb.setProgress(t.percent());
+                if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_DOWNLOADING && t.partTotal <= 0) pb.setIndeterminate(true);
+                if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING) pb.setIndeterminate(true);
+                if (t.status == com.sbplus.browser.SbDownloadManager.STATUS_FAILED) { pb.setProgress(0); }
+                col.addView(pb);
+                android.widget.LinearLayout.LayoutParams colLp = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+                colLp.gravity = android.view.Gravity.CENTER_VERTICAL;
+                row.addView(col, colLp);
                 list.addView(row);
             }
-            // 3秒后自动刷新一次(如果对话框还开着)
+            // 刷新按钮状态
+            if (bAll != null) {
+                java.util.List<com.sbplus.browser.SbDownloadManager.Task> ts = com.sbplus.browser.SbDownloadManager.all();
+                boolean all = !ts.isEmpty();
+                for (com.sbplus.browser.SbDownloadManager.Task tt : ts) if (!selectedSet.contains(tt.id)) { all = false; break; }
+                if (!ts.isEmpty()) bAll.setText(all ? T("全不选", "Deselect all") : T("全选", "Select all"));
+            }
+            // 1.5秒后自动刷新(进度/速度同步)
             h.postDelayed(new Runnable() {
                 @Override public void run() {
-                    try { if (list.getParent() != null) refreshListIn(act, root, list, h); } catch (Throwable ignored) {}
+                    try { if (list.getParent() != null) refreshListIn(act, root, list, h, selectedSet, bAll, bDel); } catch (Throwable ignored) {}
                 }
-            }, 3000);
+            }, 1500);
         } catch (Throwable t) { XposedBridge.log("[SBPlus] refreshListIn error: " + t); }
+    }
+
+    /** 根据已用时间与完成比例估算剩余时间. */
+    private String etaText(com.sbplus.browser.SbDownloadManager.Task t) {
+        try {
+            int p = t.percent();
+            if (p <= 0 || p >= 100) return "";
+            long elapsed = System.currentTimeMillis() - t.lastTime;
+            if (elapsed < 0) elapsed = 0;
+            long etaMs = (long)(elapsed * (100.0 / p - 1.0));
+            long sec = etaMs / 1000;
+            if (sec <= 0) return T("剩余 <1s", "<1s left");
+            long hh = sec / 3600, mm = (sec % 3600) / 60, ss = sec % 60;
+            String s = hh > 0 ? String.format("%dh%02dm", hh, mm) : (mm > 0 ? String.format("%dm%02ds", mm, ss) : String.format("%ds", ss));
+            return T("剩余 ", "ETA ") + s;
+        } catch (Throwable t2) { return ""; }
+    }
+
+    /** 批量删除(文件+记录). */
+    private void confirmDeleteBatch(final android.app.Activity act, final java.util.List<String> ids) {
+        try {
+            String msg = T("删除选中的 ", "Delete ") + ids.size() + T(" 个任务(文件+记录)?", " tasks (files + records)?");
+            new android.app.AlertDialog.Builder(act)
+                .setTitle(T("确认删除", "Confirm delete"))
+                .setMessage(msg)
+                .setPositiveButton(T("删除", "Delete"), new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) {
+                        for (String id : ids) {
+                            try {
+                                com.sbplus.browser.SbDownloadManager.Task t = com.sbplus.browser.SbDownloadManager.get(id);
+                                if (t != null && t.outPath != null && !t.outPath.isEmpty()) {
+                                    try { new java.io.File(t.outPath).delete(); } catch (Throwable ignored) {}
+                                }
+                                com.sbplus.browser.SbDownloadManager.remove(id);
+                                com.sbplus.browser.SbDownloadManager.cancel(sAppContext, id);
+                            } catch (Throwable ignored) {}
+                        }
+                        toastShort(T("已删除", "Deleted"));
+                    }
+                })
+                .setNegativeButton(T("取消", "Cancel"), null)
+                .create().show();
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] confirmDeleteBatch: " + t); }
     }
 
     /** 打开已下载的文件(系统媒体播放器). */
@@ -10996,7 +11147,7 @@ private boolean showMediaDialog(String json) {
             final android.app.Activity act = act0;
             final String typeSummary = T("图片 ", "Images ") + imageCount + T(" / 音频 ", " / Audio ") + audioCount
                     + T(" / 视频 ", " / Video ") + videoCount;
-            final String title = T("资源嗅探", "Media Sniffer") + "  " + typeSummary;
+            final String title = T("资源嗅探", "Media Sniffer");
 
             // ============ 自定义 View 对话框 ============
             final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
@@ -11004,6 +11155,53 @@ private boolean showMediaDialog(String json) {
             final int pad = (int)(14 * act.getResources().getDisplayMetrics().density);
             root.setPadding(pad, (int)(6*act.getResources().getDisplayMetrics().density), pad, 0);
 
+            // 标题行: 左=资源嗅探, 中=已选数量(居中), 右=下载列表入口(靠右)
+            final android.widget.LinearLayout headerRow = new android.widget.LinearLayout(act);
+            headerRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            headerRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            headerRow.setPadding(0, dp(act,10), 0, dp(act,4));
+            final android.widget.TextView tvHeaderLeft = new android.widget.TextView(act);
+            tvHeaderLeft.setText(title);
+            tvHeaderLeft.setTextSize(17);
+            tvHeaderLeft.setTypeface(tvHeaderLeft.getTypeface(), android.graphics.Typeface.BOLD);
+            // 已选数量状态条(居中, 每次勾选/取消/全选时刷新)
+            final android.widget.TextView tvSelCount = new android.widget.TextView(act);
+            tvSelCount.setTextColor(0xFF1E88E5);
+            tvSelCount.setTextSize(13);
+            tvSelCount.setGravity(android.view.Gravity.CENTER);
+            // 下载列表入口(靠右)
+            final android.widget.TextView tvDlEntry = new android.widget.TextView(act);
+            tvDlEntry.setText(T("下载列表", "DL list"));
+            tvDlEntry.setTextSize(14);
+            tvDlEntry.setTextColor(0xFF1E88E5);
+            tvDlEntry.setPadding(0, dp(act,4), dp(act,8), dp(act,4));
+            tvDlEntry.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
+            tvDlEntry.setClickable(true);
+            tvDlEntry.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try {
+                        showDownloadList();
+                    } catch (Throwable t) { XposedBridge.log("[SBPlus] 嗅探弹窗下载列表 click err: " + t); }
+                }
+            });
+            // 三段等宽权重,各自控制对齐:左/中(居中)/右
+            android.widget.LinearLayout.LayoutParams hlp = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+            hlp.gravity = android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL;
+            headerRow.addView(tvHeaderLeft, hlp);
+            android.widget.LinearLayout.LayoutParams clp = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+            clp.gravity = android.view.Gravity.CENTER;
+            headerRow.addView(tvSelCount, clp);
+            android.widget.LinearLayout.LayoutParams dlp = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+            dlp.gravity = android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL;
+            headerRow.addView(tvDlEntry, dlp);
+            final Runnable updateSelCount = new Runnable() { @Override public void run() {
+                try {
+                    int cc = 0; for (int i = 0; i < n; i++) if (checked[i]) cc++;
+                    tvSelCount.setText(T("已选 ", "Selected ") + cc + " / " + n + T(" 个文件", " files"));
+                } catch (Throwable ignored) {}
+            }};
+            updateSelCount.run();
+            root.addView(headerRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
             // Tab 行
             final android.widget.LinearLayout tabRow = new android.widget.LinearLayout(act);
             tabRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
@@ -11022,19 +11220,7 @@ private boolean showMediaDialog(String json) {
             tabRow.addView(tvTab1, t1p); tabRow.addView(tvTab2, t2p); tabRow.addView(tvTab3, t3p);
             root.addView(tabRow, new android.widget.LinearLayout.LayoutParams(-1, -2));
 
-            // 已选数量状态条(每次勾选/取消/全选时刷新)
-            final android.widget.TextView tvSelCount = new android.widget.TextView(act);
-            tvSelCount.setTextColor(0xFF1E88E5);
-            tvSelCount.setTextSize(13);
-            tvSelCount.setPadding(12, 4, 12, 4);
-            final Runnable updateSelCount = new Runnable() { @Override public void run() {
-                try {
-                    int cc = 0; for (int i = 0; i < n; i++) if (checked[i]) cc++;
-                    tvSelCount.setText(T("已选 ", "Selected ") + cc + " / " + n + T(" 个文件", " files"));
-                } catch (Throwable ignored) {}
-            }};
-            root.addView(tvSelCount, new android.widget.LinearLayout.LayoutParams(-1, -2));
-            updateSelCount.run();
+
 
             // 内容容器(用 FrameLayout 承载可见页)
             final android.widget.FrameLayout content = new android.widget.FrameLayout(act);
@@ -11477,7 +11663,7 @@ private boolean showMediaDialog(String json) {
                 }
             });
             final android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(act)
-                .setTitle(title)
+                .setTitle((CharSequence) null)
                 .setView(root)
                 .setCancelable(true)
                 .create();
