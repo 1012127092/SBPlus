@@ -11768,6 +11768,11 @@ private static final String SNIFF_JS =
             // ---- B站 DASH 音视频配对识别: 优先于普通分段(避免把 -1视频/-2音频 当分段拼坏) ----
             try {
                 final java.util.Set<Integer> pairIdx = new java.util.HashSet<Integer>();
+                for (int di : idxList) {
+                    String du = (di >= 0 && di < urls.size()) ? urls.get(di) : "?";
+                    String dt = (di >= 0 && di < types.size()) ? types.get(di) : "?";
+                    XposedBridge.log("[SBPlus] dash sel[" + di + "] type=" + dt + " url=" + du.substring(0, Math.min(120, du.length())));
+                }
                 final java.util.List<int[]> pairs = findAllDashPairs(idxList, urls, types);
                 XposedBridge.log("[SBPlus] dash pairs found=" + pairs.size() + " sel=" + idxList.size());
                 for (int[] p : pairs) XposedBridge.log("[SBPlus] dash pair v=" + urls.get(p[0]) + " a=" + urls.get(p[1]));
