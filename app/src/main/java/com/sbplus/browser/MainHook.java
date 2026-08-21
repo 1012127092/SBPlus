@@ -11993,15 +11993,21 @@ private void showUaGroupDialog(final Context ctx) {
                 java.io.FileOutputStream fo2 = new java.io.FileOutputStream(m4sTmp);
                 try { fo2.write(b); } finally { fo2.close(); }
                 if (isVideoLike) {
+                    // m4s = fMP4, 纯 remux 改封装即可(绝不重编码: 快且不膨胀)
                     task.status = com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING;
-                    task.detail = "转换 MP4";
+                    task.detail = "封装 MP4";
                     com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
-                    java.io.File mp4o = smartConvert(m4sTmp, baseName, task, sAppContext);
+                    java.io.File mp4o = tsToMp4(m4sTmp, baseName, task, sAppContext);
                     if (mp4o != null && mp4o.exists() && mp4o.length() > 0) {
                         try { m4sTmp.delete(); } catch (Throwable ignored) {}
                         outFile = mp4o;
                     } else {
-                        outFile = m4sTmp;
+                        // remux 失败(如缺 csd) 直接改名 .mp4(fMP4 容器本身兼容)
+                        java.io.File renamed = new java.io.File(m4sTmp.getParentFile(), baseName + ".mp4");
+                        int rn = 1;
+                        while (renamed.exists()) { renamed = new java.io.File(m4sTmp.getParentFile(), baseName + "_" + rn + ".mp4"); rn++; }
+                        boolean okr = m4sTmp.renameTo(renamed);
+                        outFile = okr ? renamed : m4sTmp;
                     }
                 } else {
                     outFile = m4sTmp;
