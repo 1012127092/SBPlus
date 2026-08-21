@@ -744,14 +744,14 @@ private static final String[] RANDOM_UAS = new String[]{
         return "sbplus_dl_mode".equals(key)
                 || "sbplus_dl_threads".equals(key)
                 || "sbplus_dl_parallel".equals(key)
-                || "sbplus_dl_list".equals(key);
+                || "sbplus_dl_list".equals(key)
+                || "sbplus_dl_convertmp4".equals(key);
     }
 
     private void decoratePickerRow(Object preference, Object holder) {
         try {
             String key = (String) XposedHelpers.callMethod(preference, "getKey");
             if (key == null) return;
-
             if (key.startsWith("sbplus_dl_") && !isSniffPageKey(key)) {
                 Object itemView = XposedHelpers.getObjectField(holder, "itemView");
                 if (!(itemView instanceof android.view.View)) return;
@@ -847,6 +847,39 @@ private static final String[] RANDOM_UAS = new String[]{
                     }
                     root.setMinimumHeight(0);
                 } catch (Throwable ignored) {}
+            } else if ("sbplus_dl_convertmp4".equals(key)) {
+                // 视频资源转 MP4:确保右侧 Switch 与存储状态同步,并隐藏可能的左侧图标/圆点
+                try {
+                    Object itemViewX = XposedHelpers.getObjectField(holder, "itemView");
+                    if (!(itemViewX instanceof android.view.View)) return;
+                    android.view.View root = (android.view.View) itemViewX;
+                    // 隐藏左侧图标区(圆点/竖线可能来源)
+                    try {
+                        android.view.View iconFrame = root.findViewById(android.R.id.icon);
+                        if (iconFrame != null) iconFrame.setVisibility(android.view.View.GONE);
+                    } catch (Throwable ignored) {}
+                    try {
+                        android.view.View iconFrame2 = root.findViewById(android.R.id.icon_frame);
+                        if (iconFrame2 != null) iconFrame2.setVisibility(android.view.View.GONE);
+                    } catch (Throwable ignored) {}
+                    // 同步 Switch 状态 + 挂钩持久化
+                    android.widget.Switch sw2 = findChildSwitch(root);
+                    if (sw2 != null) {
+                        final android.content.Context c2 = root.getContext();
+                        boolean on = c2.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE)
+                                .getBoolean("dl_convert_mp4", true);
+                        sw2.setChecked(on);
+                        sw2.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+                            @Override public void onCheckedChanged(android.widget.CompoundButton b, boolean isChecked) {
+                                try {
+                                    c2.getSharedPreferences("samsung_download_bridge", android.content.Context.MODE_PRIVATE)
+                                            .edit().putBoolean("dl_convert_mp4", isChecked).commit();
+                                    XposedBridge.log("[SBPlus] convert-mp4(switch) -> " + isChecked);
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                    }
+                } catch (Throwable t2) { XposedBridge.log("[SBPlus] convert-mp4 row err: " + t2); }
             }
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] decoratePickerRow error: " + t);
@@ -1426,7 +1459,7 @@ private static final String[] RANDOM_UAS = new String[]{
 
         ClassLoader cl = fragCls.getClassLoader();
 
-        if (PAGE_DOWNLOADER_PICKER.equals(page) || PAGE_REGION_PICKER.equals(page)) {
+        if (PAGE_DOWNLOADER_PICKER.equals(page) || PAGE_REGION_PICKER.equals(page) || PAGE_SNIFF_SETTINGS.equals(page)) {
             // Defend against duplicate injection: the fragment can be re-created (or its
             // onCreatePreferences fired more than once) with a stale screen that already
             // holds our items. Clear any existing children before re-populating.
@@ -3569,6 +3602,10 @@ private static final String[] RANDOM_UAS = new String[]{
                         @Override protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 XposedBridge.log("[SBPlus] onPageFinished fired url=" + (param.args.length>1?String.valueOf(param.args[1]):""));
+                                // 页面加载完成:同步嗅探/油猴图标显隐(网页显示,主页隐藏)
+                                if (param.args.length > 1 && param.args[1] instanceof String) {
+                                    showToolbarIconsForWeb(String.valueOf(param.args[1]));
+                                }
                                 Object wv = param.args[0];
                                 if (!isThemeActive()) return;
                                 if (!(wv instanceof android.webkit.WebView)) return;
@@ -5429,7 +5466,22 @@ private void showUaGroupDialog(final Context ctx) {
                         protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             try {
                                 attachVideoBackground(param.thisObject);
+                                // 主页背景出现 -> 隐藏嗅探/油猴图标(确保主页不显示)
+                                try {
+                                    final android.view.View bgV = (android.view.View) param.thisObject;
+                                    bgV.postDelayed(new Runnable() {
+                                        @Override public void run() {
+                                            hideToolbarIcons();
+                                        }
+                                    }, 300);
+                                    bgV.postDelayed(new Runnable() {
+                                        @Override public void run() {
+                                            hideToolbarIcons();
+                                        }
+                                    }, 1500);
+                                } catch (Throwable ignored) {}
                                 dumpHomeIcons(param.thisObject);
+                                startToolbarIconSync();
                                 // 强制染色底部工具栏图标(用 Activity 整个窗口 decor view)
                                 final android.view.View bg = (android.view.View) param.thisObject;
                                 final android.app.Activity act = sCurrentActivity;
@@ -6898,19 +6950,21 @@ private void showUaGroupDialog(final Context ctx) {
             bindPreferenceClick(modePref, cl, new Runnable() { @Override public void run() { pickDownloadMode(ctx, modePrefRef); } });
             XposedHelpers.callMethod(screen, "addPreference", modePref);
 
-            // 视频资源转 MP4 开关(右侧按钮切换)
+            // 视频资源转 MP4:标准开关条目,onBindViewHolder 里处理圆点+同步状态
             try {
                 Class<?> switchPrefCls = XposedHelpers.findClass(
                         "com.sec.android.app.sbrowser.common.settings.SwitchPreferenceCustom", cl);
                 final Object conv = XposedHelpers.newInstance(switchPrefCls, new Class[]{Context.class}, ctx);
-                XposedHelpers.callMethod(conv, "setTitle", T("视频资源转 MP4", "Convert video to MP4"));
                 XposedHelpers.callMethod(conv, "setKey", "sbplus_dl_convertmp4");
-                XposedHelpers.callMethod(conv, "setSummary", T("开:下载完成后转成 MP4;关:保留下载的 TS/原格式", "On: convert to MP4 after download; Off: keep TS/original"));
                 boolean convOn = ctx.getSharedPreferences("samsung_download_bridge", Context.MODE_PRIVATE)
                         .getBoolean("dl_convert_mp4", true);
+                XposedHelpers.callMethod(conv, "setTitle", T("视频资源转 MP4", "Convert video to MP4"));
                 XposedHelpers.callMethod(conv, "setChecked", convOn);
-                XposedHelpers.callMethod(conv, "setSelectable", true);
+                XposedHelpers.callMethod(conv, "setSelectable", false);
+                try { XposedHelpers.callMethod(conv, "setIcon", (Object) null); } catch (Throwable ignored) {}
+                try { XposedHelpers.callMethod(conv, "setIconSpaceReserved", false); } catch (Throwable ignored) {}
                 try { XposedHelpers.callMethod(conv, "setDividerVisible", false); } catch (Throwable ignored) {}
+                try { XposedHelpers.callMethod(conv, "setSummary", (CharSequence) null); } catch (Throwable ignored) {}
                 Class<?> lt = listenerParamType(conv.getClass(), "setOnPreferenceChangeListener");
                 Object cl2 = java.lang.reflect.Proxy.newProxyInstance(cl, new Class[]{lt},
                     new java.lang.reflect.InvocationHandler() {
@@ -8864,6 +8918,8 @@ private void showUaGroupDialog(final Context ctx) {
                             try {
                                 updateCurrentRealTab(param.thisObject);
                                 registerJsBridge(param.thisObject);
+                                // 任意网页开始加载 -> 显示嗅探/油猴图标
+                                showToolbarIconsForWeb(null);
                             } catch (Throwable t) {
                                 XposedBridge.log("[SBPlus] registerJsBridge(onLoadStarted) error: " + t);
                             }
@@ -8912,6 +8968,23 @@ private void showUaGroupDialog(final Context ctx) {
             } catch (Throwable t) {
                 XposedBridge.log("[SBPlus] hook updateLocationBarEndIcon failed: " + t);
             }
+
+            // 布局变化时同步图标显隐(切主页/网页/滚动都触发,状态及时)
+            try {
+                XposedHelpers.findAndHookMethod(layoutCls, "onLayout",
+                        boolean.class, int.class, int.class, int.class, int.class,
+                        new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                                try {
+                                    syncToolbarIconsForHomeState(param.thisObject);
+                                } catch (Throwable ignored) {}
+                            }
+                        });
+                XposedBridge.log("[SBPlus] LocationBarButtonLayout.onLayout hooked");
+            } catch (Throwable t) {
+                XposedBridge.log("[SBPlus] hook onLayout failed: " + t);
+            }
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] hookUserscriptToolbar failed: " + t);
         }
@@ -8923,6 +8996,7 @@ private void showUaGroupDialog(final Context ctx) {
             final Object urlBarParent = XposedHelpers.getObjectField(layoutObj, "mUrlBarParent");
             if (!(urlBarParent instanceof android.view.ViewGroup)) return;
             android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
+            sToolbarParentCache = parent;
             android.view.View already = parent.findViewWithTag("sbplus_monkey_btn");
             // 总开关关闭时:不注入,并移除已存在的图标(用户切回浏览器后图标消失)
             if (!isUserscriptEnabled()) {
@@ -8977,7 +9051,10 @@ private void showUaGroupDialog(final Context ctx) {
             });
 
             parent.addView(btn, insertIndex);
+            // 注入后若当前为主页则立即隐藏
+            if (isHomeUrl(sCurrentUrl)) btn.setVisibility(android.view.View.GONE);
             XposedBridge.log("[SBPlus] userscript toolbar button injected at index " + insertIndex);
+            startToolbarIconSync();
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] injectUserscriptToolbarButton inner error: " + t);
         }
@@ -8989,6 +9066,7 @@ private void showUaGroupDialog(final Context ctx) {
             final Object urlBarParent = XposedHelpers.getObjectField(layoutObj, "mUrlBarParent");
             if (!(urlBarParent instanceof android.view.ViewGroup)) return;
             android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
+            sToolbarParentCache = parent;
             android.view.View already = parent.findViewWithTag("sbplus_sniff_btn");
             // 开关关闭时不注入,并移除已存在图标(用户切回浏览器后图标消失)
             if (!isSniffEnabled()) {
@@ -9051,7 +9129,10 @@ private void showUaGroupDialog(final Context ctx) {
             });
 
             parent.addView(btn, insertIndex);
+            // 注入后若当前为主页则立即隐藏
+            if (isHomeUrl(sCurrentUrl)) btn.setVisibility(android.view.View.GONE);
             XposedBridge.log("[SBPlus] sniff toolbar button injected at index " + insertIndex);
+            startToolbarIconSync();
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] injectSniffToolbarButton inner error: " + t);
         }
@@ -9059,31 +9140,184 @@ private void showUaGroupDialog(final Context ctx) {
 
 
     /** 根据地址栏状态(主页/新标签页 vs 网页)显示或隐藏油猴与嗅探图标。 */
+    /** 主页出现时,隐藏嗅探/油猴图标(从 Activity 全树找). */
+    private void hideToolbarIcons() {
+        try {
+            android.app.Activity act = sCurrentActivity;
+            if (act == null || act.getWindow() == null || act.getWindow().getDecorView() == null) return;
+            final android.view.View root = act.getWindow().getDecorView();
+            root.post(new Runnable() {
+                @Override public void run() {
+                    try {
+                        android.view.View sniff = root.findViewWithTag("sbplus_sniff_btn");
+                        android.view.View monkey = root.findViewWithTag("sbplus_monkey_btn");
+                        if (sniff != null && sniff.getVisibility() != android.view.View.GONE) sniff.setVisibility(android.view.View.GONE);
+                        if (monkey != null && monkey.getVisibility() != android.view.View.GONE) monkey.setVisibility(android.view.View.GONE);
+                        XposedBridge.log("[SBPlus] hideToolbarIcons(on home) sniff=" + (sniff != null) + " monkey=" + (monkey != null));
+                    } catch (Throwable ignored) {}
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] hideToolbarIcons err: " + t);
+        }
+    }
+
+    /** 网页加载完成时,显示嗅探/油猴图标. 仅当是真实网络页面(http/https)时才显示,主页本地页不显示. */
+    private void showToolbarIconsForWeb(final String pageUrl) {
+        try {
+            // 仅真实网络页面显示; 若非网络页面且是主页则保持隐藏
+            String probe = pageUrl != null ? pageUrl : sCurrentUrl;
+            if (probe != null && !probe.isEmpty()) {
+                String low = probe.toLowerCase();
+                if (!low.startsWith("http://") && !low.startsWith("https://")) {
+                    // 非 http 页面:若是主页则隐藏,否则不管
+                    if (isHomeUrl(probe)) { hideToolbarIcons(); }
+                    return;
+                }
+            } else {
+                // 无 URL 可判断:若当前还没进真实网页(un 更新)则按主页处理
+                if (probe == null || probe.isEmpty()) { /* 让其他同步点决定 */ }
+            }
+            android.app.Activity act = sCurrentActivity;
+            if (act == null || act.getWindow() == null || act.getWindow().getDecorView() == null) return;
+            final android.view.View root = act.getWindow().getDecorView();
+            root.post(new Runnable() {
+                @Override public void run() {
+                    try {
+                        android.view.View sniff = root.findViewWithTag("sbplus_sniff_btn");
+                        android.view.View monkey = root.findViewWithTag("sbplus_monkey_btn");
+                        if (sniff != null && sniff.getVisibility() != android.view.View.VISIBLE) sniff.setVisibility(android.view.View.VISIBLE);
+                        if (monkey != null && monkey.getVisibility() != android.view.View.VISIBLE) monkey.setVisibility(android.view.View.VISIBLE);
+                        XposedBridge.log("[SBPlus] showToolbarIconsForWeb(force VISIBLE) sniff=" + (sniff != null) + " monkey=" + (monkey != null));
+                    } catch (Throwable ignored) {}
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] showToolbarIconsForWeb err: " + t);
+        }
+    }
+
+    /** URL 是否为主页/新标签页(空、about:、chrome:、edge:、samsung: 等). */
+    /** 缓存最近一次成功找到的地址栏父容器,供定时同步复用(避免 decor 树找不到). */
+    private static android.view.ViewGroup sToolbarParentCache = null;
+
+    /** URL 是否为主页/新标签页(互联网本地主页 internet-native://newtab/ 等). */
+    private boolean isHomeUrl(String u) {
+        if (u == null || u.isEmpty()) return true;
+        String t = u.trim();
+        return t.isEmpty() || t.equalsIgnoreCase("about:blank")
+                || t.startsWith("about:") || t.startsWith("chrome:")
+                || t.startsWith("edge:") || t.startsWith("samsung:")
+                || t.startsWith("internet-native:")
+                || t.contains("quickaccess") || t.contains("newtab") || t.contains("NTP");
+    }
+
     private void syncToolbarIconsForHomeState(Object layoutObj) {
         try {
             Object urlBarParent = XposedHelpers.getObjectField(layoutObj, "mUrlBarParent");
             if (!(urlBarParent instanceof android.view.ViewGroup)) return;
             android.view.ViewGroup parent = (android.view.ViewGroup) urlBarParent;
-            // 判断当前是否主页/新标签页: sCurrentUrl 为空、about:blank、或约空视为主页
-            boolean home = true;
-            String u = sCurrentUrl;
-            if (u != null && !u.isEmpty()) {
-                String t = u.trim();
-                if (!t.isEmpty() && !t.equalsIgnoreCase("about:blank")
-                        && !t.startsWith("about:") && !t.startsWith("chrome:")
-                        && !t.startsWith("edge:") && !t.startsWith("samsung:")) {
-                    home = false;
-                }
-            }
+            sToolbarParentCache = parent;
+            // 判断当前是否主页/新标签页
+            boolean home = isHomeUrl(sCurrentUrl);
             int vis = home ? android.view.View.GONE : android.view.View.VISIBLE;
             android.view.View s = parent.findViewWithTag("sbplus_sniff_btn");
             android.view.View m = parent.findViewWithTag("sbplus_monkey_btn");
             if (s != null && s.getVisibility() != vis) s.setVisibility(vis);
             if (m != null && m.getVisibility() != vis) m.setVisibility(vis);
-            XposedBridge.log("[SBPlus] syncToolbarIcons home=" + home + " url=" + (u == null ? "null" : u) + " sniff=" + (s != null) + " monkey=" + (m != null));
+            XposedBridge.log("[SBPlus] syncToolbarIcons home=" + home + " url=" + (sCurrentUrl == null ? "null" : sCurrentUrl) + " sniff=" + (s != null) + " monkey=" + (m != null));
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] syncToolbarIconsForHomeState err: " + t);
         }
+    }
+
+    /** 从缓存地址栏父容器隐藏嗅探/油猴图标(主页后台调用). */
+    private void hideToolbarIconsViaCache() {
+        try {
+            android.view.ViewGroup tg = sToolbarParentCache;
+            if (tg == null) return;
+            android.view.View sniff = tg.findViewWithTag("sbplus_sniff_btn");
+            android.view.View monkey = tg.findViewWithTag("sbplus_monkey_btn");
+            if (sniff != null && sniff.getVisibility() != android.view.View.GONE) sniff.setVisibility(android.view.View.GONE);
+            if (monkey != null && monkey.getVisibility() != android.view.View.GONE) monkey.setVisibility(android.view.View.GONE);
+        } catch (Throwable t) { XposedBridge.log("[SBPlus] hideToolbarIconsViaCache err: " + t); }
+    }
+
+    /** 定时同步(每800ms)嗅探/油猴图标显隐,确保最终状态正确. */
+    private static boolean syncPeriodicStarted = false;
+    private void startToolbarIconSync() {
+        if (syncPeriodicStarted) return;
+        syncPeriodicStarted = true;
+        final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        h.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    android.app.Activity act = sCurrentActivity;
+                    if (act != null && act.getWindow() != null && act.getWindow().getDecorView() != null) {
+                        boolean onHome = isHomeUrl(sCurrentUrl);
+                        // 优先用缓存的地址栏父容器(能找到图标),找不到再试 decor 全树
+                        android.view.View sniff = null, monkey = null;
+                        android.view.ViewGroup tg = sToolbarParentCache;
+                        if (tg != null) {
+                            sniff = tg.findViewWithTag("sbplus_sniff_btn");
+                            monkey = tg.findViewWithTag("sbplus_monkey_btn");
+                        }
+                        if (sniff == null && monkey == null) {
+                            android.view.View root = act.getWindow().getDecorView();
+                            sniff = root.findViewWithTag("sbplus_sniff_btn");
+                            monkey = root.findViewWithTag("sbplus_monkey_btn");
+                        }
+                        if (sniff != null || monkey != null) {
+                            int vis = onHome ? android.view.View.GONE : android.view.View.VISIBLE;
+                            if (sniff != null && sniff.getVisibility() != vis) sniff.setVisibility(vis);
+                            if (monkey != null && monkey.getVisibility() != vis) monkey.setVisibility(vis);
+                            XposedBridge.log("[SBPlus] syncPeriodic home=" + onHome + " url=" + (sCurrentUrl==null?"null":sCurrentUrl) + " sniff=" + (sniff!=null?sniff.getVisibility():-1) + " monkey=" + (monkey!=null?monkey.getVisibility():-1));
+                        }
+                    }
+                } catch (Throwable t) { XposedBridge.log("[SBPlus] syncPeriodic err: " + t); }
+                h.postDelayed(this, 800);
+            }
+        });
+        XposedBridge.log("[SBPlus] startToolbarIconSync launched");
+    }
+
+    /** 是否处于主页: URL 非 http 网络页,或界面存在 QuickAccess 主页背景. */
+    private boolean isHomeNow(android.app.Activity act) {
+        try {
+            String u = sCurrentUrl;
+            // 优先按 URL: 明确网络页则不是主页
+            if (u != null && !u.isEmpty()) {
+                String low = u.toLowerCase();
+                if (low.startsWith("http://") || low.startsWith("https://")) {
+                    // 是网络页,还要确认当前界面不是主页(残留 URL 情况)
+                    if (!hasQuickAccessBackground(act)) return false;
+                }
+            }
+            return true;
+        } catch (Throwable ignore) { return true; }
+    }
+
+    /** 当前界面是否显示主页 QuickAccess 背景. */
+    private boolean hasQuickAccessBackground(android.app.Activity act) {
+        try {
+            final android.view.View root = act.getWindow().getDecorView();
+            final boolean[] found = new boolean[]{false};
+            try {
+                String bgClsName = "com.sec.android.app.sbrowser.quickaccess.ui.page.QuickAccessCustomBackground";
+                java.util.Stack<android.view.View> stack = new java.util.Stack<android.view.View>();
+                stack.push(root);
+                while (!stack.isEmpty()) {
+                    android.view.View v = stack.pop();
+                    if (v == null) continue;
+                    if (v.getClass().getName().equals(bgClsName)) { found[0] = true; break; }
+                    if (v instanceof android.view.ViewGroup) {
+                        android.view.ViewGroup g = (android.view.ViewGroup) v;
+                        for (int i = 0; i < g.getChildCount(); i++) stack.push(g.getChildAt(i));
+                    }
+                }
+            } catch (Throwable ignored) {}
+            return found[0];
+        } catch (Throwable t) { return false; }
     }
 
     /** 从 anchor 下方弹出一个列表 PopupWindow。onItem(itemIndex) 回调点击。 */
@@ -9583,6 +9817,34 @@ private void showUaGroupDialog(final Context ctx) {
 
     private void injectUserscripts(Object tabEventHandlerObj, String url) {
         XposedBridge.log("[SBPlus] injectUserscripts ENTER url=" + url + " enabled=" + isUserscriptEnabled());
+        // 每次 tab/页面切换都同步图标显隐:主页隐藏,网页显示(用准确 url,不依赖残留 sCurrentUrl)
+        try {
+            boolean home = isHomeUrl(url);
+            sCurrentUrl = url;
+            final boolean fhome = home;
+            final int fvis = home ? android.view.View.GONE : android.view.View.VISIBLE;
+            android.view.ViewGroup tg = sToolbarParentCache;
+            final android.view.ViewGroup ftg = tg;
+            if (tg != null) {
+                android.view.View s1 = tg.findViewWithTag("sbplus_sniff_btn");
+                android.view.View m1 = tg.findViewWithTag("sbplus_monkey_btn");
+                if (s1 != null && s1.getVisibility() != fvis) s1.setVisibility(fvis);
+                if (m1 != null && m1.getVisibility() != fvis) m1.setVisibility(fvis);
+            }
+            // 若缓存还没建立(首次),延迟多试几次
+            if (fhome) {
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                    @Override public void run() {
+                        try {
+                            hideToolbarIconsViaCache();
+                        } catch (Throwable ignored) {}
+                    }
+                }, 300);
+            }
+            XposedBridge.log("[SBPlus] injectUserscripts syncIcons home=" + fhome + " url=" + url);
+        } catch (Throwable t) {
+            XposedBridge.log("[SBPlus] injectUserscripts syncIcons err: " + t);
+        }
         if (!isUserscriptEnabled()) return;
         if (url == null || url.isEmpty()) return;
         java.util.List<UserscriptMeta> metas = loadUserscripts();
@@ -10436,6 +10698,7 @@ private void showUaGroupDialog(final Context ctx) {
                         final android.widget.LinearLayout root = new android.widget.LinearLayout(act);
                         root.setOrientation(android.widget.LinearLayout.VERTICAL);
                         int pad = (int)(act.getResources().getDisplayMetrics().density * 14 + 0.5f);
+                        root.setPadding(pad, dp(act,6), pad, dp(act,4));
 
                         // 操作栏: 全选 | 删除选中 | 清除记录
                         final android.widget.LinearLayout opBar = new android.widget.LinearLayout(act);
@@ -10447,14 +10710,17 @@ private void showUaGroupDialog(final Context ctx) {
                         bDel.setText(T("删除选中", "Delete selected"));
                         bClear.setText(T("清除记录", "Clear records"));
                         bAll.setTextSize(12); bDel.setTextSize(12); bClear.setTextSize(12);
+                        int bpd = dp(act,6);
+                        bAll.setPadding(bpd,bpd,bpd,bpd); bDel.setPadding(bpd,bpd,bpd,bpd); bClear.setPadding(bpd,bpd,bpd,bpd);
+                        bAll.setMinHeight(dp(act,4)); bDel.setMinHeight(dp(act,4)); bClear.setMinHeight(dp(act,4));
                         java.util.Set<String> selectedSet = java.util.concurrent.ConcurrentHashMap.newKeySet();
                         boolean[] allChecked = new boolean[]{false};
                         android.widget.LinearLayout.LayoutParams ob1 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
                         android.widget.LinearLayout.LayoutParams ob2 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
                         android.widget.LinearLayout.LayoutParams ob3 = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
-                        ob1.setMargins(0,0,dp(act,4),dp(act,8));
-                        ob2.setMargins(dp(act,4),0,dp(act,4),dp(act,8));
-                        ob3.setMargins(dp(act,4),0,0,dp(act,8));
+                        ob1.setMargins(0,dp(act,4),dp(act,4),dp(act,10));
+                        ob2.setMargins(dp(act,4),dp(act,4),dp(act,4),dp(act,10));
+                        ob3.setMargins(dp(act,4),dp(act,4),0,dp(act,10));
                         opBar.addView(bAll, ob1);
                         opBar.addView(bDel, ob2);
                         opBar.addView(bClear, ob3);
@@ -12043,6 +12309,8 @@ private boolean showMediaDialog(String json) {
             sActiveScriptsByUrl.put(url, active);
             sCurrentUrl = url;
             sCurrentRealTab = realTab;
+            // 网页加载确认后,强制显示嗅探/油猴图标(兜底:不依赖 updateLocationBarEndIcon)
+            showToolbarIconsForWeb(url);
             XposedBridge.log("[SBPlus] userscript injected for " + url + " (" + countMatched(metas, url) + " scripts)");
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] doInjectOnMain error: " + t);
