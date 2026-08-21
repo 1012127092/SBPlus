@@ -12113,10 +12113,16 @@ private static final String SNIFF_JS =
                 String path = url.split("[?#]")[0];
                 String lowerPath = path.toLowerCase();
                 if (!lowerPath.endsWith(".m4s") && !lowerPath.endsWith(".m4a")) continue;
-                String noExt = path.substring(0, path.lastIndexOf('.'));
-                java.util.regex.Matcher mm = java.util.regex.Pattern.compile("(?:^|[-_])(\\d+)[-_](\\d+)$").matcher(noExt);
+                                String noExt = path.substring(0, path.lastIndexOf('.'));
+                // 配对 key 只用路径部分(去域名): B站视频/音频走不同 CDN 节点域名,但路径相同
+                String pkey = noExt;
+                try {
+                    int sch = pkey.indexOf("://");
+                    if (sch >= 0) { int psl = pkey.indexOf('/', sch + 3); if (psl > 0) pkey = pkey.substring(psl); }
+                } catch (Throwable ignored) {}
+                java.util.regex.Matcher mm = java.util.regex.Pattern.compile("(?:^|[-_])(\\d+)[-_](\\d+)$").matcher(pkey);
                 if (!mm.find()) continue;
-                String base = noExt.substring(0, mm.start(1));
+                String base = pkey.substring(0, mm.start(1));
                 if (base.isEmpty()) continue;
                 String seq = mm.group(1);
                 String type = (i < types.size()) ? types.get(i) : "";
@@ -12134,10 +12140,15 @@ private static final String SNIFF_JS =
                 if (!(lower.contains("bilivideo.com") || lower.contains("upos-sz") || lower.contains("upgcx"))) continue;
                 String path = url.split("[?#]")[0];
                 if (!path.toLowerCase().endsWith(".m4s")) continue;
-                String noExt = path.substring(0, path.lastIndexOf('.'));
-                java.util.regex.Matcher mm = java.util.regex.Pattern.compile("(?:^|[-_])(\\d+)[-_](\\d+)$").matcher(noExt);
+                                String noExt = path.substring(0, path.lastIndexOf('.'));
+                String pkey2 = noExt;
+                try {
+                    int sch2 = pkey2.indexOf("://");
+                    if (sch2 >= 0) { int psl2 = pkey2.indexOf('/', sch2 + 3); if (psl2 > 0) pkey2 = pkey2.substring(psl2); }
+                } catch (Throwable ignored) {}
+                java.util.regex.Matcher mm = java.util.regex.Pattern.compile("(?:^|[-_])(\\d+)[-_](\\d+)$").matcher(pkey2);
                 if (!mm.find()) continue;
-                String base = noExt.substring(0, mm.start(1));
+                String base = pkey2.substring(0, mm.start(1));
                 String seq = mm.group(1);
                 String type = (i < types.size()) ? types.get(i) : "";
                 boolean looksVideo = "video".equals(type) || seq.equals("1") || lower.contains("mime=video") || lower.contains("video/mp4");
