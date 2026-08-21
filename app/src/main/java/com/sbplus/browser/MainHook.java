@@ -137,12 +137,7 @@ public class MainHook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static android.view.View sHomeLogoSbView;
     private static android.view.View sHomeLogoBgView;
     private static android.widget.ImageView sHomeLogoIv;
-    private static boolean sHomeLogoAnimHookDone;
-    private static float sHomeLogoSbInitY = -1f;
-    private static android.view.Choreographer.FrameCallback sLogoFrameCb;
-    private static boolean sLogoFrameRunning;
     private static float sLogoSbBaseTop = -1f;
-    private static float sLogoBaseTop = -1f;
     private static float sLogoSbPrevTop = -1f;
     private static final android.view.ViewTreeObserver.OnPreDrawListener sLogoPreDraw = new android.view.ViewTreeObserver.OnPreDrawListener() {
         @Override public boolean onPreDraw() {
@@ -631,23 +626,6 @@ private static final String[] RANDOM_UAS = new String[]{
     /** Return the actual top fragment (last in the FragmentManager's fragment list).
      *  Samsung's getTopFragment() keys off back-stack count, which is wrong for our
      *  backstack-less safeReplaceFragment pages, so we read the fragment list directly. */
-    private Object topFragment(Object act) {
-        try {
-            Object fm = XposedHelpers.callMethod(act, "getSupportFragmentManager");
-            java.util.List<?> fragments = (java.util.List<?>)
-                    XposedHelpers.callMethod(fm, "getFragments");
-            if (fragments == null || fragments.isEmpty()) return null;
-            for (int i = fragments.size() - 1; i >= 0; i--) {
-                Object f = fragments.get(i);
-                if (f != null && (Boolean) XposedHelpers.callMethod(f, "isAdded")) {
-                    return f;
-                }
-            }
-            return null;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
 
     /** Invoke SettingsActivity.safeReplaceFragment(className, args) via reflection. */
     private void navigateToFragment(Object act, String className, android.os.Bundle args) {
@@ -662,22 +640,6 @@ private static final String[] RANDOM_UAS = new String[]{
     }
 
     /** Build an empty (non-null) AttributeSet to satisfy Samsung's themed attribute lookup. */
-    private android.util.AttributeSet emptyAttributeSet() {
-        try {
-            org.xmlpull.v1.XmlPullParser parser = org.xmlpull.v1.XmlPullParserFactory
-                    .newInstance().newPullParser();
-            parser.setInput(new java.io.StringReader("<s/>"));
-            int evt = parser.getEventType();
-            while (evt != org.xmlpull.v1.XmlPullParser.START_TAG
-                    && evt != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
-                evt = parser.next();
-            }
-            return android.util.Xml.asAttributeSet(parser);
-        } catch (Throwable t) {
-            XposedBridge.log("[SBPlus] emptyAttributeSet error: " + t);
-            return null;
-        }
-    }
 
     /**
      * Hook Preference.onBindViewHolder so we can inject an inline EditText into the
@@ -3808,17 +3770,6 @@ private boolean isThemeMasterEnabled() {
     }
 
     /** 沿 view 的 context 链判断是否处于设置页(Activity 类名含 settings/preference). */
-    private String curActivityName(android.view.View v) {
-        try {
-            android.content.Context cw = v.getContext();
-            while (cw != null) {
-                if (cw instanceof android.app.Activity) return cw.getClass().getName();
-                if (cw instanceof android.content.ContextWrapper) cw = ((android.content.ContextWrapper) cw).getBaseContext();
-                else break;
-            }
-        } catch (Throwable ignored) {}
-        return "";
-    }
 
     private boolean isInSettingsScreen(android.view.View v) {
         try {
@@ -3838,36 +3789,6 @@ private boolean isThemeMasterEnabled() {
     }
 
     /** 判断是否浏览器工具栏/菜单图标(SBrowserMainActivity 内), 位于非设置页. */
-    private boolean isHomeScreen(android.view.View v) {
-        try {
-            // 排除主页背景层级(背景 ImageView/纹理/QuickAccess 不应染色)
-            try {
-                android.view.ViewParent pp0 = v.getParent();
-                while (pp0 != null) {
-                    String pn0 = pp0.getClass().getName().toLowerCase();
-                    if (pn0.contains("custombackground") || pn0.contains("quickaccess")
-                            || pn0.contains("videoview") || pn0.contains("textureview")
-                            || pn0.contains("reelbackground") || pn0.contains("mainlayoutbackground")) return false;
-                    pp0 = pp0.getParent();
-                }
-            } catch (Throwable ignored) {}
-            android.content.Context c = v.getContext();
-            while (c != null) {
-                if (c instanceof android.app.Activity) {
-                    String n = c.getClass().getName().toLowerCase();
-                    if (n.contains("setting") || n.contains("preference")
-                            || n.contains("download") || n.contains("sniff")
-                            || n.contains("userscript")) return false;
-                    if (n.contains("sbrowser") || n.contains("sbrowsermain")) return true;
-                    return false;
-                }
-                if (c instanceof android.content.ContextWrapper) {
-                    c = ((android.content.ContextWrapper) c).getBaseContext();
-                } else break;
-            }
-        } catch (Throwable ignored) {}
-        return false;
-    }
 
     /** 是否浏览器 UI 图标(排除设置页/主页背景/专用页; 覆盖工具栏+菜单等). */
     private boolean isBrowserUiIcon(android.view.View v) {
@@ -3919,11 +3840,6 @@ private boolean isThemeMasterEnabled() {
     }
 
     /** 主页图标 -> S_HOME_ICON. 未设置返回 -1. */
-    private int themeHomeIconColor() {
-        android.content.Context ctx = sAppContext;
-        if (ctx == null || !isThemeActive()) return -1;
-        return ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
-    }
 
     /** 开关三色应用. */
     private void applySwitchColor(Object sw) {
@@ -5584,38 +5500,6 @@ private void showUaGroupDialog(final Context ctx) {
 
 
     /** 弹出某分类的多行 UA 编辑框:每行一条,可增删改,保存后记住。 */
-    private void showGroupUaEditor(final Context ctx, final int gi) {
-        try {
-            final java.util.List<String> cur = new java.util.ArrayList<String>(loadGroupUas(gi));
-            java.util.List<String> init = new java.util.ArrayList<String>(cur);
-            final android.widget.EditText input = new android.widget.EditText(ctx);
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < init.size(); i++) { if (sb.length() > 0) sb.append("\n"); sb.append(init.get(i)); }
-            input.setText(sb.toString());
-            input.setSingleLine(false);
-            input.setMinLines(6);
-            input.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
-            int p = dp(ctx, 16);
-            input.setPadding(p, p, p, p);
-            input.setHorizontallyScrolling(false);
-            input.setTextColor(0xFF333333);
-            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(ctx);
-            b.setTitle(UA_GROUPS[gi][0] + T(" - 编辑 UA(每行一条)", " - edit UAs (one per line)"));
-            b.setView(input);
-            b.setPositiveButton(T("保存", "Save"), new android.content.DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(android.content.DialogInterface d2, int w2) {
-                    String t = (input.getText() == null) ? "" : input.getText().toString();
-                    java.util.List<String> out = new java.util.ArrayList<String>();
-                    for (String line : t.split("\n")) { String lt = line.trim(); if (!lt.isEmpty()) out.add(lt); }
-                    saveGroupUas(gi, out);
-                    XposedBridge.log("[SBPlus] UA group " + gi + " edited -> " + out.size() + " uas");
-                }
-            });
-            b.setNegativeButton(T("取消", "Cancel"), null);
-            b.show();
-        } catch (Throwable t) { XposedBridge.log("[SBPlus] show group UA editor error: " + t); }
-    }
 
     private void refreshCustomUaList(final Context ctx, final android.widget.LinearLayout box, final java.util.List<String> customs) {
         try {
@@ -5880,12 +5764,6 @@ private void showUaGroupDialog(final Context ctx) {
         }
     }
 
-    private boolean isPresetRegion(String code) {
-        for (String[] e : PRESET_REGIONS) {
-            if (e[1].equals(code)) return true;
-        }
-        return false;
-    }
 
     /**
      * Region-lock feature: when the user enables "锁定国家/地区" and picks a country,
@@ -7029,21 +6907,6 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /** 给 TextView 的 compound drawable 图标染上 S_HOME_ICON 主题色. */
-    private void tintCompoundDrawables(Object tvObj) {
-        try {
-            android.content.Context ctx = sAppContext;
-            if (ctx == null || !isThemeActive()) return;
-            int icol = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
-            if (icol == -1) return;
-            if (!(tvObj instanceof android.widget.TextView)) return;
-            android.widget.TextView tv = (android.widget.TextView) tvObj;
-            if (!isBrowserUiIcon(tv)) return;
-            android.graphics.drawable.Drawable[] dr = tv.getCompoundDrawables();
-            for (android.graphics.drawable.Drawable d : dr) {
-                if (d != null) { try { d.setColorFilter(icol, android.graphics.PorterDuff.Mode.SRC_IN); } catch (Throwable ignored) {} }
-            }
-        } catch (Throwable ignored) {}
-    }
 
     /** 强制染色所有底部工具栏图标(无论是否已染,每次都重新染,覆盖三星重置). */
     private void dumpThemeSlots(android.content.Context ctx) {
@@ -7940,7 +7803,6 @@ private void showUaGroupDialog(final Context ctx) {
     private static Runnable sHomeClockTick;
     private static final int sHomeClockCharColor = 0xFFE8EAED;
     private static float sClockSbPrevTop = -1f;
-    private static boolean sClockFollowLogged = false;
     private static boolean sClockFollowRegistered = false;
     private static final android.view.ViewTreeObserver.OnPreDrawListener sClockPreDraw = new android.view.ViewTreeObserver.OnPreDrawListener() {
         @Override public boolean onPreDraw() {
@@ -9468,20 +9330,6 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /** 用 emoji 字符生成位图(用于设置项图标)。 */
-    private android.graphics.Bitmap emojiBitmap(android.content.Context ctx, String emoji, int sizePx) {
-        try {
-            android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(sizePx, sizePx, android.graphics.Bitmap.Config.ARGB_8888);
-            android.graphics.Canvas cv = new android.graphics.Canvas(bm);
-            android.graphics.Paint pt = new android.graphics.Paint();
-            pt.setAntiAlias(true);
-            pt.setTextSize(sizePx * 0.8f);
-            pt.setTextAlign(android.graphics.Paint.Align.CENTER);
-            android.graphics.Paint.FontMetrics fm = pt.getFontMetrics();
-            float y = (sizePx - fm.ascent - fm.descent) / 2f;
-            cv.drawText(emoji, sizePx / 2f, y, pt);
-            return bm;
-        } catch (Throwable ignored) { return null; }
-    }
 
     /** 记录脚本来源(下载地址 / 本地导入 / 手动添加)。 */
     private void saveSource(String fileName, String source) {
@@ -10812,20 +10660,6 @@ private void showUaGroupDialog(final Context ctx) {
     }
 
     /** 是否处于主页: URL 非 http 网络页,或界面存在 QuickAccess 主页背景. */
-    private boolean isHomeNow(android.app.Activity act) {
-        try {
-            String u = sCurrentUrl;
-            // 优先按 URL: 明确网络页则不是主页
-            if (u != null && !u.isEmpty()) {
-                String low = u.toLowerCase();
-                if (low.startsWith("http://") || low.startsWith("https://")) {
-                    // 是网络页,还要确认当前界面不是主页(残留 URL 情况)
-                    if (!hasQuickAccessBackground(act)) return false;
-                }
-            }
-            return true;
-        } catch (Throwable ignore) { return true; }
-    }
 
     /** 当前界面是否显示主页 QuickAccess 背景. */
     private boolean hasQuickAccessBackground(android.app.Activity act) {
@@ -12310,13 +12144,6 @@ private static final String SNIFF_JS =
 
     /** 下载一个分段组的所有分片,按顺序拼接保存到 Download/SBPlus/*。返回输出文件或 null。 */
     /** 判断 URL 是否 m3u8 播放列表。 */
-    private boolean isM3u8Url(String url) {
-        try {
-            if (url == null) return false;
-            String p = url.split("[?#]")[0].toLowerCase();
-            return p.endsWith(".m3u8") || p.endsWith(".m3u");
-        } catch (Throwable t) { return false; }
-    }
 
     /** 解析 m3u8 内容返回分片绝对 URL 列表; 若是 variant 列表返回 null(需要先解析出子列表)。 */
     private java.util.List<String> parseM3u8Segments(String content, String baseUrl) {
@@ -13042,13 +12869,6 @@ private static final String SNIFF_JS =
         } catch (Throwable t2) { return ""; }
     }
 
-    private String detailText(com.sbplus.browser.SbDownloadManager.Task t) {
-        try {
-            String s = t.partCount + "/" + t.partTotal + " · " + com.sbplus.browser.SbDownloadManager.fmtSpeed(t.speedBps);
-            if (t.detail != null && !t.detail.isEmpty()) s += " · " + t.detail;
-            return s;
-        } catch (Throwable t2) { return ""; }
-    }
 
     /** 继续被暂停的任务: 清除暂停标记后重新触发下载(利用已存在分片续传). */
     private void resumeTask(final String id) {
@@ -15055,7 +14875,6 @@ private boolean showMediaDialog(String json) {
     }
 
     private String safeHead(String s, int n) { if (s == null) return "null"; int m = Math.min(n, s.length()); return s.substring(0, m); }
-    private String safeTail(String s, int n, int skip) { if (s == null) return "null"; int L = s.length(); int start = Math.max(0, L - n - skip); return s.substring(start, Math.min(start + n, L)); }
 
     private int countMatched(java.util.List<UserscriptMeta> metas, String url) {
         int c = 0;
