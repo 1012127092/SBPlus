@@ -11767,6 +11767,8 @@ private void showUaGroupDialog(final Context ctx) {
             try {
                 final java.util.Set<Integer> pairIdx = new java.util.HashSet<Integer>();
                 final java.util.List<int[]> pairs = findAllDashPairs(idxList, urls, types);
+                XposedBridge.log("[SBPlus] dash pairs found=" + pairs.size() + " sel=" + idxList.size());
+                for (int[] p : pairs) XposedBridge.log("[SBPlus] dash pair v=" + urls.get(p[0]) + " a=" + urls.get(p[1]));
                 for (int[] p : pairs) { pairIdx.add(Integer.valueOf(p[0])); pairIdx.add(Integer.valueOf(p[1])); }
                 if (!pairs.isEmpty()) {
                     final java.util.List<int[]> fPairs = pairs;
@@ -12192,7 +12194,9 @@ private void showUaGroupDialog(final Context ctx) {
             task.status = com.sbplus.browser.SbDownloadManager.STATUS_CONVERTING;
             task.detail = "合并音视频";
             com.sbplus.browser.SbDownloadManager.post(sAppContext, task);
+            XposedBridge.log("[SBPlus] dash dl ok v=" + v.length + " a=" + a.length + " -> mux");
             java.io.File out = muxTwoFiles(vTmp, aTmp, new java.io.File(dir, n + ".mp4"), task);
+            XposedBridge.log("[SBPlus] dash mux result=" + (out != null) + (out != null ? " len=" + out.length() : ""));
             vTmp.delete(); aTmp.delete();
             if (com.sbplus.browser.SbDownloadManager.isCancelled(taskId)) { cleanupTaskFile(task); try { if (out != null) out.delete(); } catch (Throwable ignored) {} return null; }
             if (out == null || !out.exists() || out.length() <= 0) {
@@ -12242,9 +12246,10 @@ private void showUaGroupDialog(final Context ctx) {
                 if (mime != null && mime.startsWith("audio/")) { aTrack = i; aMime = mime; afmt = f; break; }
             }
             if (vTrack < 0 || aTrack < 0) {
-                XposedBridge.log("[SBPlus] muxTwoFiles: missing track v=" + vTrack + " a=" + aTrack);
+                XposedBridge.log("[SBPlus] muxTwoFiles: missing track v=" + vTrack + " a=" + aTrack + " vMime=" + vMime + " aMime=" + aMime + " vTracks=" + vx.getTrackCount() + " aTracks=" + ax.getTrackCount());
                 return null;
             }
+            XposedBridge.log("[SBPlus] muxTwoFiles: vMime=" + vMime + " aMime=" + aMime);
             mx = new android.media.MediaMuxer(mp4Out.getAbsolutePath(), android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
             int mv = mx.addTrack(vfmt);
             int ma = mx.addTrack(afmt);
@@ -12288,6 +12293,7 @@ private void showUaGroupDialog(final Context ctx) {
             return mp4Out;
         } catch (Throwable t) {
             XposedBridge.log("[SBPlus] muxTwoFiles error: " + t);
+            try { XposedBridge.log("[SBPlus] muxTwoFiles err detail: vEx=" + vx.getTrackCount() + " aEx=" + ax.getTrackCount() + " vFile=" + (videoFile != null ? videoFile.length() : -1) + " aFile=" + (audioFile != null ? audioFile.length() : -1)); } catch (Throwable ignored) {}
             try { mp4Out.delete(); } catch (Throwable ignored) {}
             return null;
         } finally {
