@@ -3911,6 +3911,9 @@ private boolean isThemeMasterEnabled() {
                 // 排除地址栏的跳转App图标(open_in_app/launch_app/external_app 等)
                 if (vidn.contains("open_in") || vidn.contains("launch_app") || vidn.contains("external")
                         || vidn.contains("open_with") || vidn.contains("jump_to")) return false;
+                // 地址栏底部工具图标(toolbar_ 前缀)全部排除染色,仅保留刷新与收藏
+                if (vidn.startsWith("toolbar_") && !vidn.equals("toolbar_reload")
+                        && !vidn.equals("toolbar_bookmarks") && !vidn.equals("toolbar_bookmark") && !vidn.equals("bookmark_star_icon")) return false;
             } catch (Throwable ignoredV) {}
             // 排除主页背景层级
             try {
@@ -6281,6 +6284,37 @@ private void showUaGroupDialog(final Context ctx) {
             if (ctx == null || !isThemeActive()) return;
             int icol = ThemeColorHelper.getSlot(ctx, ThemeColorHelper.S_HOME_ICON);
             if (icol == -1) return;
+            // 地址栏内的图标: 只染刷新按钮和收藏,其他(含跳转App图标)全部跳过
+            android.view.ViewGroup tg = sToolbarParentCache;
+            if (tg != null) {
+                android.view.ViewParent ip = iv.getParent();
+                while (ip != null) {
+                    if (ip == tg) {
+                        String idn = "";
+                        try { idn = iv.getResources().getResourceEntryName(iv.getId()); } catch (Throwable ignored) {}
+                        if (!idn.equals("toolbar_reload") && !idn.equals("bookmark_star_icon")) {
+                            android.graphics.drawable.Drawable dd = iv.getDrawable();
+                            String cfinfo = "none";
+                            if (dd != null) {
+                                android.graphics.ColorFilter cf = dd.getColorFilter();
+                                if (cf instanceof android.graphics.PorterDuffColorFilter) {
+                                    try { cfinfo = Integer.toHexString(reflectColorFilterColor(cf)); } catch (Throwable ignored) { cfinfo = "cf"; }
+                                } else if (cf != null) { cfinfo = cf.getClass().getSimpleName(); }
+                            }
+                            // 强制清除地址栏非刷新/收藏图标的任何染色(drawable + view层 tint),恢复原色
+                            try {
+                                if (dd != null) dd.clearColorFilter();
+                            } catch (Throwable ignored) {}
+                            try { iv.setImageTintList(null); } catch (Throwable ignored) {}
+                            try { iv.clearColorFilter(); } catch (Throwable ignored) {}
+                            XposedBridge.log("[SBPlus] IC-SKIP addrbar id=" + idn + " cf=" + cfinfo + " cleared");
+                            return;
+                        }
+                        break;
+                    }
+                    ip = ip.getParent();
+                }
+            }
             if (!isBrowserUiIcon(iv)) {
                 // 诊断:浏览助手为何被跳过
                 try {
@@ -6371,6 +6405,25 @@ private void showUaGroupDialog(final Context ctx) {
             if (icol == -1) return;
             // 跳过核心背景图片(避免误染大图)
             if (!isBrowserUiIcon(iv)) return;
+            // 地址栏内的图标: 只染刷新按钮和收藏,其他(含跳转App图标)全部跳过
+            android.view.ViewGroup tg2 = sToolbarParentCache;
+            if (tg2 != null) {
+                android.view.ViewParent ip2 = iv.getParent();
+                while (ip2 != null) {
+                    if (ip2 == tg2) {
+                        String idn2 = "";
+                        try { idn2 = iv.getResources().getResourceEntryName(iv.getId()); } catch (Throwable ignored2) {}
+                        if (!idn2.equals("toolbar_reload") && !idn2.equals("bookmark_star_icon")) {
+                            try { if (iv.getDrawable()!=null) iv.getDrawable().clearColorFilter(); } catch (Throwable ignored2b) {}
+                            try { iv.setImageTintList(null); } catch (Throwable ignored2c) {}
+                            try { iv.clearColorFilter(); } catch (Throwable ignored2d) {}
+                            return;
+                        }
+                        break;
+                    }
+                    ip2 = ip2.getParent();
+                }
+            }
             // 尺寸保护: 大尺寸 view 是背景/大图, 不是图标, 跳过(避免页面背景被染)
             try {
                 int w = iv.getWidth();
