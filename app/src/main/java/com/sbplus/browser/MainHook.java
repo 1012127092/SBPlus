@@ -12126,8 +12126,9 @@ private static final String SNIFF_JS =
                 if (base.isEmpty()) continue;
                 String seq = mm.group(1);
                 String type = (i < types.size()) ? types.get(i) : "";
-                boolean looksAudio = "audio".equals(type) || seq.equals("2") || lower.contains("mime=audio") || lower.contains("audio/mp4");
-                boolean looksVideo = "video".equals(type) || seq.equals("1") || lower.contains("mime=video") || lower.contains("video/mp4");
+                boolean isAudioType = "audio".equals(type);
+                boolean looksAudio = isAudioType || seq.equals("2") || lower.contains("mime=audio") || lower.contains("audio/mp4");
+                boolean looksVideo = !isAudioType && ("video".equals(type) || seq.equals("1") || lower.contains("mime=video") || lower.contains("video/mp4"));
                 if (looksAudio && !looksVideo) audioByBase.put(base, Integer.valueOf(i));
             }
             // 第二遍: 找视频流与音频配对
@@ -12151,7 +12152,8 @@ private static final String SNIFF_JS =
                 String base = pkey2.substring(0, mm.start(1));
                 String seq = mm.group(1);
                 String type = (i < types.size()) ? types.get(i) : "";
-                boolean looksVideo = "video".equals(type) || seq.equals("1") || lower.contains("mime=video") || lower.contains("video/mp4");
+                boolean isAudioType = "audio".equals(type);
+                boolean looksVideo = !isAudioType && ("video".equals(type) || seq.equals("1") || lower.contains("mime=video") || lower.contains("video/mp4"));
                 if (!looksVideo) continue;
                 if (used.contains(Integer.valueOf(i))) continue;
                 Integer ai = audioByBase.get(base);
