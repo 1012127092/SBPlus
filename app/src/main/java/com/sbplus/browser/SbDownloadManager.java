@@ -51,6 +51,7 @@ public class SbDownloadManager {
 
         public int percent() {
             if (partTotal > 0) return (int) Math.min(100, partCount * 100 / partTotal);
+            if (totalSizeBytes > 0) return (int) Math.min(100, totalBytes * 100 / totalSizeBytes);
             return 0;
         }
     }
