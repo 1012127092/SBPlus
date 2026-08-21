@@ -14787,12 +14787,20 @@ private boolean showMediaDialog(String json) {
             byte[] buf = new byte[16384];
             int r;
             long done = 0, lastMark = System.currentTimeMillis(), lastBytes = 0;
+            boolean isDashTask = (task != null && "dash".equals(task.kind));
+            final long baseBytes = isDashTask ? (task.totalBytes > 0 ? task.totalBytes : 0) : 0;
             while ((r = is.read(buf)) > 0) {
                 bos.write(buf, 0, r);
                 done += r;
                 if (task != null) {
-                    task.totalBytes = done;
-                    if (totalSz > 0) task.totalSizeBytes = totalSz;
+                    if (isDashTask) {
+                        // DASH 任务: 两个流共用 task, totalBytes 从 base(上一流完成量) 累加
+                        task.totalBytes = baseBytes + done;
+                        if (totalSz > 0) task.totalSizeBytes = task.totalSizeBytes + totalSz;
+                    } else {
+                        task.totalBytes = done;
+                        if (totalSz > 0) task.totalSizeBytes = totalSz;
+                    }
                     long now = System.currentTimeMillis();
                     if (now - lastMark > 300) {
                         task.speedBps = (long)((done - lastBytes) * 1000.0 / (now - lastMark));
