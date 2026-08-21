@@ -12140,9 +12140,10 @@ private static final String SNIFF_JS =
                 if (used.contains(Integer.valueOf(i))) continue;
                 Integer ai = audioByBase.get(base);
                 if (ai == null && audioByBase.size() == 1) ai = audioByBase.values().iterator().next();
-                if (ai != null && !used.contains(ai) && ai.intValue() != i) {
+                // 同一音频可配多个视频流(不同编码清晰度),音频不标 used; 视频标 used 防自身重复
+                if (ai != null && ai.intValue() != i) {
                     result.add(new int[]{i, ai.intValue()});
-                    used.add(Integer.valueOf(i)); used.add(ai);
+                    used.add(Integer.valueOf(i));
                 }
             }
             return result;
