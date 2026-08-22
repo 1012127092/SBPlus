@@ -17,9 +17,10 @@ android {
     signingConfigs {
         release {
             storeFile file("../release.keystore")
-            storePassword "sbplus123"
-            keyAlias "sbplus"
-            keyPassword "sbplus123"
+            // 签名密码在本地 ~/.gradle/gradle.properties 提供(SBPLUS_*), 不提交到仓库
+            storePassword project.findProperty("SBPLUS_STORE_PASSWORD") ?: ""
+            keyAlias project.findProperty("SBPLUS_KEY_ALIAS") ?: "sbplus"
+            keyPassword project.findProperty("SBPLUS_KEY_PASSWORD") ?: ""
         }
     }
 
