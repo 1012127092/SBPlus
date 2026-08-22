@@ -24,7 +24,7 @@ A **LSPosed** module that enhances Samsung Internet Browser (package `com.sec.an
 9. **Userscript Manager** — full built-in manager: list / add / save / delete / toggle, `.user.js` interception, source management, "update all", lightweight GM API, detail page + share import.
 10. **Bookmark Management** — import / export bookmarks (Chrome / Edge / Firefox HTML format), tree checkbox dialog.
 11. **Random UA** — 55 real UA strings with random rotation; supports platform/browser multi-select and custom parameters.
-12. **Media Sniffer** — sniff and download video/audio/image resources; supports tab-based select-all (video/audio/image independent), segmented video (m4s/ts) auto-merge.
+12. **Media Sniffer & Download Engine** — multi-threaded download engine for m3u8/TVOD streams; sniff and download video/audio/image resources with tab-based select-all (video/audio/image independent). Built-in site parsers for **Bilibili DASH** (auto-pair video+audio into single MP4, 4K/1080P+/HDR), **Douyin / Kuaishou / Xiaohongshu / Weibo / AcFun / Toutiao** (SSR JSON extraction via script tag), and global platforms **YouTube** (itag resolution), **TikTok**, **X/Twitter**, **Instagram/Facebook** (performance CDN). Segmented video (m4s/ts) auto-remux to MP4 — instant, no transcoding bloat. Task progress bar, speed display, cancel support, configurable concurrency.
 13. **Homepage Beautification** — personalize the homepage search box and other elements.
 14. **Version + Project URL + Auto Update Check** — version and project URL shown in module home and browser menu, with auto update checking.
 
@@ -129,11 +129,14 @@ hook `SBrowserCommandLine.initialize()`，通过 `TerraceCommandLine.appendSwitc
 ### 11. 随机浏览器标识（UA）
 内置 55 条真实 UA 池，支持随机轮换（桌面 Chrome / 手机 / iPhone / 自定义）。支持平台/浏览器多选和自定义参数动态生成。
 
-### 12. 资源嗅探面板
-嗅探并下载视频/音频/图片资源：
-- 按类型分tab显示（视频/音频/图片独立全选）
-- 显示已选文件数量
-- 支持分片视频（m4s/ts）自动识别和二进制拼接下载
+### 12. 资源嗅探与下载引擎
+多线程下载引擎（m3u8/TVOD 流式），按类型分tab显示（视频/音频/图片独立全选）。
+- **B站 DASH 自动合并**：视频+音频流自动配对合并为单 MP4（4K/1080P+/HDR，大会员全清晰度）
+- **国内站点解析器**：抖音 / 快手 / 小红书 / 微博 / AcFun / 头条（script 标签 SSR JSON 提取）
+- **国外平台支持**：YouTube（itag 清晰度标注）、TikTok、X/Twitter、Instagram/Facebook
+- 分片视频（m4s/ts）自动纯 remux 转 MP4（秒级完成，不膨胀）
+- 任务进度条 / 速度显示 / 取消支持 / 并发数可配置
+- 下载后自动转 MP4 开关（默认开）
 - 图片格子选中显示蓝色遮罩
 
 ### 13. 主页美化子菜单
