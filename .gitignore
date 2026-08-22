@@ -44,3 +44,8 @@ _secrets.txt
 
 # 内部开发笔记（勿上传）
 _DEV_NOTES.md
+
+# 参考嗅探脚本/测试片段（勿上传）
+_ref/
+tests/
+_*.ts
