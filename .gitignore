@@ -16,39 +16,33 @@ captures/
 *.iml
 .vscode/
 
-# 调试产物（历史临时脚本/截图/dump）
+# dev artifacts
 _debug_archive/
-
-# 临时工具脚本（_ 前缀的 python/js 调试/补丁脚本）
 _*.py
 _*.js
 _*.txt
 _*.html
 _*.java
 _*.log
-
-# 历史脚本样本/临时目录
 _scripts/
 _userscripts_dir/
 
-# 发布/调试临时信息
+# release/debug temp
 release_id.txt
 injected_all.js
 
-# 签名密钥（勿上传）
+# signing keys
 *.keystore
 *.jks
 
-# 密钥文件（绝对不要提交）
+# secrets
 _secrets.txt
 
-# 内部开发笔记（勿上传）
+# internal notes
 _DEV_NOTES.md
+_AUDIT.md
 
-# 参考嗅探脚本/测试片段（勿上传）
+# reference/test assets
 _ref/
 tests/
 _*.ts
-
-# �ڲ���Ʊʼ�(���ϴ�)
-_AUDIT.md
