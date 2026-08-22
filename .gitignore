@@ -49,3 +49,6 @@ _DEV_NOTES.md
 _ref/
 tests/
 _*.ts
+
+# 内部审计笔记(勿上传)
+_AUDIT.md
